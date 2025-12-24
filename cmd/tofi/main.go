@@ -26,7 +26,7 @@ func main() {
 	log.SetOutput(io.MultiWriter(os.Stdout, f))
 
 	// 2. 加载 YAML 工作流
-	wf, err := parser.LoadWorkflow("workflows/test.yaml")
+	wf, err := parser.LoadWorkflow("workflows/tofi_test_2.yaml")
 	if err != nil {
 		log.Fatalf("无法加载工作流: %v", err)
 	}
@@ -37,12 +37,7 @@ func main() {
 	log.Printf("[%s] 🐱 Tofi Engine 启动...", execID)
 
 	// 4. 智能寻找入口并启动
-	for id, node := range wf.Nodes {
-		if len(node.Dependencies) == 0 {
-			ctx.Wg.Add(1)
-			go engine.RunNode(wf, id, ctx)
-		}
-	}
+	engine.Start(wf, ctx)
 
 	// 5. 等待所有节点运行结束
 	ctx.Wg.Wait()

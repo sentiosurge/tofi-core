@@ -24,6 +24,14 @@ func GetAction(nodeType string) Action {
 		return &tasks.API{}
 	case "if":
 		return &logic.If{}
+	case "check":
+		return &logic.Check{}
+	case "text":
+		return &logic.Text{}
+	case "math":
+		return &logic.Math{}
+	case "list":
+		return &logic.List{}
 	case "var", "const":
 		return &data.Var{}
 	case "secret":
@@ -39,12 +47,12 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	defer ctx.Wg.Done()
 
 	node, exists := wf.Nodes[nodeID]
-	// 防重拦截
-	if !exists || ctx.CheckAndSetStarted(nodeID) {
+	if !exists {
 		return
 	}
 
 	// 2. 依赖检查与状态传播 (Skip Logic)
+	// 注意：这里先不标记 CheckAndSetStarted，允许多个父节点协程进来检查
 	for _, depID := range node.Dependencies {
 		res, completed := ctx.GetResult(depID)
 		if !completed {
@@ -54,16 +62,18 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 
 		// 【传播逻辑】：如果父节点是“失败”或“跳过”
 		if strings.HasPrefix(res, "ERR_PROPAGATION:") || strings.HasPrefix(res, "SKIPPED_BY:") {
-			skipMsg := fmt.Sprintf("SKIPPED_BY: %s", depID)
+			// 只有第一个到达这里的协程负责标记 SKIP 并传播
+			if ctx.CheckAndSetStarted(nodeID) {
+				return
+			}
 
+			skipMsg := fmt.Sprintf("SKIPPED_BY: %s", depID)
 			ctx.RecordStat(models.NodeStat{
 				NodeID: node.ID, Type: node.Type, Status: "SKIP", Duration: 0, StartTime: time.Now(),
 			})
-
 			ctx.SetResult(node.ID, skipMsg)
 			log.Printf("[%s] [SKIP]    [%s] 由于上游失败自动跳过", ctx.ExecutionID, node.ID)
 
-			// 递归跳过后续
 			for _, nextID := range node.Next {
 				ctx.Wg.Add(1)
 				go RunNode(wf, nextID, ctx)
@@ -72,7 +82,12 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 		}
 	}
 
-	// 3. 执行准备
+	// 3. 核心修正点：只有依赖全部满足后，才尝试抢占执行权
+	if ctx.CheckAndSetStarted(nodeID) {
+		return
+	}
+
+	// 4. 执行准备
 	action := GetAction(node.Type)
 	log.Printf("[%s] [START]   [%s] 类型: %s", ctx.ExecutionID, node.ID, node.Type)
 
@@ -80,7 +95,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	var res string
 	var err error
 
-	// 4. 执行阶段 (包含重试)
+	// 5. 执行阶段 (包含重试)
 	for i := 0; i <= node.RetryCount; i++ {
 		if i > 0 {
 			log.Printf("[%s] [RETRY]   [%s] 第 %d 次重试...", ctx.ExecutionID, node.ID, i)
@@ -92,7 +107,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	}
 	duration := time.Since(startTime)
 
-	// 5. 结果处理与统计
+	// 6. 结果处理与统计
 	stat := models.NodeStat{
 		NodeID:    node.ID,
 		Type:      node.Type,
@@ -101,12 +116,10 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	}
 
 	if err != nil {
-		// 区分“逻辑不通过”和“真正的执行错误”
 		if err.Error() == "CONDITION_NOT_MET" {
 			stat.Status = "SKIP"
 			ctx.RecordStat(stat)
 			log.Printf("[%s] [SKIP]    [%s] 条件不满足", ctx.ExecutionID, node.ID)
-			// 条件不满足也需要向下传递 SKIP 信号
 			ctx.SetResult(node.ID, "SKIPPED_BY_LOGIC")
 		} else {
 			stat.Status = "ERROR"
@@ -127,35 +140,52 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 		return
 	}
 
-	// 成功逻辑
-	// 成功路径
+	// 7. 成功逻辑
 	stat.Status = "SUCCESS"
 	ctx.RecordStat(stat)
-	ctx.SetResult(node.ID, res) // 内部依然存入真实值，保证后续节点能正常用
+	ctx.SetResult(node.ID, res)
 
-	// --- 核心改动：日志脱敏 ---
+	// 日志脱敏处理
 	displayRes := res
 	if node.Type == "secret" {
 		var secretData map[string]interface{}
-		// 尝试解析存入的 JSON 结果
 		if err := json.Unmarshal([]byte(res), &secretData); err == nil {
-			var keys []string
-			for k := range secretData {
-				// 按照你的要求，格式化为 **nodeID.key**
-				keys = append(keys, fmt.Sprintf("**%s.%s**", node.ID, k))
+			for _, v := range secretData {
+				ctx.AddSecretValue(fmt.Sprint(v)) // 👈 存入黑名单
 			}
-			// 用逗号连接多个 key
-			displayRes = strings.Join(keys, ", ")
-		} else {
-			// 如果不是 JSON（单值模式），直接显示节点 ID
-			displayRes = fmt.Sprintf("**%s**", node.ID)
 		}
 	}
 
-	log.Printf("[%s] [SUCCESS] [%s] 输出: %s", ctx.ExecutionID, node.ID, displayRes)
-
+	log.Printf("[%s] [SUCCESS] [%s] 输出: %s",
+		ctx.ExecutionID,
+		node.ID,
+		ctx.MaskLog(displayRes),
+	)
 	for _, nextID := range node.Next {
 		ctx.Wg.Add(1)
 		go RunNode(wf, nextID, ctx)
+	}
+}
+
+// isFailureBranch 检查某个节点是否被任何其他节点定义为 OnFailure 分支
+func isFailureBranch(wf *models.Workflow, targetID string) bool {
+	for _, node := range wf.Nodes {
+		for _, failID := range node.OnFailure {
+			if failID == targetID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Start 封装了工作流的合法起点启动逻辑
+func Start(wf *models.Workflow, ctx *models.ExecutionContext) {
+	for id, node := range wf.Nodes {
+		// 只有 0 依赖，且不是任何节点的“失败分支”，才是合法的起点
+		if len(node.Dependencies) == 0 && !isFailureBranch(wf, id) {
+			ctx.Wg.Add(1)
+			go RunNode(wf, id, ctx)
+		}
 	}
 }

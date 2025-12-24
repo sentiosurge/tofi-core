@@ -40,6 +40,7 @@ type ExecutionContext struct {
 	Stats        []NodeStat      // 记录所有节点的执行统计
 	mu           sync.RWMutex
 	Wg           sync.WaitGroup
+	SecretValues []string
 }
 
 // NewExecutionContext 是你需要的构造函数
@@ -122,4 +123,19 @@ type ExecutionResult struct {
 	Duration     string            `json:"duration"`
 	Stats        []NodeStat        `json:"stats"`   // 每个节点的详细履历
 	Outputs      map[string]string `json:"outputs"` // 最终所有的 Results 映射
+}
+
+func (ctx *ExecutionContext) AddSecretValue(val string) {
+	if val != "" {
+		ctx.SecretValues = append(ctx.SecretValues, val)
+	}
+}
+
+// MaskLog 对字符串进行全局脱敏
+func (ctx *ExecutionContext) MaskLog(input string) string {
+	output := input
+	for _, secret := range ctx.SecretValues {
+		output = strings.ReplaceAll(output, secret, "********")
+	}
+	return output
 }
