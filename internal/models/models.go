@@ -111,3 +111,15 @@ func (ctx *ExecutionContext) ReplaceParams(script string) string {
 	}
 	return finalScript
 }
+
+// ExecutionResult 代表一次完整工作流运行的最终产物
+type ExecutionResult struct {
+	ExecutionID  string            `json:"execution_id"`
+	WorkflowName string            `json:"workflow_name"`
+	Status       string            `json:"status"` // SUCCESS, FAILED, PARTIAL
+	StartTime    time.Time         `json:"start_time"`
+	EndTime      time.Time         `json:"end_time"`
+	Duration     string            `json:"duration"`
+	Stats        []NodeStat        `json:"stats"`   // 每个节点的详细履历
+	Outputs      map[string]string `json:"outputs"` // 最终所有的 Results 映射
+}

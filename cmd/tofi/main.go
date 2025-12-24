@@ -9,11 +9,14 @@ import (
 	"tofi-core/internal/engine"
 	"tofi-core/internal/models"
 	"tofi-core/internal/parser"
+
+	"github.com/google/uuid"
 )
 
 func main() {
 	// 1. 环境准备
-	execID := time.Now().Format("RUN-150405")
+	uuid := uuid.New().String()[:4]
+	execID := time.Now().Format("102150405") + "-" + uuid
 	logDir := "./logs"
 	os.MkdirAll(logDir, 0755)
 	logFileName := time.Now().Format("20060102") + ".log"
@@ -46,6 +49,10 @@ func main() {
 
 	// 6. 打印精美的 ASCII 总结表格
 	engine.PrintSummary(ctx)
+
+	if err := engine.SaveExecutionResult(wf, ctx); err != nil {
+		log.Printf("保存执行结果失败: %v", err)
+	}
 
 	log.Println("🏁 Done.")
 }
