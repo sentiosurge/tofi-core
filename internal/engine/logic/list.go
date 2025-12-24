@@ -54,3 +54,15 @@ func (l *List) Execute(n *models.Node, ctx *models.ExecutionContext) (string, er
 
 	return "LIST_OK", nil
 }
+
+func (l *List) Validate(n *models.Node) error {
+	if _, ok := n.Input["list"]; !ok {
+		return fmt.Errorf("input.list is required")
+	}
+	// input.value 根据 mode 可能是必需的，这里暂不强求，因为 mode 决定
+	mode := n.Config["mode"]
+	if mode != "length_is" && mode != "contains" {
+		return fmt.Errorf("invalid config.mode: %s", mode)
+	}
+	return nil
+}

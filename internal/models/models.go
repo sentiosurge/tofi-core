@@ -1,6 +1,7 @@
 package models
 
 import (
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -36,8 +37,16 @@ type Workflow struct {
 	Nodes map[string]*Node `json:"nodes" yaml:"nodes"`
 }
 
+type ExecutionPaths struct {
+	Home    string
+	Logs    string
+	States  string
+	Reports string
+}
+
 type ExecutionContext struct {
 	ExecutionID  string
+	Paths        ExecutionPaths // 新增：路径配置
 	Results      map[string]string
 	startedNodes map[string]bool // 内部使用：防止重复启动
 	Stats        []NodeStat      // 记录所有节点的执行统计
@@ -48,9 +57,15 @@ type ExecutionContext struct {
 
 // NewExecutionContext 是你需要的构造函数
 // 它负责把 Results, startedNodes 这些 Map 初始化好
-func NewExecutionContext(execID string) *ExecutionContext {
+func NewExecutionContext(execID, homeDir string) *ExecutionContext {
 	return &ExecutionContext{
-		ExecutionID:  execID,
+		ExecutionID: execID,
+		Paths: ExecutionPaths{
+			Home:    homeDir,
+			Logs:    filepath.Join(homeDir, "logs"),
+			States:  filepath.Join(homeDir, "states"),
+			Reports: filepath.Join(homeDir, "reports"),
+		},
 		Results:      make(map[string]string),
 		startedNodes: make(map[string]bool),
 		Stats:        []NodeStat{},
@@ -163,4 +178,20 @@ func (ctx *ExecutionContext) MaskLog(input string) string {
 		output = strings.ReplaceAll(output, secret, "********")
 	}
 	return output
+}
+
+// Snapshot 安全地导出当前上下文的快照副本
+func (ctx *ExecutionContext) Snapshot() (map[string]string, []NodeStat) {
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+
+	results := make(map[string]string, len(ctx.Results))
+	for k, v := range ctx.Results {
+		results[k] = v
+	}
+
+	stats := make([]NodeStat, len(ctx.Stats))
+	copy(stats, ctx.Stats)
+
+	return results, stats
 }

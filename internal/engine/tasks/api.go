@@ -94,3 +94,29 @@ func (a *API) Execute(n *models.Node, ctx *models.ExecutionContext) (string, err
 
 	return resp, nil
 }
+
+func (a *API) Validate(n *models.Node) error {
+	if n.Config["url"] == "" {
+		return fmt.Errorf("config.url is required")
+	}
+
+	// 检查 headers 类型
+	if val, ok := n.Input["headers"]; ok {
+		if _, isMap := val.(map[string]interface{}); !isMap {
+			if _, isStr := val.(string); !isStr {
+				return fmt.Errorf("input.headers must be a map or json string")
+			}
+		}
+	}
+
+	// 检查 params 类型
+	if val, ok := n.Input["params"]; ok {
+		if _, isMap := val.(map[string]interface{}); !isMap {
+			if _, isStr := val.(string); !isStr {
+				return fmt.Errorf("input.params must be a map or json string")
+			}
+		}
+	}
+
+	return nil
+}

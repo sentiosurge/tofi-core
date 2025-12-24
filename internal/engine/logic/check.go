@@ -31,3 +31,14 @@ func (c *Check) Execute(n *models.Node, ctx *models.ExecutionContext) (string, e
 	}
 	return "CHECK_PASSED", nil
 }
+
+func (c *Check) Validate(n *models.Node) error {
+	if _, ok := n.Input["value"]; !ok {
+		return fmt.Errorf("input.value is required")
+	}
+	mode := n.Config["mode"]
+	if mode != "is_true" && mode != "is_false" && mode != "is_empty" && mode != "exists" {
+		return fmt.Errorf("invalid config.mode: %s", mode)
+	}
+	return nil
+}

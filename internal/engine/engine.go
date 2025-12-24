@@ -43,6 +43,21 @@ func GetAction(nodeType string) Action {
 	}
 }
 
+// ValidateAll 验证整个工作流的所有节点
+func ValidateAll(wf *models.Workflow) error {
+	var errs []string
+	for id, node := range wf.Nodes {
+		action := GetAction(node.Type)
+		if err := action.Validate(node); err != nil {
+			errs = append(errs, fmt.Sprintf("Node '%s' (%s): %v", id, node.Type, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("workflow validation failed:\n%s", strings.Join(errs, "\n"))
+	}
+	return nil
+}
+
 // RunNode 核心辐射引擎：包含并发控制、依赖检查、错误传播和执行记录
 func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	// 1. 生命周期管理：无论如何退出，计数器都要减 1
@@ -50,6 +65,17 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 
 	node, exists := wf.Nodes[nodeID]
 	if !exists {
+		return
+	}
+
+	// 0. Resume 检查：如果我已经有结果了（从磁盘恢复），直接跳过
+	if res, completed := ctx.GetResult(nodeID); completed {
+		log.Printf("[%s] [RESUME]  [%s] 已从状态恢复，跳过执行 (结果: %s)", ctx.ExecutionID, node.ID, res)
+		// 仍然需要触发后续节点！因为后续节点可能还没跑
+		for _, nextID := range node.Next {
+			ctx.Wg.Add(1)
+			go RunNode(wf, nextID, ctx)
+		}
 		return
 	}
 
@@ -89,6 +115,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 					NodeID: node.ID, Type: node.Type, Status: "SKIP", Duration: 0, StartTime: time.Now(),
 				})
 				ctx.SetResult(node.ID, skipMsg)
+				SaveState(ctx) // 持久化 Skip 状态
 				log.Printf("[%s] [SKIP]    [%s] 由于上游失败自动跳过", ctx.ExecutionID, node.ID)
 
 				for _, nextID := range node.Next {
@@ -147,6 +174,9 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 			ctx.SetResult(node.ID, fmt.Sprintf("ERR_PROPAGATION: %v", err))
 		}
 
+		// 状态持久化
+		SaveState(ctx)
+
 		// 触发失败分支或后续跳转
 		nextQueue := node.Next
 		if len(node.OnFailure) > 0 {
@@ -163,6 +193,9 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	stat.Status = "SUCCESS"
 	ctx.RecordStat(stat)
 	ctx.SetResult(node.ID, res)
+
+	// 状态持久化
+	SaveState(ctx)
 
 	// 日志脱敏处理
 	displayRes := res

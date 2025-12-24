@@ -39,3 +39,10 @@ func (v *Var) Execute(n *models.Node, ctx *models.ExecutionContext) (string, err
 
 	return string(jsonData), nil
 }
+
+func (v *Var) Validate(n *models.Node) error {
+	if len(n.Data) == 0 {
+		return fmt.Errorf("data field is required")
+	}
+	return nil
+}

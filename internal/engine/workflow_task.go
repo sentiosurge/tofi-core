@@ -23,7 +23,7 @@ func (w *WorkflowTask) Execute(n *models.Node, ctx *models.ExecutionContext) (st
 	}
 
 	// 3. 创建子上下文 (Child Context)
-	childCtx := models.NewExecutionContext(fmt.Sprintf("%s/%s", ctx.ExecutionID, n.ID))
+	childCtx := models.NewExecutionContext(fmt.Sprintf("%s/%s", ctx.ExecutionID, n.ID), ctx.Paths.Home)
 
 	// 4. 注入参数 (Input -> Inputs Node Result)
 	// 将 n.Input 中所有 KV 作为子工作流的初始输入
@@ -63,4 +63,11 @@ func (w *WorkflowTask) Execute(n *models.Node, ctx *models.ExecutionContext) (st
 	}
 
 	return string(outputsJSON), nil
+}
+
+func (w *WorkflowTask) Validate(n *models.Node) error {
+	if n.Config["file"] == "" {
+		return fmt.Errorf("config.file is required")
+	}
+	return nil
 }

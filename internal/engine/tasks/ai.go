@@ -82,3 +82,22 @@ func (a *AI) Execute(n *models.Node, ctx *models.ExecutionContext) (string, erro
 	}
 	return resp, fmt.Errorf("AI 响应解析失败")
 }
+
+func (a *AI) Validate(n *models.Node) error {
+	if n.Config["endpoint"] == "" {
+		return fmt.Errorf("config.endpoint is required")
+	}
+	if n.Config["model"] == "" {
+		return fmt.Errorf("config.model is required")
+	}
+	if _, ok := n.Input["prompt"].(string); !ok {
+		return fmt.Errorf("input.prompt is required and must be a string")
+	}
+	
+	// 可选检查 provider
+	provider := strings.ToLower(n.Config["provider"])
+	if provider != "" && provider != "openai" && provider != "claude" && provider != "gemini" && provider != "ollama" {
+		return fmt.Errorf("invalid config.provider: %s", provider)
+	}
+	return nil
+}

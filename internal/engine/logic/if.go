@@ -59,3 +59,19 @@ func (i *If) Execute(n *models.Node, ctx *models.ExecutionContext) (string, erro
 
 	return "EXPR_MATCHED", nil
 }
+
+func (i *If) Validate(n *models.Node) error {
+	exprStr, ok := n.Input["if"].(string)
+	if !ok {
+		return fmt.Errorf("input.if is required and must be a string")
+	}
+	// 尝试预解析表达式，提前发现语法错误
+	functions := map[string]govaluate.ExpressionFunction{
+		"contains": func(args ...interface{}) (interface{}, error) { return true, nil },
+		"len":      func(args ...interface{}) (interface{}, error) { return 0, nil },
+	}
+	if _, err := govaluate.NewEvaluableExpressionWithFunctions(exprStr, functions); err != nil {
+		return fmt.Errorf("invalid expression syntax: %v", err)
+	}
+	return nil
+}

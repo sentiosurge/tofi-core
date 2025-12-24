@@ -35,3 +35,24 @@ func (t *Text) Execute(n *models.Node, ctx *models.ExecutionContext) (string, er
 	}
 	return "TEXT_MATCHED", nil
 }
+
+func (t *Text) Validate(n *models.Node) error {
+	if _, ok := n.Input["target"]; !ok {
+		return fmt.Errorf("input.target is required")
+	}
+	if _, ok := n.Input["value"]; !ok {
+		return fmt.Errorf("input.value is required")
+	}
+	mode := n.Config["mode"]
+	if mode != "contains" && mode != "starts_with" && mode != "matches" {
+		return fmt.Errorf("invalid config.mode: %s", mode)
+	}
+	if mode == "matches" {
+		if val, ok := n.Input["value"].(string); ok {
+			if _, err := regexp.Compile(val); err != nil {
+				return fmt.Errorf("invalid regex pattern: %v", err)
+			}
+		}
+	}
+	return nil
+}

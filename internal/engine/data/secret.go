@@ -38,3 +38,10 @@ func (s *Secret) Execute(n *models.Node, ctx *models.ExecutionContext) (string, 
 
 	return string(jsonData), nil
 }
+
+func (s *Secret) Validate(n *models.Node) error {
+	if len(n.Data) == 0 {
+		return fmt.Errorf("data field is required")
+	}
+	return nil
+}

@@ -42,3 +42,19 @@ func (m *Math) Execute(n *models.Node, ctx *models.ExecutionContext) (string, er
 	}
 	return "MATH_PASSED", nil
 }
+
+func (m *Math) Validate(n *models.Node) error {
+	if _, ok := n.Input["left"]; !ok {
+		return fmt.Errorf("input.left is required")
+	}
+	if _, ok := n.Input["right"]; !ok {
+		return fmt.Errorf("input.right is required")
+	}
+	op := n.Config["operator"]
+	switch op {
+	case ">", "<", "==", ">=", "<=", "!=":
+		return nil
+	default:
+		return fmt.Errorf("invalid config.operator: %s", op)
+	}
+}
