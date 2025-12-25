@@ -1,0 +1,68 @@
+name: Find Telegram Chat ID by Username
+description: Find user's Chat ID from Tofi Bot history by their Telegram username
+
+nodes:
+  # 获取所有历史消息
+  get_all_updates:
+    type: api
+    config:
+      method: "GET"
+      url: "https://api.telegram.org/bot${TOFI_TELEGRAM_BOT_TOKEN}/getUpdates?limit=100"
+    next: ["find_by_username"]
+
+  # 根据 username 查找 Chat ID
+  find_by_username:
+    type: shell
+    input:
+      script: |
+        # 移除 @ 符号（如果用户输入了）
+        USERNAME=$(echo "$SEARCH_USERNAME" | sed 's/^@//')
+
+        echo "Searching for username: @$USERNAME"
+        echo ""
+
+        # 从历史消息中查找匹配的 Chat ID
+        RESULT=$(echo "$UPDATES" | jq -r --arg user "$USERNAME" '
+          .result[] |
+          select(.message.from.username == $user) |
+          {
+            chat_id: .message.chat.id,
+            username: .message.from.username,
+            first_name: .message.from.first_name,
+            chat_type: .message.chat.type
+          } | @json
+        ' | head -1)
+
+        if [ -n "$RESULT" ]; then
+          CHAT_ID=$(echo "$RESULT" | jq -r '.chat_id')
+          FIRST_NAME=$(echo "$RESULT" | jq -r '.first_name')
+          CHAT_TYPE=$(echo "$RESULT" | jq -r '.chat_type')
+
+          echo "✅ Found!"
+          echo "Chat ID: $CHAT_ID"
+          echo "Name: $FIRST_NAME"
+          echo "Type: $CHAT_TYPE"
+          echo ""
+          echo "Use this in your workflow:"
+          echo "chat_id: \"$CHAT_ID\""
+
+          # 返回 Chat ID
+          echo "$CHAT_ID"
+        else
+          echo "❌ Username '@$USERNAME' not found in bot history."
+          echo ""
+          echo "Possible reasons:"
+          echo "1. User hasn't messaged the Tofi Bot yet"
+          echo "2. Username is incorrect"
+          echo "3. User's messages were cleared from history"
+          echo ""
+          echo "Ask the user to:"
+          echo "1. Search for Tofi Bot in Telegram"
+          echo "2. Send /start or any message"
+          echo "3. Try this search again"
+          exit 1
+        fi
+    env:
+      UPDATES: "{{get_all_updates}}"
+      SEARCH_USERNAME: "{{inputs.username}}"
+    dependencies: ["get_all_updates"]

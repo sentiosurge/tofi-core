@@ -1,0 +1,13 @@
+name: Webhook Notification
+description: 通用 Webhook 通知,支持自定义 URL 和 payload
+
+nodes:
+  send_webhook:
+    type: api
+    config:
+      method: "{{inputs.method}}"
+      url: "{{inputs.url}}"
+    input:
+      headers:
+        Content-Type: "application/json"
+      body: "{{inputs.payload}}"

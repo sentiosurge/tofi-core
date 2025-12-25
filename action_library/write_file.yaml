@@ -1,0 +1,31 @@
+name: Write File
+description: Write content to a file (creates parent directories if needed)
+
+nodes:
+  write:
+    type: shell
+    input:
+      script: |
+        # Create parent directory if it doesn't exist
+        DIR=$(dirname "$FILE_PATH")
+        if [ ! -d "$DIR" ]; then
+          mkdir -p "$DIR" || {
+            echo "Error: Cannot create directory - $DIR"
+            exit 1
+          }
+        fi
+
+        # Write content to file
+        cat > "$FILE_PATH" << 'CONTENTEOF'
+        $CONTENT
+        CONTENTEOF
+
+        if [ "$?" -eq 0 ]; then
+          echo "File written successfully: $FILE_PATH"
+        else
+          echo "Error: Cannot write file - $FILE_PATH"
+          exit 1
+        fi
+    env:
+      FILE_PATH: "{{inputs.path}}"
+      CONTENT: "{{inputs.content}}"

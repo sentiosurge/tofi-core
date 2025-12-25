@@ -1,0 +1,33 @@
+name: Get Telegram Chat ID
+description: Helper action to retrieve your Telegram Chat ID
+
+nodes:
+  get_updates:
+    type: api
+    config:
+      method: "GET"
+      url: "https://api.telegram.org/bot{{inputs.bot_token}}/getUpdates"
+    next: ["parse_chat_ids"]
+
+  parse_chat_ids:
+    type: shell
+    input:
+      script: |
+        # 从 API 响应中提取 Chat ID
+        echo "$RESPONSE" | jq -r '.result[].message.chat | "\(.id) (\(.type)) - \(.first_name // .title // "Unknown")"' 2>/dev/null | sort -u || {
+          # 如果没有找到消息
+          if echo "$RESPONSE" | grep -q '"result":\[\]'; then
+            echo "No messages found. Please:"
+            echo "1. Open Telegram and search for your bot"
+            echo "2. Send /start or any message to your bot"
+            echo "3. Run this action again"
+          else
+            # 显示原始响应以便调试
+            echo "Error parsing response:"
+            echo "$RESPONSE"
+          fi
+          exit 1
+        }
+    env:
+      RESPONSE: "{{get_updates}}"
+    dependencies: ["get_updates"]

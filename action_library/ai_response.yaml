@@ -1,0 +1,48 @@
+name: AI Response
+description: 使用 OpenAI API 生成 AI 响应 (使用 Tofi 官方 Token,支持 GPT-5.1)
+
+nodes:
+  # 获取 Tofi 官方 API Key
+  get_api_key:
+    type: secret
+    data:
+      api_key: "${TOFI_OPENAI_API_KEY}"
+    next: ["get_model", "get_system_prompt"]
+
+  # 获取模型名称 (带默认值)
+  get_model:
+    type: shell
+    input:
+      script: echo "${INPUT_MODEL:-gpt-5.1}"
+    env:
+      INPUT_MODEL: "{{inputs.model}}"
+    dependencies: ["get_api_key"]
+    next: ["generate_response"]
+
+  # 获取系统提示 (带默认值)
+  get_system_prompt:
+    type: shell
+    input:
+      script: |
+        if [ -z "$INPUT_SYSTEM" ]; then
+          echo "你是一个专业的 AI 助手。请根据用户的问题提供准确、有帮助的回答。"
+        else
+          echo "$INPUT_SYSTEM"
+        fi
+    env:
+      INPUT_SYSTEM: "{{inputs.system_prompt}}"
+    dependencies: ["get_api_key"]
+    next: ["generate_response"]
+
+  # 生成 AI 响应
+  generate_response:
+    type: ai
+    config:
+      provider: "openai"
+      endpoint: "https://api.openai.com/v1/responses"
+      api_key: "{{get_api_key.api_key}}"
+      model: "{{get_model}}"
+    input:
+      system: "{{get_system_prompt}}"
+      prompt: "{{inputs.prompt}}"
+    dependencies: ["get_model", "get_system_prompt"]

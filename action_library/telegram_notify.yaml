@@ -1,0 +1,105 @@
+name: Telegram Notification
+description: Send messages to Telegram chat via Bot API (supports user bot or Tofi official bot)
+
+nodes:
+  # 获取 Tofi 官方 Bot Token
+  get_tofi_token:
+    type: secret
+    data:
+      tofi_bot_token: "${TOFI_TELEGRAM_BOT_TOKEN}"
+    next: ["determine_token"]
+
+  # 确定使用哪个 Bot Token (用户的或 Tofi 官方的)
+  determine_token:
+    type: shell
+    input:
+      script: |
+        # 优先使用用户提供的 bot_token
+        if [ -n "$USER_BOT_TOKEN" ]; then
+          echo "$USER_BOT_TOKEN"
+        elif [ -n "$TOFI_BOT_TOKEN" ]; then
+          echo "$TOFI_BOT_TOKEN"
+        else
+          echo "Error: No bot token provided. Please provide bot_token or set TOFI_TELEGRAM_BOT_TOKEN"
+          exit 1
+        fi
+    env:
+      USER_BOT_TOKEN: "{{inputs.bot_token}}"
+      TOFI_BOT_TOKEN: "{{get_tofi_token.tofi_bot_token}}"
+    dependencies: ["get_tofi_token"]
+    next: ["check_length"]
+
+  # 检查消息长度并分割
+  check_length:
+    type: shell
+    input:
+      script: |
+        MESSAGE="$INPUT_MESSAGE"
+        LENGTH=${#MESSAGE}
+
+        # Telegram 消息长度限制: 4096 字符
+        if [ "$LENGTH" -le 4096 ]; then
+          # 消息长度正常,直接发送
+          echo "single"
+        else
+          # 消息太长,需要分割
+          echo "split"
+        fi
+    env:
+      INPUT_MESSAGE: "{{inputs.message}}"
+    dependencies: ["determine_token"]
+    next: ["send_single", "split_message"]
+
+  # 发送单条消息 (长度 <= 4096)
+  send_single:
+    type: api
+    config:
+      method: "POST"
+      url: "https://api.telegram.org/bot{{determine_token}}/sendMessage"
+    input:
+      headers:
+        Content-Type: "application/json"
+      body: |
+        {
+          "chat_id": "{{inputs.chat_id}}",
+          "text": "{{inputs.message}}",
+          "parse_mode": "{{inputs.parse_mode}}"
+        }
+    dependencies: ["check_length"]
+    run_if: "'{{check_length}}' == 'single'"
+
+  # 分割长消息
+  split_message:
+    type: shell
+    input:
+      script: |
+        MESSAGE="$INPUT_MESSAGE"
+        CHAT_ID="$CHAT_ID"
+        TOKEN="$BOT_TOKEN"
+        PARSE_MODE="$PARSE_MODE"
+
+        # 分割消息为 4000 字符的块 (留 96 字符余量)
+        CHUNK_SIZE=4000
+        LENGTH=${#MESSAGE}
+        PART=1
+
+        for ((i=0; i<LENGTH; i+=CHUNK_SIZE)); do
+          CHUNK="${MESSAGE:i:CHUNK_SIZE}"
+
+          # 发送分块
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\":\"${CHAT_ID}\",\"text\":\"📄 第 ${PART} 部分:\n\n${CHUNK}\",\"parse_mode\":\"${PARSE_MODE}\"}" > /dev/null
+
+          PART=$((PART + 1))
+          sleep 0.5  # 避免触发速率限制
+        done
+
+        echo "已发送 $((PART - 1)) 条分割消息"
+    env:
+      INPUT_MESSAGE: "{{inputs.message}}"
+      CHAT_ID: "{{inputs.chat_id}}"
+      BOT_TOKEN: "{{determine_token}}"
+      PARSE_MODE: "{{inputs.parse_mode}}"
+    dependencies: ["check_length"]
+    run_if: "'{{check_length}}' == 'split'"

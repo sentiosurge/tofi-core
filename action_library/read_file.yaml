@@ -1,0 +1,27 @@
+name: Read File
+description: 读取文本文件内容,支持各种文本格式
+
+nodes:
+  read:
+    type: shell
+    input:
+      script: |
+        # 检查文件是否存在
+        if [ ! -f "$FILE_PATH" ]; then
+          echo "Error: File not found - $FILE_PATH"
+          exit 1
+        fi
+
+        # 检查文件是否可读
+        if [ ! -r "$FILE_PATH" ]; then
+          echo "Error: Cannot read file - $FILE_PATH (permission denied)"
+          exit 1
+        fi
+
+        # 读取文件 (允许所有文件类型)
+        cat "$FILE_PATH" 2>&1 || {
+          echo "Error: Cannot read file - $FILE_PATH"
+          exit 1
+        }
+    env:
+      FILE_PATH: "{{inputs.path}}"
