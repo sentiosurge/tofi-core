@@ -1,0 +1,90 @@
+name: Comprehensive Test Workflow
+nodes:
+  secrets:
+    name: Load Secrets
+    type: secret
+    config:
+      openai_key: "OPENAI_API_KEY"
+    next: ["topic"]
+
+  topic:
+    name: Topic
+    type: var
+    value: "Future of AI"
+    next: ["limit"]
+
+  limit:
+    name: Limit
+    type: var
+    value: 3
+    next: ["check.validity"]
+
+  check.validity:
+    name: Check Validity
+    type: check
+    input:
+      - var:
+          id: text_val
+          value: "{{topic}}"
+    config:
+      mode: "exists"
+      value: "{{text_val}}"
+    next: ["calc.threshold"]
+
+  calc.threshold:
+    name: Calc Threshold
+    type: math
+    input:
+      - var:
+          id: count
+          value: "{{limit}}"
+      - var:
+          id: min_val
+          value: 1
+    config:
+      operator: ">="
+      left: "{{count}}"
+      right: "{{min_val}}"
+    next: ["ai.generate"]
+
+  ai.generate:
+    name: AI Generate
+    type: ai
+    input:
+      - var:
+          id: prompt_text
+          value: "Write a 1-sentence slogan about {{topic}}"
+    config:
+      provider: "openai"
+      endpoint: "https://api.openai.com/v1/chat/completions"
+      model: "gpt-3.5-turbo"
+      api_key: "{{secrets.openai_key}}"
+      prompt: "{{prompt_text}}"
+    next: ["loop.print"]
+
+  loop.print:
+    name: Loop Print
+    type: loop
+    input:
+      - var:
+          id: loop_end
+          value: "{{limit}}"
+    config:
+      mode: "range"
+      start: 1
+      end: "{{loop_end}}"
+      iterator: "i"
+      task:
+        type: shell
+        input:
+          - var:
+              id: current_idx
+              value: '\{{i}}' # 使用单引号避免 YAML 转义问题
+          - var:
+              id: slogan
+              value: '\{{ai.generate}}'
+        config:
+          script: 'echo "Run #$IDX: $SLOGAN"'
+          env:
+            IDX: '\{{current_idx}}'
+            SLOGAN: '\{{slogan}}'

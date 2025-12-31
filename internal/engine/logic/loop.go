@@ -166,7 +166,7 @@ func (l *Loop) executeLoop(
 				l.recordError(&mu, &results, &firstError, i, err, failFast)
 				return
 			}
-			resolvedConfig, err := models.ResolveConfig(mockNode.Config, localCtx)
+			resolvedConfig, err := models.ResolveConfig(mockNode.Config, localCtx, childCtx)
 			if err != nil {
 				l.recordError(&mu, &results, &firstError, i, err, failFast)
 				return

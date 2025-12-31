@@ -42,12 +42,12 @@ func ResolveLocalContext(node *Node, ctx *ExecutionContext) (map[string]interfac
 }
 
 // ResolveConfig 执行第二阶段解析：Local Context -> Config
-// 它遍历 Node.Config，将其中的 {{local_id}} 替换为 LocalContext 中的值
-func ResolveConfig(config map[string]interface{}, localContext map[string]interface{}) (map[string]interface{}, error) {
+// 它遍历 Node.Config，先尝试替换 LocalContext 变量，如果未解析完，再尝试替换 Global Context (ExecutionContext)
+func ResolveConfig(config map[string]interface{}, localContext map[string]interface{}, ctx *ExecutionContext) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 
 	for k, v := range config {
-		resolved, err := resolveLocalTemplate(v, localContext)
+		resolved, err := resolveLocalTemplate(v, localContext, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("config field '%s' resolution failed: %v", k, err)
 		}
@@ -95,14 +95,14 @@ func resolveValueRecursive(val interface{}, ctx *ExecutionContext) (interface{},
 }
 
 // resolveLocalTemplate 局部解析逻辑 (用于 Config 引用 Input)
-func resolveLocalTemplate(val interface{}, localContext map[string]interface{}) (interface{}, error) {
+func resolveLocalTemplate(val interface{}, localContext map[string]interface{}, ctx *ExecutionContext) (interface{}, error) {
 	switch v := val.(type) {
 	case string:
-		return resolveLocalString(v, localContext)
+		return resolveLocalString(v, localContext, ctx)
 	case map[string]interface{}:
 		res := make(map[string]interface{})
 		for k, sub := range v {
-			r, err := resolveLocalTemplate(sub, localContext)
+			r, err := resolveLocalTemplate(sub, localContext, ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -112,7 +112,7 @@ func resolveLocalTemplate(val interface{}, localContext map[string]interface{}) 
 	case []interface{}:
 		res := make([]interface{}, len(v))
 		for i, sub := range v {
-			r, err := resolveLocalTemplate(sub, localContext)
+			r, err := resolveLocalTemplate(sub, localContext, ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -124,7 +124,7 @@ func resolveLocalTemplate(val interface{}, localContext map[string]interface{}) 
 	}
 }
 
-func resolveLocalString(s string, localContext map[string]interface{}) (interface{}, error) {
+func resolveLocalString(s string, localContext map[string]interface{}, ctx *ExecutionContext) (interface{}, error) {
 	// 如果不包含模版语法，直接返回
 	if !strings.Contains(s, "{{") {
 		return s, nil
@@ -134,9 +134,9 @@ func resolveLocalString(s string, localContext map[string]interface{}) (interfac
 	const escapedPlaceholder = "__ESCAPED_BRACES__"
 	result := strings.ReplaceAll(s, "\\{{", escapedPlaceholder)
 
-	// 简单的局部变量替换实现 (处理 {{id}} 或 {{id.path}})
+	// 1. 局部变量优先替换
 	for id, value := range localContext {
-		// 1. 基础替换 {{id}}
+		// 1.1 基础替换 {{id}}
 		placeholder := "{{" + id + "}}"
 		if strings.Contains(result, placeholder) {
 			// 如果值是复杂类型且整个字符串就是一个占位符，直接返回该对象（保持类型）
@@ -146,7 +146,7 @@ func resolveLocalString(s string, localContext map[string]interface{}) (interfac
 			result = strings.ReplaceAll(result, placeholder, fmt.Sprint(value))
 		}
 
-		// 2. JSON 路径替换 {{id.path}}
+		// 1.2 JSON 路径替换 {{id.path}}
 		prefix := "{{" + id + "."
 		if strings.Contains(result, prefix) {
 			// 如果 value 是对象，使用 gjson 提取
@@ -159,6 +159,9 @@ func resolveLocalString(s string, localContext map[string]interface{}) (interfac
 
 				gv := gjson.Get(string(jsonStr), jsonPath)
 				if !gv.Exists() {
+					// 局部变量里有这个前缀，但路径不对，可能是用户写错了
+					// 但也有可能这个前缀恰好也是一个全局变量名？(概率较低，这里倾向于报错或忽略)
+					// 为了安全，如果匹配到局部变量ID，应视为局部变量解析失败
 					return nil, fmt.Errorf("local variable '%s' does not have path '%s'", id, jsonPath)
 				}
 
@@ -171,10 +174,19 @@ func resolveLocalString(s string, localContext map[string]interface{}) (interfac
 		}
 	}
 
+	// 2. 如果还有未解析的 {{}}，尝试全局替换
+	// 注意：我们必须先处理完局部变量，再处理全局，以支持局部变量遮盖全局变量（Shadowing）
+	if strings.Contains(result, "{{") && ctx != nil {
+		var err error
+		result, err = ctx.ReplaceParamsStrict(result)
+		if err != nil {
+			return nil, fmt.Errorf("resolution failed: %v", err)
+		}
+	}
+
 	// 检查是否还有未解析的 {{}}
-	// 注意：这里的检查必须在恢复转义字符之前！
 	if strings.Contains(result, "{{") {
-		return nil, fmt.Errorf("unresolved local variable in template: %s", result)
+		return nil, fmt.Errorf("unresolved variable in template: %s", result)
 	}
 
 	// 恢复转义字符

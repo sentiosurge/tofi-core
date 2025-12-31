@@ -288,7 +288,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 		}
 
 		// 第二阶段：Local Context -> Config
-		resolvedConfig, err = models.ResolveConfig(node.Config, localContext)
+		resolvedConfig, err = models.ResolveConfig(node.Config, localContext, ctx)
 		if err != nil {
 			log.Printf("%s[%s] [ERROR]   [%s] Config 解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
 			ctx.SetResult(nodeID, fmt.Sprintf("ERR_PROPAGATION: Config resolution failed: %v", err))
