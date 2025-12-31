@@ -1,0 +1,19 @@
+name: Echo Bot
+description: 发送内容到指定的 Telegram 会话
+
+# 声明契约：需要 content 变量和 chatid 密钥
+variables:
+  content: "Hello from Tofi!"
+
+secrets:
+  chatid: env.TELEGRAM_CHAT_ID
+
+nodes:
+  send_to_tg:
+    name: Send Telegram
+    type: workflow
+    config:
+      # 嫁接调用官方 Toolbox 组件
+      workflow: "tofi/telegram_notify"
+      message: "This message is from tofi-learns-to-code/echo-bot.\n{{content}}"
+      chat_id: secrets.chatid

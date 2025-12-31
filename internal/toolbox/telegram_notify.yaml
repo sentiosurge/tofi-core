@@ -1,18 +1,19 @@
 name: Telegram Notify
 description: 向 Telegram Bot 发送消息
 
-nodes:
-  secrets:
-    type: secret
-    config:
-      bot_token: "env.TELEGRAM_BOT_TOKEN"
-    next: ["send"]
+variables:
+  chat_id: ""
+  message: ""
 
+secrets:
+  bot_token: "env.TELEGRAM_BOT_TOKEN"
+
+nodes:
   send:
     type: api
     config:
       method: "POST"
       url: "https://api.telegram.org/bot{{secrets.bot_token}}/sendMessage"
       body:
-        chat_id: "inputs.chat_id"
-        text: "inputs.message"
+        chat_id: chat_id
+        text: message
