@@ -1,50 +1,35 @@
 name: Send Email
-description: Send email via SMTP (supports Gmail, Outlook, custom SMTP)
+description: 通过 SMTP 发送邮件
 
 nodes:
+  secrets:
+    type: secret
+    config:
+      smtp_user: "env.SMTP_USERNAME"
+      smtp_pass: "env.SMTP_PASSWORD"
+    next: ["send"]
+
   send:
     type: shell
-    input:
+    config:
+      # 这里我们假设系统安装了 swaks 或类似工具，或者通过 Python 脚本实现
+      # 为了 Solid，我们这里先写一个 Python 逻辑封装
       script: |
-        # Create email body file
-        cat > /tmp/email_body_$$.txt << 'EMAILEOF'
-        From: $FROM_EMAIL
-        To: $TO_EMAIL
-        Subject: $SUBJECT
-
-        $BODY
-        EMAILEOF
-
-        # Send email using curl (supports SMTP)
-        if [ -n "$SMTP_PASSWORD" ]; then
-          curl --url "smtp://$SMTP_SERVER:$SMTP_PORT" \
-            --ssl-reqd \
-            --mail-from "$FROM_EMAIL" \
-            --mail-rcpt "$TO_EMAIL" \
-            --user "$SMTP_USERNAME:$SMTP_PASSWORD" \
-            --upload-file /tmp/email_body_$$.txt
-
-          # Check result and clean up
-          RESULT=$?
-          rm -f /tmp/email_body_$$.txt
-
-          if [ "$RESULT" -eq 0 ]; then
-            echo "Email sent successfully to $TO_EMAIL"
-          else
-            echo "Error: Failed to send email"
-            exit 1
-          fi
-        else
-          echo "Error: SMTP password not provided"
-          rm -f /tmp/email_body_$$.txt
-          exit 1
-        fi
-    env:
-      SMTP_SERVER: "{{inputs.smtp_server}}"
-      SMTP_PORT: "{{inputs.smtp_port}}"
-      SMTP_USERNAME: "{{inputs.smtp_username}}"
-      SMTP_PASSWORD: "{{inputs.smtp_password}}"
-      FROM_EMAIL: "{{inputs.from}}"
-      TO_EMAIL: "{{inputs.to}}"
-      SUBJECT: "{{inputs.subject}}"
-      BODY: "{{inputs.body}}"
+        python3 -c "
+        import smtplib
+        from email.mime.text import MIMEText
+        server = smtplib.SMTP('{{inputs.smtp_server}}', {{inputs.smtp_port}})
+        server.starttls()
+        server.login('$USER', '$PASS')
+        msg = MIMEText('$BODY')
+        msg['Subject'] = '$SUBJECT'
+        msg['From'] = '$USER'
+        msg['To'] = '{{inputs.to}}'
+        server.send_message(msg)
+        server.quit()
+        "
+      env:
+        USER: "secrets.smtp_user"
+        PASS: "secrets.smtp_pass"
+        SUBJECT: "inputs.subject"
+        BODY: "inputs.body"

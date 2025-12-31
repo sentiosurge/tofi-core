@@ -1,20 +1,21 @@
 name: GitHub Create Issue
-description: Create a new issue in a GitHub repository
+description: 在指定仓库创建 GitHub Issue
 
 nodes:
-  create:
+  secrets:
+    type: secret
+    config:
+      github_token: "env.GITHUB_TOKEN"
+    next: ["create_issue"]
+
+  create_issue:
     type: api
     config:
       method: "POST"
-      url: "https://api.github.com/repos/{{inputs.owner}}/{{inputs.repo}}/issues"
-    input:
+      url: "https://api.github.com/repos/{{inputs.repo}}/issues"
       headers:
+        Authorization: "Bearer {{secrets.github_token}}"
         Accept: "application/vnd.github+json"
-        Authorization: "Bearer {{inputs.github_token}}"
-        X-GitHub-Api-Version: "2022-11-28"
-      body: |
-        {
-          "title": "{{inputs.title}}",
-          "body": "{{inputs.body}}",
-          "labels": {{inputs.labels}}
-        }
+      body:
+        title: "inputs.title"
+        body: "inputs.body"

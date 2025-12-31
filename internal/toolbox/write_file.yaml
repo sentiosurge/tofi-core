@@ -1,57 +1,11 @@
 name: Write File
-description: Write content to a file in .tofi/artifacts directory (relative paths only)
+description: 将内容写入产物文件
 
 nodes:
-  validate_path:
-    type: shell
-    input:
-      script: |
-        # 🔒 安全检查：只允许相对路径，禁止绝对路径和路径遍历
-        case "$INPUT_PATH" in
-          /*)
-            echo "Error: 绝对路径被禁止。请使用相对路径（如: report.txt 或 data/output.json）"
-            exit 1
-            ;;
-          *..*)
-            echo "Error: 路径中不允许包含 '..'（路径遍历攻击）"
-            exit 1
-            ;;
-          ~*)
-            echo "Error: 不允许使用 ~ 符号"
-            exit 1
-            ;;
-        esac
-
-        # 构建完整路径：.tofi/artifacts/{用户路径}
-        FULL_PATH=".tofi/artifacts/$INPUT_PATH"
-        echo "$FULL_PATH"
-    env:
-      INPUT_PATH: "{{inputs.path}}"
-    next: ["write"]
-
   write:
     type: shell
-    input:
-      script: |
-        # 创建父目录（如果不存在）
-        DIR=$(dirname "$FILE_PATH")
-        if [ ! -d "$DIR" ]; then
-          mkdir -p "$DIR" || {
-            echo "Error: 无法创建目录 - $DIR"
-            exit 1
-          }
-        fi
-
-        # 写入文件内容（使用 printf 安全处理特殊字符）
-        printf '%s' "$CONTENT" > "$FILE_PATH"
-
-        if [ "$?" -eq 0 ]; then
-          echo "✓ 文件写入成功: $FILE_PATH"
-        else
-          echo "Error: 无法写入文件 - $FILE_PATH"
-          exit 1
-        fi
-    env:
-      FILE_PATH: "{{validate_path}}"
-      CONTENT: "{{inputs.content}}"
-    dependencies: ["validate_path"]
+    config:
+      # 默认写入产物目录
+      script: 'echo "$CONTENT" > "$TOFI_ARTIFACTS_DIR/{{inputs.filename}}"'
+      env:
+        CONTENT: "inputs.content"
