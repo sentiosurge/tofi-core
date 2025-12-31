@@ -7,7 +7,7 @@ data:
     - "eu-west-1"
 
 secrets:
-  openai_key: "env.OPENAI_API_KEY"
+  openai_key: "{{env.OPENAI_API_KEY}}"
 
 nodes:
   check.validity:

@@ -6,7 +6,7 @@ data:
   status: "All Green"
 
 secrets:
-  target_chat_id: "env.TELEGRAM_CHAT_ID"
+  target_chat_id: "{{env.TELEGRAM_CHAT_ID}}"
 
 nodes:
   # 第一步：准备要发送的内容

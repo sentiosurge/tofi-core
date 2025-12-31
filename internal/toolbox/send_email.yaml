@@ -5,8 +5,8 @@ nodes:
   secrets:
     type: secret
     config:
-      smtp_user: "env.SMTP_USERNAME"
-      smtp_pass: "env.SMTP_PASSWORD"
+      smtp_user: "{{env.SMTP_USERNAME}}"
+      smtp_pass: "{{env.SMTP_PASSWORD}}"
     next: ["send"]
 
   send:

@@ -34,29 +34,13 @@ func (s *Secret) Execute(config map[string]interface{}, ctx *models.ExecutionCon
 
 
 		// 解析 Value 格式
-
-		// 1. env.VAR_NAME
-
-		// 2. {{env.VAR_NAME}}
-
-		// 3. Literal String (Direct Value)
-
-		if len(strVal) > 4 && strVal[:4] == "env." {
-
-			envVarName := strVal[4:]
-
-			realValue = os.Getenv(envVarName)
-
-		} else if len(strVal) > 7 && strVal[:6] == "{{env." && strVal[len(strVal)-2:] == "}}" {
-
+		// 1. {{env.VAR_NAME}}
+		// 2. Literal String (Direct Value)
+		if len(strVal) > 7 && strVal[:6] == "{{env." && strVal[len(strVal)-2:] == "}}" {
 			envVarName := strVal[6 : len(strVal)-2]
-
 			realValue = os.Getenv(envVarName)
-
 		} else {
-
 			realValue = strVal
-
 		}
 
 

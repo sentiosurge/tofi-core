@@ -431,9 +431,7 @@ func InitializeGlobals(wf *models.Workflow, ctx *models.ExecutionContext, inputs
 				realValue = override
 			} else {
 				// 2.2 按照声明的 source 加载
-				if len(source) > 4 && source[:4] == "env." {
-					realValue = os.Getenv(source[4:])
-				} else if len(source) > 7 && source[:6] == "{{env." && source[len(source)-2:] == "}}" {
+				if len(source) > 7 && source[:6] == "{{env." && source[len(source)-2:] == "}}" {
 					realValue = os.Getenv(source[6 : len(source)-2])
 				} else {
 					realValue = source

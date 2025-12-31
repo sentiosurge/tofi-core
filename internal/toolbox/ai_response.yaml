@@ -6,7 +6,7 @@ data:
   system: "You are a helpful assistant."
 
 secrets:
-  api_key: "env.TOFI_OPENAI_API_KEY"
+  api_key: "{{env.TOFI_OPENAI_API_KEY}}"
 
 nodes:
   generate_response:
