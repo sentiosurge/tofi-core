@@ -1,34 +1,25 @@
 name: Comprehensive Test Workflow
+variables:
+  topic: "Future of AI"
+  limit: 3
+  regions:
+    - "us-east-1"
+    - "eu-west-1"
+
+secrets:
+  openai_key: "env.OPENAI_API_KEY"
+
 nodes:
-  secrets:
-    name: Load Secrets
-    type: secret
-    config:
-      openai_key: "env.OPENAI_API_KEY"
-    next: ["topic"]
-
-  topic:
-    name: Topic
-    type: var
-    value: "Future of AI"
-    next: ["limit"]
-
-  limit:
-    name: Limit
-    type: var
-    value: 3
-    next: ["check.validity"]
-
   check.validity:
     name: Check Validity
     type: check
     input:
       - var:
           id: text_val
-          value: "{{topic}}"
+          value: topic # 使用隐式引用
     config:
       mode: "exists"
-      value: "{{text_val}}"
+      value: text_val # 使用隐式引用
     next: ["calc.threshold"]
 
   calc.threshold:
@@ -37,14 +28,14 @@ nodes:
     input:
       - var:
           id: count
-          value: "{{limit}}"
+          value: limit # 使用隐式引用
       - var:
           id: min_val
           value: 1
     config:
       operator: ">="
-      left: "{{count}}"
-      right: "{{min_val}}"
+      left: count # 使用隐式引用
+      right: min_val # 使用隐式引用
     next: ["ai.generate"]
 
   ai.generate:
@@ -53,13 +44,13 @@ nodes:
     input:
       - var:
           id: prompt_text
-          value: "Write a 1-sentence slogan about {{topic}}"
+          value: "Write a 1-sentence slogan about {{topic}} (Region: {{regions.0}})"
     config:
       provider: "openai"
       endpoint: "https://api.openai.com/v1/chat/completions"
       model: "gpt-3.5-turbo"
-      api_key: "{{secrets.openai_key}}"
-      prompt: "{{prompt_text}}"
+      api_key: "secrets.openai_key" # 使用隐式命名空间引用
+      prompt: prompt_text
     next: ["loop.print"]
 
   loop.print:
@@ -68,23 +59,23 @@ nodes:
     input:
       - var:
           id: loop_end
-          value: "{{limit}}"
+          value: limit
     config:
       mode: "range"
       start: 1
-      end: "{{loop_end}}"
+      end: loop_end
       iterator: "i"
       task:
         type: shell
         input:
           - var:
               id: current_idx
-              value: '\{{i}}' # 使用单引号避免 YAML 转义问题
+              value: '\{{i}}'
           - var:
               id: slogan
-              value: '\{{ai.generate}}'
+              value: ai.generate
         config:
           script: 'echo "Run #$IDX: $SLOGAN"'
           env:
-            IDX: '\{{current_idx}}'
-            SLOGAN: '\{{slogan}}'
+            IDX: current_idx
+            SLOGAN: slogan

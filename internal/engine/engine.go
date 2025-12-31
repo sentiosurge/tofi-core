@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 	"tofi-core/internal/engine/base"
@@ -386,8 +388,54 @@ func isFailureBranch(wf *models.Workflow, targetID string) bool {
 	return false
 }
 
+// InitializeGlobals 解析顶层的 variables 和 secrets 并注入 Context
+func InitializeGlobals(wf *models.Workflow, ctx *models.ExecutionContext) {
+	// 1. 处理 Variables (扁平化注入)
+	for k, v := range wf.Variables {
+		var valStr string
+		switch val := v.(type) {
+		case string:
+			valStr = val
+		case int, int64, float64, bool:
+			valStr = fmt.Sprint(val)
+		default:
+			// 列表或字典，转为 JSON 字符串
+			jb, _ := json.Marshal(val)
+			valStr = string(jb)
+		}
+		ctx.SetResult(k, valStr)
+	}
+
+	// 2. 处理 Secrets (聚合到 secrets 命名空间)
+	if len(wf.Secrets) > 0 {
+		secretsMap := make(map[string]string)
+		for k, v := range wf.Secrets {
+			var realValue string
+			// 复用 secret 节点的解析逻辑
+			if len(v) > 4 && v[:4] == "env." {
+				realValue = os.Getenv(v[4:])
+			} else if len(v) > 7 && v[:6] == "{{env." && v[len(v)-2:] == "}}" {
+				realValue = os.Getenv(v[6 : len(v)-2])
+			} else {
+				realValue = v
+			}
+
+			secretsMap[k] = realValue
+			if realValue != "" {
+				ctx.AddSecretValue(realValue)
+			}
+		}
+		// 序列化并存入名为 "secrets" 的虚拟节点结果中
+		jb, _ := json.Marshal(secretsMap)
+		ctx.SetResult("secrets", string(jb))
+	}
+}
+
 // Start 封装了工作流的合法起点启动逻辑
 func Start(wf *models.Workflow, ctx *models.ExecutionContext) {
+	// 0. 预加载全局数据
+	InitializeGlobals(wf, ctx)
+
 	for id, node := range wf.Nodes {
 		// 只有 0 依赖，且不是任何节点的“失败分支”，才是合法的起点
 		if len(node.Dependencies) == 0 && !isFailureBranch(wf, id) {

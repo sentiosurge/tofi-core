@@ -61,6 +61,13 @@ func ResolveConfig(config map[string]interface{}, localContext map[string]interf
 func resolveValueRecursive(val interface{}, ctx *ExecutionContext) (interface{}, error) {
 	switch v := val.(type) {
 	case string:
+		// 尝试隐式解析 (Global Context Only)
+		if !strings.Contains(v, "{{") {
+			if val, found := tryResolveImplicit(v, nil, ctx); found {
+				return val, nil
+			}
+		}
+
 		// 展开环境变量 ${VAR}
 		expanded := expandEnvVars(v)
 		// 替换全局变量 {{node_id}}
