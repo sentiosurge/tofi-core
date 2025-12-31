@@ -122,6 +122,7 @@ type ExecutionContext struct {
 	SecretValues []string
 	Logger       *log.Logger // 每个执行专属的 Logger
 	logFile      *os.File    // 用于后续关闭文件句柄
+	Depth        int         // 递归深度 (防止死循环)
 }
 
 func NewExecutionContext(execID, homeDir string) *ExecutionContext {
@@ -140,6 +141,7 @@ func NewExecutionContext(execID, homeDir string) *ExecutionContext {
 		startedNodes: make(map[string]bool),
 		Stats:        []NodeStat{},
 		Logger:       log.Default(), // 默认使用标准日志
+		Depth:        0,             // 默认初始深度为 0
 	}
 }
 
@@ -335,6 +337,7 @@ func (ctx *ExecutionContext) Clone() *ExecutionContext {
 		Stats:        []NodeStat{},
 		SecretValues: make([]string, len(ctx.SecretValues)),
 		Logger:       ctx.Logger,
+		Depth:        ctx.Depth,
 	}
 
 	for k, v := range ctx.Results {
@@ -368,6 +371,7 @@ func (ctx *ExecutionContext) Derive(subID string) *ExecutionContext {
 		Stats:        []NodeStat{},
 		SecretValues: make([]string, len(ctx.SecretValues)),
 		Logger:       ctx.Logger, // 默认继承
+		Depth:        ctx.Depth,  // 深度不变，因为 Loop 同级
 	}
 
 	// 继承结果
