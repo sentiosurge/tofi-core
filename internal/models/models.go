@@ -44,6 +44,7 @@ type Node struct {
 	ID           string                 `json:"id" yaml:"id"`
 	Name         string                 `json:"name" yaml:"name"` // 新增：人类可读名称
 	Type         string                 `json:"type" yaml:"type"`
+	Value        interface{}            `json:"value,omitempty" yaml:"value,omitempty"`
 	Config       map[string]interface{} `json:"config" yaml:"config"` // 修改为 interface{} 以支持数字/布尔字面量
 	Input        []Parameter            `json:"input" yaml:"input"`   // 修改为 Parameter 列表
 	Env          map[string]string      `json:"env" yaml:"env"`

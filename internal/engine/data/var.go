@@ -36,8 +36,8 @@ func (v *Var) Execute(config map[string]interface{}, ctx *models.ExecutionContex
 
 func (v *Var) Validate(n *models.Node) error {
 	// 如果既没有 value 也没有其他声明，报错
-	if len(n.Config) == 0 && len(n.Input) == 0 {
-		return fmt.Errorf("var node requires either config.value or input declarations")
+	if n.Value == nil && len(n.Config) == 0 && len(n.Input) == 0 {
+		return fmt.Errorf("var node requires either value, config.value or input declarations")
 	}
 	return nil
 }

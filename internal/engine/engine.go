@@ -256,11 +256,22 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 
 	if node.Type == "var" || node.Type == "const" {
 		// Var 节点特殊处理：直接对 Config 进行全局变量替换
-		resolvedVal := ctx.ReplaceParamsAny(node.Config)
+		// 构造临时 Config 以包含 Value 字段
+		effectiveConfig := make(map[string]interface{})
+		if node.Config != nil {
+			for k, v := range node.Config {
+				effectiveConfig[k] = v
+			}
+		}
+		if node.Value != nil {
+			effectiveConfig["value"] = node.Value
+		}
+
+		resolvedVal := ctx.ReplaceParamsAny(effectiveConfig)
 		if v, ok := resolvedVal.(map[string]interface{}); ok {
 			resolvedConfig = v
 		} else {
-			resolvedConfig = node.Config
+			resolvedConfig = effectiveConfig
 		}
 	} else {
 		// 第一阶段：Global -> Local Context
