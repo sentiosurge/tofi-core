@@ -112,7 +112,7 @@ func runCommand(args []string) {
 	}
 
 	ctx.Log("🐱 Tofi Engine Started (Home: %s)...", *homeDir)
-	engine.Start(wf, ctx)
+	engine.Start(wf, ctx, nil) // CLI 暂时不传初始 inputs
 	ctx.Wg.Wait()
 
 	engine.PrintSummary(ctx)
