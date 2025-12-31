@@ -21,8 +21,15 @@ func (h *Handoff) Execute(config map[string]interface{}, ctx *models.ExecutionCo
 	var childWf *models.Workflow
 	var err error
 
-	actionName := fmt.Sprint(config["action"])
-	filePath := fmt.Sprint(config["file"])
+	var actionName string
+	if v, ok := config["action"]; ok && v != nil {
+		actionName = fmt.Sprint(v)
+	}
+
+	var filePath string
+	if v, ok := config["file"]; ok && v != nil {
+		filePath = fmt.Sprint(v)
+	}
 
 	if actionName != "" {
 		if strings.HasPrefix(actionName, "tofi/") {
