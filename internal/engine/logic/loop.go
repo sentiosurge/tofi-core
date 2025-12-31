@@ -3,6 +3,7 @@ package logic
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,7 +128,14 @@ func (l *Loop) executeLoop(
 				return
 			}
 
-			childCtx := ctx.Clone()
+			// 使用 Derive 创建隔离的子上下文
+			iterationID := fmt.Sprintf("%d", i+1)
+			childCtx := ctx.Derive(iterationID)
+
+			// 确保子产物目录存在
+			os.MkdirAll(childCtx.Paths.Artifacts, 0755)
+			os.MkdirAll(childCtx.Paths.Uploads, 0755)
+
 			var itemValue string
 			switch v := val.(type) {
 			case string:
@@ -144,7 +152,7 @@ func (l *Loop) executeLoop(
 			nodeType := fmt.Sprint(taskTemplate["type"])
 			mockNode := &models.Node{
 				Type: nodeType,
-				ID:   fmt.Sprintf("loop_item_%d", i),
+				ID:   fmt.Sprintf("loop_item_%d", i+1),
 			}
 
 			// 处理 Input Template

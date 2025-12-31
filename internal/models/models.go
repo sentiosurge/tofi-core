@@ -321,17 +321,20 @@ func (ctx *ExecutionContext) Snapshot() (map[string]string, []NodeStat) {
 	return results, stats
 }
 
+// Clone 深度拷贝当前的上下文
 func (ctx *ExecutionContext) Clone() *ExecutionContext {
 	ctx.mu.RLock()
 	defer ctx.mu.RUnlock()
 
 	cloned := &ExecutionContext{
 		ExecutionID:  ctx.ExecutionID,
+		WorkflowName: ctx.WorkflowName,
 		Paths:        ctx.Paths,
 		Results:      make(map[string]string),
 		startedNodes: make(map[string]bool),
 		Stats:        []NodeStat{},
 		SecretValues: make([]string, len(ctx.SecretValues)),
+		Logger:       ctx.Logger,
 	}
 
 	for k, v := range ctx.Results {
@@ -341,4 +344,37 @@ func (ctx *ExecutionContext) Clone() *ExecutionContext {
 	copy(cloned.SecretValues, ctx.SecretValues)
 
 	return cloned
+}
+
+// Derive 创建一个派生的子上下文，用于 Loop 等场景
+// 它会隔离 Artifacts 和 Uploads 目录，并为日志增加前缀
+func (ctx *ExecutionContext) Derive(subID string) *ExecutionContext {
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+
+	newID := ctx.ExecutionID + "/" + subID
+	
+	// 路径偏移：在原有目录下追加子目录
+	newPaths := ctx.Paths
+	newPaths.Artifacts = filepath.Join(ctx.Paths.Artifacts, subID)
+	newPaths.Uploads = filepath.Join(ctx.Paths.Uploads, subID)
+
+	derived := &ExecutionContext{
+		ExecutionID:  newID,
+		WorkflowName: ctx.WorkflowName,
+		Paths:        newPaths,
+		Results:      make(map[string]string),
+		startedNodes: make(map[string]bool),
+		Stats:        []NodeStat{},
+		SecretValues: make([]string, len(ctx.SecretValues)),
+		Logger:       ctx.Logger, // 默认继承
+	}
+
+	// 继承结果
+	for k, v := range ctx.Results {
+		derived.Results[k] = v
+	}
+	copy(derived.SecretValues, ctx.SecretValues)
+
+	return derived
 }
