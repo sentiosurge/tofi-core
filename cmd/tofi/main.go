@@ -11,6 +11,7 @@ import (
 	"tofi-core/internal/engine"
 	"tofi-core/internal/models"
 	"tofi-core/internal/parser"
+	"tofi-core/internal/server"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -129,10 +130,13 @@ func serverCommand(args []string) {
 	
 	serverCmd.Parse(args)
 
-	fmt.Printf("🚀 Starting Tofi Server on port %d...\n", *port)
-	fmt.Printf("📂 Runtime Home: %s\n", *homeDir)
-	fmt.Println("Server implementation coming soon...")
-	
-	// Block forever for now to simulate server
-	select {}
+	cfg := server.Config{
+		Port:    *port,
+		HomeDir: *homeDir,
+	}
+
+	srv := server.NewServer(cfg)
+	if err := srv.Start(); err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
 }
