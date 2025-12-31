@@ -1,0 +1,16 @@
+name: Greet v3
+description: 问候组件 - 版本 3（多语言支持）
+
+data:
+  name: "World"
+  language: "en"
+
+nodes:
+  greet:
+    type: var
+    config:
+      value: |
+        {{data.name}},
+        EN: Hello from v3!
+        CN: 你好，来自 v3！
+        ES: ¡Hola desde v3!

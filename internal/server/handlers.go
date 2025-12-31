@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"tofi-core/internal/crypto"
 	"tofi-core/internal/engine"
 	"tofi-core/internal/models"
 	"tofi-core/internal/parser"
@@ -259,38 +261,208 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		ctx.SetLogger(f)
 	}
 
-	s.registry.Register(execID, ctx)
+	// 提交到工作池
+	job := &WorkflowJob{
+		ExecutionID:   execID,
+		Workflow:      wf,
+		Context:       ctx,
+		InitialInputs: initialInputs,
+		DB:            s.db,
+	}
 
-	go func() {
-		defer s.registry.Unregister(execID)
-		defer ctx.Close()
-
-		defer func() {
-			if r := recover(); r != nil {
-				ctx.Log("PANIC RECOVERED: %v", r)
-			}
-		}()
-
-		ctx.Log("🚀 Execution Started via API")
-		engine.Start(wf, ctx, initialInputs)
-		ctx.Wg.Wait()
-
-		if err := engine.SaveReport(wf, ctx, s.db); err != nil {
-			ctx.Log("Failed to save report to DB: %v", err)
-		} else {
-			ctx.Log("Execution record saved to database")
-		}
-		
-		ctx.Log("🏁 Execution Finished")
-	}()
+	if err := s.workerPool.Submit(job); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to submit job to worker pool: %v", err), http.StatusServiceUnavailable)
+		return
+	}
 
 	resp := RunResponse{
 		ExecutionID: execID,
-		Status:      "started",
-		Message:     "Workflow execution initiated successfully",
+		Status:      "queued",
+		Message:     "Workflow execution queued successfully",
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(resp)
+}
+
+// Secret 管理相关的请求/响应结构
+
+type CreateSecretRequest struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type SecretResponse struct {
+	Name      string `json:"name"`
+	CreatedAt string `json:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	Value     string `json:"value,omitempty"` // 仅在 Get 时返回
+}
+
+type SecretListResponse struct {
+	Secrets []SecretResponse `json:"secrets"`
+}
+
+// handleCreateSecret 创建或更新一个 Secret
+func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 获取用户
+	user := "anonymous"
+	if u, ok := r.Context().Value(UserContextKey).(string); ok {
+		user = u
+	}
+
+	// 解析请求
+	var req CreateSecretRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to parse request: %v", err), http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// 验证参数
+	if req.Name == "" || req.Value == "" {
+		http.Error(w, "Name and value are required", http.StatusBadRequest)
+		return
+	}
+
+	// 加密 Secret
+	encryptedValue, err := crypto.Encrypt(req.Value)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to encrypt secret: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 生成 ID
+	id := uuid.New().String()
+
+	// 保存到数据库
+	if err := s.db.SaveSecret(id, user, req.Name, encryptedValue); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to save secret: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 返回成功响应
+	resp := SecretResponse{
+		Name: req.Name,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleGetSecret 获取指定的 Secret（解密后）
+func (s *Server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "Secret name is required", http.StatusBadRequest)
+		return
+	}
+
+	// 获取用户
+	user := "anonymous"
+	if u, ok := r.Context().Value(UserContextKey).(string); ok {
+		user = u
+	}
+
+	// 从数据库获取
+	record, err := s.db.GetSecret(user, name)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Secret not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("Failed to get secret: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// 解密
+	decryptedValue, err := crypto.Decrypt(record.EncryptedValue)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to decrypt secret: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 返回响应
+	resp := SecretResponse{
+		Name:      record.Name,
+		Value:     decryptedValue,
+		CreatedAt: record.CreatedAt.String,
+		UpdatedAt: record.UpdatedAt.String,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleListSecrets 列出用户的所有 Secrets（不包含值）
+func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
+	// 获取用户
+	user := "anonymous"
+	if u, ok := r.Context().Value(UserContextKey).(string); ok {
+		user = u
+	}
+
+	// 从数据库获取列表
+	records, err := s.db.ListSecrets(user)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to list secrets: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 构建响应
+	secrets := make([]SecretResponse, 0, len(records))
+	for _, record := range records {
+		secrets = append(secrets, SecretResponse{
+			Name:      record.Name,
+			CreatedAt: record.CreatedAt.String,
+			UpdatedAt: record.UpdatedAt.String,
+		})
+	}
+
+	resp := SecretListResponse{
+		Secrets: secrets,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleDeleteSecret 删除指定的 Secret
+func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "Secret name is required", http.StatusBadRequest)
+		return
+	}
+
+	// 获取用户
+	user := "anonymous"
+	if u, ok := r.Context().Value(UserContextKey).(string); ok {
+		user = u
+	}
+
+	// 从数据库删除
+	if err := s.db.DeleteSecret(user, name); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Secret not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("Failed to delete secret: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// 返回成功响应
+	w.WriteHeader(http.StatusNoContent)
 }

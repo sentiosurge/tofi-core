@@ -16,7 +16,7 @@ func (s *Shell) Execute(config map[string]interface{}, ctx *models.ExecutionCont
 
 	// Env
 	env := make(map[string]string)
-	
+
 	// 注入魔术环境变量 (Magic Env Vars)
 	env["TOFI_ARTIFACTS_DIR"] = ctx.Paths.Artifacts
 	env["TOFI_UPLOADS_DIR"] = ctx.Paths.Uploads

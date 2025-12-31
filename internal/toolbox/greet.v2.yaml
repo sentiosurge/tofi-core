@@ -1,0 +1,11 @@
+name: Greet v2
+description: 问候组件 - 版本 2（正式风格）
+
+data:
+  name: "World"
+
+nodes:
+  greet:
+    type: var
+    config:
+      value: "Greetings, {{data.name}}. Welcome to v2!"

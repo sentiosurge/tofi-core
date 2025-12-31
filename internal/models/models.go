@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -99,6 +100,7 @@ type Workflow struct {
 	Data    map[string]interface{} `json:"data" yaml:"data"`
 	Secrets map[string]string      `json:"secrets" yaml:"secrets"`
 	Nodes   map[string]*Node       `json:"nodes" yaml:"nodes"`
+	Timeout int                    `json:"timeout" yaml:"timeout"` // 全局工作流超时（秒）
 }
 
 type ExecutionPaths struct {
@@ -125,16 +127,18 @@ type ExecutionContext struct {
 	logFile      *os.File    // 用于后续关闭文件句柄
 	Depth        int         // 递归深度 (防止死循环)
 	DB           interface{} // 存储对象 (storage.DB), 使用 interface 避免循环引用
+	Ctx          context.Context // 用于超时控制
+	Cancel       context.CancelFunc // 用于取消执行
 }
 
 func NewExecutionContext(execID, user, homeDir string) *ExecutionContext {
 	if user == "" {
 		user = "anonymous"
 	}
-	
+
 	// 路径空间：.tofi/{user}/...
 	userBase := filepath.Join(homeDir, user)
-	
+
 	paths := ExecutionPaths{
 		Home:      homeDir,
 		Logs:      filepath.Join(userBase, "logs"),
@@ -142,6 +146,10 @@ func NewExecutionContext(execID, user, homeDir string) *ExecutionContext {
 		Artifacts: filepath.Join(userBase, "artifacts", execID),
 		Uploads:   filepath.Join(userBase, "uploads", execID),
 	}
+
+	// 创建带取消功能的 context
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return &ExecutionContext{
 		ExecutionID:  execID,
 		User:         user,
@@ -151,6 +159,8 @@ func NewExecutionContext(execID, user, homeDir string) *ExecutionContext {
 		Stats:        []NodeStat{},
 		Logger:       log.Default(),
 		Depth:        0,
+		Ctx:          ctx,
+		Cancel:       cancel,
 	}
 }
 
@@ -171,6 +181,9 @@ func (ctx *ExecutionContext) Log(format string, v ...interface{}) {
 
 // Close 释放资源
 func (ctx *ExecutionContext) Close() {
+	if ctx.Cancel != nil {
+		ctx.Cancel()
+	}
 	if ctx.logFile != nil {
 		ctx.logFile.Close()
 	}
@@ -349,6 +362,8 @@ func (ctx *ExecutionContext) Clone() *ExecutionContext {
 		Logger:       ctx.Logger,
 		Depth:        ctx.Depth,
 		DB:           ctx.DB,
+		Ctx:          ctx.Ctx, // 继承父 context
+		Cancel:       ctx.Cancel,
 	}
 
 	for k, v := range ctx.Results {
@@ -367,7 +382,7 @@ func (ctx *ExecutionContext) Derive(subID string) *ExecutionContext {
 	defer ctx.mu.RUnlock()
 
 	newID := ctx.ExecutionID + "/" + subID
-	
+
 	// 路径偏移：在原有目录下追加子目录
 	newPaths := ctx.Paths
 	newPaths.Artifacts = filepath.Join(ctx.Paths.Artifacts, subID)
@@ -385,6 +400,8 @@ func (ctx *ExecutionContext) Derive(subID string) *ExecutionContext {
 		Logger:       ctx.Logger, // 默认继承
 		Depth:        ctx.Depth,  // 深度不变，因为 Loop 同级
 		DB:           ctx.DB,
+		Ctx:          ctx.Ctx, // 继承父 context
+		Cancel:       ctx.Cancel,
 	}
 
 	// 继承结果

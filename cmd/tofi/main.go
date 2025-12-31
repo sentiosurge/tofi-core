@@ -154,12 +154,14 @@ func serverCommand(args []string) {
 	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
 	port := serverCmd.Int("port", 8080, "HTTP server port")
 	homeDir := serverCmd.String("home", ".tofi", "Tofi runtime directory")
+	maxWorkers := serverCmd.Int("workers", 10, "Maximum concurrent workflows (default: 10)")
 
 	serverCmd.Parse(args)
 
 	cfg := server.Config{
-		Port:    *port,
-		HomeDir: *homeDir,
+		Port:                   *port,
+		HomeDir:                *homeDir,
+		MaxConcurrentWorkflows: *maxWorkers,
 	}
 
 	srv, err := server.NewServer(cfg)

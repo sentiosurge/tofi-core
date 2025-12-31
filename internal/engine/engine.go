@@ -1,17 +1,21 @@
 package engine
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 	"time"
+	"tofi-core/internal/crypto"
 	"tofi-core/internal/engine/base"
 	"tofi-core/internal/engine/data"
 	"tofi-core/internal/engine/logic"
 	"tofi-core/internal/engine/tasks"
 	"tofi-core/internal/models"
+	"tofi-core/internal/storage"
 
 	"github.com/Knetic/govaluate"
 )
@@ -26,6 +30,61 @@ func getLogPrefix(executionID string) string {
 		return indent + "└─ "
 	}
 	return ""
+}
+
+// resolveSecretReferences 递归处理配置中的 ref:SECRET_NAME 引用
+// 将其替换为从数据库加载并解密后的实际值
+func resolveSecretReferences(config interface{}, user string, db *storage.DB) (interface{}, error) {
+	switch v := config.(type) {
+	case string:
+		// 检查是否是 ref: 语法
+		if strings.HasPrefix(v, "ref:") {
+			secretName := strings.TrimPrefix(v, "ref:")
+
+			// 从数据库获取 Secret
+			record, err := db.GetSecret(user, secretName)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					return nil, fmt.Errorf("secret '%s' not found for user '%s'", secretName, user)
+				}
+				return nil, fmt.Errorf("failed to get secret '%s': %v", secretName, err)
+			}
+
+			// 解密 Secret
+			decryptedValue, err := crypto.Decrypt(record.EncryptedValue)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decrypt secret '%s': %v", secretName, err)
+			}
+
+			return decryptedValue, nil
+		}
+		return v, nil
+
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+		for k, val := range v {
+			resolved, err := resolveSecretReferences(val, user, db)
+			if err != nil {
+				return nil, err
+			}
+			result[k] = resolved
+		}
+		return result, nil
+
+	case []interface{}:
+		result := make([]interface{}, len(v))
+		for i, val := range v {
+			resolved, err := resolveSecretReferences(val, user, db)
+			if err != nil {
+				return nil, err
+			}
+			result[i] = resolved
+		}
+		return result, nil
+
+	default:
+		return v, nil
+	}
 }
 
 // init 包初始化函数，注入依赖
@@ -269,6 +328,22 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 			effectiveConfig["value"] = node.Value
 		}
 
+		// 预处理 Secret 引用 (ref:SECRET_NAME)
+		if ctx.DB != nil {
+			if db, ok := ctx.DB.(*storage.DB); ok {
+				resolved, err := resolveSecretReferences(effectiveConfig, ctx.User, db)
+				if err != nil {
+					log.Printf("%s[%s] [ERROR]   [%s] Secret 引用解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
+					ctx.SetResult(nodeID, fmt.Sprintf("ERR_PROPAGATION: Secret reference resolution failed: %v", err))
+					ctx.RecordStat(models.NodeStat{NodeID: runtimeID, Type: node.Type, Status: "ERROR", StartTime: time.Now()})
+					SaveState(ctx)
+					triggerNext(wf, node, ctx)
+					return
+				}
+				effectiveConfig = resolved.(map[string]interface{})
+			}
+		}
+
 		resolvedVal := ctx.ReplaceParamsAny(effectiveConfig)
 		if v, ok := resolvedVal.(map[string]interface{}); ok {
 			resolvedConfig = v
@@ -289,8 +364,29 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 			return
 		}
 
-		// 第二阶段：Local Context -> Config
-		resolvedConfig, err = models.ResolveConfig(node.Config, localContext, ctx)
+		// 第二阶段：预处理 Secret 引用 (ref:SECRET_NAME)
+		var preprocessedConfig map[string]interface{}
+		if ctx.DB != nil {
+			if db, ok := ctx.DB.(*storage.DB); ok {
+				resolved, err := resolveSecretReferences(node.Config, ctx.User, db)
+				if err != nil {
+					log.Printf("%s[%s] [ERROR]   [%s] Secret 引用解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
+					ctx.SetResult(nodeID, fmt.Sprintf("ERR_PROPAGATION: Secret reference resolution failed: %v", err))
+					ctx.RecordStat(models.NodeStat{NodeID: runtimeID, Type: node.Type, Status: "ERROR", StartTime: time.Now()})
+					SaveState(ctx)
+					triggerNext(wf, node, ctx)
+					return
+				}
+				preprocessedConfig = resolved.(map[string]interface{})
+			} else {
+				preprocessedConfig = node.Config
+			}
+		} else {
+			preprocessedConfig = node.Config
+		}
+
+		// 第三阶段：Local Context -> Config
+		resolvedConfig, err = models.ResolveConfig(preprocessedConfig, localContext, ctx)
 		if err != nil {
 			log.Printf("%s[%s] [ERROR]   [%s] Config 解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
 			ctx.SetResult(nodeID, fmt.Sprintf("ERR_PROPAGATION: Config resolution failed: %v", err))
@@ -305,14 +401,51 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	startTime := time.Now()
 	var res string
 
-	// 5. 执行阶段 (包含重试)
-	for i := 0; i <= node.RetryCount; i++ {
-		if i > 0 {
-			log.Printf("%s[%s] [RETRY]   [%s] 第 %d 次重试...", prefix, ctx.ExecutionID, runtimeID, i)
+	// 5. 执行阶段 (包含重试和超时控制)
+	// 创建节点级别的 context，如果配置了 timeout
+	nodeCtx := ctx.Ctx
+	if node.Timeout > 0 {
+		var cancel context.CancelFunc
+		nodeCtx, cancel = context.WithTimeout(ctx.Ctx, time.Duration(node.Timeout)*time.Second)
+		defer cancel()
+	}
+
+	// 使用 channel 来接收执行结果
+	type execResult struct {
+		output string
+		err    error
+	}
+	resultChan := make(chan execResult, 1)
+
+	// 在 goroutine 中执行任务
+	go func() {
+		var output string
+		var execErr error
+		for i := 0; i <= node.RetryCount; i++ {
+			if i > 0 {
+				log.Printf("%s[%s] [RETRY]   [%s] 第 %d 次重试...", prefix, ctx.ExecutionID, runtimeID, i)
+			}
+			output, execErr = action.Execute(resolvedConfig, ctx)
+			if execErr == nil {
+				break
+			}
 		}
-		res, err = action.Execute(resolvedConfig, ctx)
-		if err == nil {
-			break
+		resultChan <- execResult{output: output, err: execErr}
+	}()
+
+	// 等待执行完成或超时
+	select {
+	case result := <-resultChan:
+		res = result.output
+		err = result.err
+	case <-nodeCtx.Done():
+		// 超时或被取消
+		if nodeCtx.Err() == context.DeadlineExceeded {
+			err = fmt.Errorf("节点执行超时 (限制: %d秒)", node.Timeout)
+			log.Printf("%s[%s] [TIMEOUT] [%s] 执行超时", prefix, ctx.ExecutionID, runtimeID)
+		} else {
+			err = fmt.Errorf("节点执行被取消: %v", nodeCtx.Err())
+			log.Printf("%s[%s] [CANCEL]  [%s] 执行被取消", prefix, ctx.ExecutionID, runtimeID)
 		}
 	}
 	duration := time.Since(startTime)
@@ -456,8 +589,31 @@ func Start(wf *models.Workflow, ctx *models.ExecutionContext, inputs map[string]
 	// 0. 预加载全局数据 (强契约模式)
 	InitializeGlobals(wf, ctx, inputs)
 
+	// 1. 如果工作流定义了全局超时，应用到 context
+	if wf.Timeout > 0 {
+		timeoutCtx, cancel := context.WithTimeout(ctx.Ctx, time.Duration(wf.Timeout)*time.Second)
+		// 保存原始的 cancel 函数
+		oldCancel := ctx.Cancel
+		ctx.Ctx = timeoutCtx
+		ctx.Cancel = func() {
+			cancel()
+			if oldCancel != nil {
+				oldCancel()
+			}
+		}
+
+		// 启动一个 goroutine 监控全局超时
+		go func() {
+			<-timeoutCtx.Done()
+			if timeoutCtx.Err() == context.DeadlineExceeded {
+				log.Printf("[%s] [TIMEOUT] 工作流全局超时 (限制: %d秒)", ctx.ExecutionID, wf.Timeout)
+			}
+		}()
+	}
+
+	// 2. 启动所有起点节点
 	for id, node := range wf.Nodes {
-		// 只有 0 依赖，且不是任何节点的“失败分支”，才是合法的起点
+		// 只有 0 依赖，且不是任何节点的"失败分支"，才是合法的起点
 		if len(node.Dependencies) == 0 && !isFailureBranch(wf, id) {
 			ctx.Wg.Add(1)
 			go RunNode(wf, id, ctx)

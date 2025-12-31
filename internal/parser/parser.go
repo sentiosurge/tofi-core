@@ -14,16 +14,34 @@ import (
 
 // ResolveWorkflow 根据 Workflow ID 智能解析工作流
 // 支持：
-// 1. tofi/xxx (Toolbox 内置)
-// 2. namespace/name (本地 workflows/namespace/name.yaml)
-// 3. name (本地 workflows/name.yaml)
+// 1. tofi/xxx (Toolbox 内置，默认版本)
+// 2. tofi/xxx@v1 (Toolbox 内置，指定版本)
+// 3. namespace/name (本地 workflows/namespace/name.yaml)
+// 4. name (本地 workflows/name.yaml)
 func ResolveWorkflow(id string, workflowsDir string) (*models.Workflow, error) {
 	if strings.HasPrefix(id, "tofi/") {
-		// 1. 从 Toolbox 加载
+		// 1. 从 Toolbox 加载（支持版本）
 		name := strings.TrimPrefix(id, "tofi/")
-		data, err := toolbox.ReadAction(name)
+
+		// 解析版本号 (格式: component@version)
+		componentName := name
+		version := ""
+		if idx := strings.Index(name, "@"); idx > 0 {
+			componentName = name[:idx]
+			version = name[idx+1:]
+		}
+
+		// 根据版本构造文件名
+		// 无版本：component.yaml
+		// 有版本：component.v1.yaml, component.v2.yaml
+		fileName := componentName
+		if version != "" {
+			fileName = componentName + "." + version
+		}
+
+		data, err := toolbox.ReadAction(fileName)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to load component '%s' version '%s': %v", componentName, version, err)
 		}
 		return ParseWorkflowFromBytes(data, "yaml")
 	}
@@ -31,7 +49,7 @@ func ResolveWorkflow(id string, workflowsDir string) (*models.Workflow, error) {
 	// 2. 从本地目录加载
 	// 确保 ID 结尾没有 .yaml，我们自动补全
 	cleanID := strings.TrimSuffix(id, ".yaml")
-	
+
 	var path string
 	if strings.HasPrefix(cleanID, workflowsDir+"/") {
 		path = cleanID + ".yaml"

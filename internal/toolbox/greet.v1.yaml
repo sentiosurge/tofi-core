@@ -1,0 +1,11 @@
+name: Greet v1
+description: 问候组件 - 版本 1（简洁风格）
+
+data:
+  name: "World"
+
+nodes:
+  greet:
+    type: var
+    config:
+      value: "Hi {{data.name}}! [v1]"

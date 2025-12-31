@@ -1,0 +1,11 @@
+name: Greet (Default Version)
+description: 问候组件 - 默认版本
+
+data:
+  name: "World"
+
+nodes:
+  greet:
+    type: var
+    config:
+      value: "Hello, {{data.name}}! (default version)"
