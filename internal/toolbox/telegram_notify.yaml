@@ -1,7 +1,7 @@
 name: Telegram Notify
 description: 向 Telegram Bot 发送消息
 
-variables:
+data:
   chat_id: ""
   message: ""
 
@@ -15,5 +15,5 @@ nodes:
       method: "POST"
       url: "https://api.telegram.org/bot{{secrets.bot_token}}/sendMessage"
       body:
-        chat_id: chat_id
-        text: message
+        chat_id: data.chat_id # 引用 data.chat_id
+        text: data.message    # 引用 data.message

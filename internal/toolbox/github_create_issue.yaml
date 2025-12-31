@@ -1,21 +1,23 @@
 name: GitHub Create Issue
 description: 在指定仓库创建 GitHub Issue
 
-nodes:
-  secrets:
-    type: secret
-    config:
-      github_token: "env.GITHUB_TOKEN"
-    next: ["create_issue"]
+data:
+  repo: ""
+  title: ""
+  body: ""
 
+secrets:
+  github_token: "env.GITHUB_TOKEN"
+
+nodes:
   create_issue:
     type: api
     config:
       method: "POST"
-      url: "https://api.github.com/repos/{{inputs.repo}}/issues"
+      url: "https://api.github.com/repos/{{repo}}/issues"
       headers:
         Authorization: "Bearer {{secrets.github_token}}"
         Accept: "application/vnd.github+json"
       body:
-        title: "inputs.title"
-        body: "inputs.body"
+        title: title
+        body: body

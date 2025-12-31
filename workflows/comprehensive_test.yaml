@@ -1,5 +1,5 @@
 name: Comprehensive Test Workflow
-variables:
+data:
   topic: "Future of AI"
   limit: 3
   regions:
@@ -16,10 +16,10 @@ nodes:
     input:
       - var:
           id: text_val
-          value: topic # 使用隐式引用
+          value: data.topic # 引用 data.topic
     config:
       mode: "exists"
-      value: text_val # 使用隐式引用
+      value: text_val
     next: ["calc.threshold"]
 
   calc.threshold:
@@ -28,14 +28,14 @@ nodes:
     input:
       - var:
           id: count
-          value: limit # 使用隐式引用
+          value: data.limit # 引用 data.limit
       - var:
           id: min_val
           value: 1
     config:
       operator: ">="
-      left: count # 使用隐式引用
-      right: min_val # 使用隐式引用
+      left: count
+      right: min_val
     next: ["ai.generate"]
 
   ai.generate:
@@ -44,12 +44,12 @@ nodes:
     input:
       - var:
           id: prompt_text
-          value: "Write a 1-sentence slogan about {{topic}} (Region: {{regions.0}})"
+          value: "Write a 1-sentence slogan about {{data.topic}} (Region: {{data.regions.0}})" # 引用 data.xxx
     config:
       provider: "openai"
       endpoint: "https://api.openai.com/v1/chat/completions"
       model: "gpt-3.5-turbo"
-      api_key: "secrets.openai_key" # 使用隐式命名空间引用
+      api_key: "secrets.openai_key"
       prompt: prompt_text
     next: ["loop.print"]
 
@@ -59,7 +59,7 @@ nodes:
     input:
       - var:
           id: loop_end
-          value: limit
+          value: data.limit # 引用 data.limit
     config:
       mode: "range"
       start: 1

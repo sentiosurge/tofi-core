@@ -1,13 +1,17 @@
 name: Slack Notify
 description: 向 Slack Webhook 发送消息
 
+data:
+  webhook_url: ""
+  message: ""
+
 nodes:
   send_slack:
     type: api
     config:
       method: "POST"
-      url: "inputs.webhook_url"
+      url: webhook_url
       headers:
         Content-Type: "application/json"
       body:
-        text: "inputs.message"
+        text: message

@@ -1,12 +1,12 @@
 name: Echo Bot
 description: 发送内容到指定的 Telegram 会话
 
-# 声明契约：需要 content 变量和 chatid 密钥
-variables:
+# 声明契约
+data:
   content: "Hello from Tofi!"
 
 secrets:
-  chatid: env.TELEGRAM_CHAT_ID
+  chatid: "" 
 
 nodes:
   send_to_tg:
@@ -14,6 +14,12 @@ nodes:
     type: workflow
     config:
       # 嫁接调用官方 Toolbox 组件
-      workflow: "tofi/telegram_notify"
-      message: "This message is from tofi-learns-to-code/echo-bot.\n{{content}}"
-      chat_id: secrets.chatid
+      uses: "tofi/telegram_notify"
+      
+      # 结构化传参
+      data:
+        message: data.content # 引用本地 data
+        chat_id: secrets.chatid # 引用本地 secrets.chatid (注意：这里需要传给子工作流的 data.chat_id)
+        # 等等，telegram_notify 需要 chat_id 是 data 还是 secrets?
+        # telegram_notify 定义: data: { chat_id: "" }
+        # 所以这里传给 data.chat_id 是对的。虽然源头是 secrets。

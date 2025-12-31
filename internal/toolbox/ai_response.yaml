@@ -1,21 +1,20 @@
 name: AI Response
 description: 使用 OpenAI API 生成 AI 响应 (支持 GPT-3.5/4/5)
 
-nodes:
-  # 1. 加载密钥
-  secrets:
-    type: secret
-    config:
-      api_key: "env.TOFI_OPENAI_API_KEY"
-    next: ["generate_response"]
+data:
+  prompt: ""
+  system: "You are a helpful assistant."
 
-  # 2. 生成响应
+secrets:
+  api_key: "env.TOFI_OPENAI_API_KEY"
+
+nodes:
   generate_response:
     type: ai
     config:
       provider: "openai"
       endpoint: "https://api.openai.com/v1/chat/completions"
       model: "gpt-3.5-turbo"
-      api_key: "secrets.api_key" # 隐式引用
-      system: "You are a helpful assistant."
-      prompt: "inputs.prompt" # 从父工作流传进来的 inputs 字典中获取
+      api_key: secrets.api_key
+      system: system
+      prompt: prompt

@@ -388,60 +388,64 @@ func isFailureBranch(wf *models.Workflow, targetID string) bool {
 	return false
 }
 
-// InitializeGlobals 解析顶层的 variables 和 secrets 并注入 Context
-// 它会根据 wf 的声明，从 inputs 中提取值并覆盖默认配置
+// InitializeGlobals 解析顶层的 data 和 secrets 并注入 Context
+// 它会根据 wf 的声明，从 inputs (结构化) 中提取值并覆盖默认配置
 func InitializeGlobals(wf *models.Workflow, ctx *models.ExecutionContext, inputs map[string]interface{}) {
-	// 1. 处理 Variables
-	// 策略：以 wf.Variables 声明为准
-	for k, defaultVal := range wf.Variables {
-		var finalVal interface{} = defaultVal
-		
-		// 如果 inputs 中有同名参数，执行覆盖
-		if override, ok := inputs[k]; ok {
-			finalVal = override
-		}
-
-		var valStr string
-		switch v := finalVal.(type) {
-		case string:
-			valStr = v
-		case int, int64, float64, bool:
-			valStr = fmt.Sprint(v)
-		default:
-			jb, _ := json.Marshal(v)
-			valStr = string(jb)
-		}
-		ctx.SetResult(k, valStr)
-	}
-
-	// 2. 处理 Secrets
-	// 策略：所有密钥必须在顶层声明，如果 inputs 传了则用 inputs，否则按声明加载
-	secretsMap := make(map[string]string)
-	for k, source := range wf.Secrets {
-		var realValue string
-
-		// 2.1 优先检查外部注入 (Handoff 传进来的密钥)
-		if override, ok := inputs[k].(string); ok && override != "" {
-			realValue = override
-		} else {
-			// 2.2 按照声明的 source 加载 (env.XXX 或字面量)
-			if len(source) > 4 && source[:4] == "env." {
-				realValue = os.Getenv(source[4:])
-			} else if len(source) > 7 && source[:6] == "{{env." && source[len(source)-2:] == "}}" {
-				realValue = os.Getenv(source[6 : len(source)-2])
-			} else {
-				realValue = source
-			}
-		}
-
-		secretsMap[k] = realValue
-		if realValue != "" {
-			ctx.AddSecretValue(realValue)
-		}
+	// 提取输入的 data 和 secrets 部分
+	inputData := make(map[string]interface{})
+	if d, ok := inputs["data"].(map[string]interface{}); ok {
+		inputData = d
 	}
 	
-	// 如果有定义 secrets，则注入命名空间
+	inputSecrets := make(map[string]interface{})
+	if s, ok := inputs["secrets"].(map[string]interface{}); ok {
+		inputSecrets = s
+	}
+
+	// 1. 处理 Data (聚合到 data 命名空间)
+	if len(wf.Data) > 0 {
+		dataMap := make(map[string]interface{})
+		for k, defaultVal := range wf.Data {
+			var finalVal interface{} = defaultVal
+			
+			// 覆盖逻辑
+			if override, ok := inputData[k]; ok {
+				finalVal = override
+			}
+			dataMap[k] = finalVal
+		}
+		
+		// 序列化并存入名为 "data" 的虚拟节点结果中
+		jb, _ := json.Marshal(dataMap)
+		ctx.SetResult("data", string(jb))
+	}
+
+	// 2. 处理 Secrets (聚合到 secrets 命名空间)
 	if len(wf.Secrets) > 0 {
+		secretsMap := make(map[string]string)
+		for k, source := range wf.Secrets {
+			var realValue string
+
+			// 2.1 优先检查外部注入
+			if override, ok := inputSecrets[k].(string); ok && override != "" {
+				realValue = override
+			} else {
+				// 2.2 按照声明的 source 加载
+				if len(source) > 4 && source[:4] == "env." {
+					realValue = os.Getenv(source[4:])
+				} else if len(source) > 7 && source[:6] == "{{env." && source[len(source)-2:] == "}}" {
+					realValue = os.Getenv(source[6 : len(source)-2])
+				} else {
+					realValue = source
+				}
+			}
+
+			secretsMap[k] = realValue
+			if realValue != "" {
+				ctx.AddSecretValue(realValue)
+			}
+		}
+		
 		jb, _ := json.Marshal(secretsMap)
 		ctx.SetResult("secrets", string(jb))
 	}

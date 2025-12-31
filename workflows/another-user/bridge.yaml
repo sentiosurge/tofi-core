@@ -1,7 +1,7 @@
 name: User Bridge Experiment
 description: 演示如何调用其他用户的工作流组件
 
-variables:
+data:
   report_title: "System Update"
   status: "All Green"
 
@@ -15,8 +15,8 @@ nodes:
     config:
       script: 'echo "[$TITLE] Status: $STATUS"'
       env:
-        TITLE: report_title
-        STATUS: status
+        TITLE: data.report_title # 引用 data.xxx
+        STATUS: data.status      # 引用 data.xxx
     next: ["call_echo_bot"]
 
   # 第二步：跨命名空间调用 tofi-learns-to-code 的 echo-bot
@@ -24,11 +24,11 @@ nodes:
     name: Relay to Echo Bot
     type: workflow
     config:
-      # 像 NPM 包一样引用：用户名/工作流名
-      workflow: "tofi-learns-to-code/echo-bot"
+      # 新语法: uses
+      uses: "tofi-learns-to-code/echo-bot"
       
-      # 传入 echo-bot 所需的参数
-      # content 会覆盖 echo-bot 默认的 "Hello from Tofi!"
-      content: prepare_content
-      # chatid 从当前工作流的 secrets 中获取
-      chatid: secrets.target_chat_id
+      # 显式参数分类传递
+      data:
+        content: prepare_content
+      secrets:
+        chatid: secrets.target_chat_id

@@ -95,10 +95,10 @@ func NormalizeID(name string) string {
 }
 
 type Workflow struct {
-	Name      string                 `json:"name" yaml:"name"`
-	Variables map[string]interface{} `json:"variables" yaml:"variables"`
-	Secrets   map[string]string      `json:"secrets" yaml:"secrets"`
-	Nodes     map[string]*Node       `json:"nodes" yaml:"nodes"`
+	Name    string                 `json:"name" yaml:"name"`
+	Data    map[string]interface{} `json:"data" yaml:"data"`
+	Secrets map[string]string      `json:"secrets" yaml:"secrets"`
+	Nodes   map[string]*Node       `json:"nodes" yaml:"nodes"`
 }
 
 type ExecutionPaths struct {

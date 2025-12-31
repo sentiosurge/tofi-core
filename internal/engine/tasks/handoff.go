@@ -26,19 +26,22 @@ func (h *Handoff) Execute(config map[string]interface{}, ctx *models.ExecutionCo
 	}
 
 	// 2. 提取寻址参数
-	workflowID, _ := config["workflow"].(string)
-	actionName, _ := config["action"].(string)
-	filePath, _ := config["file"].(string)
+	usesID, _ := config["uses"].(string)
+	workflowID, _ := config["workflow"].(string) // 兼容旧逻辑
+	actionName, _ := config["action"].(string)   // 兼容旧逻辑
+	filePath, _ := config["file"].(string)       // 兼容旧逻辑
 
 	// 3. 智能解析
-	if workflowID != "" {
+	if usesID != "" {
+		childWf, err = parser.ResolveWorkflow(usesID, "workflows")
+	} else if workflowID != "" {
 		childWf, err = parser.ResolveWorkflow(workflowID, "workflows")
 	} else if actionName != "" {
 		childWf, err = parser.ResolveWorkflow(actionName, "workflows")
 	} else if filePath != "" {
 		childWf, err = parser.LoadWorkflow(filePath)
 	} else {
-		return "", fmt.Errorf("missing 'workflow' ID in handoff task")
+		return "", fmt.Errorf("missing 'uses' (or workflow/action/file) in handoff task")
 	}
 
 	if err != nil || childWf == nil {
@@ -50,14 +53,17 @@ func (h *Handoff) Execute(config map[string]interface{}, ctx *models.ExecutionCo
 	childCtx.Depth = ctx.Depth + 1 
 	childCtx.WorkflowName = childWf.Name
 
-	// 5. 准备输入载荷 (Payload)
+	// 5. 准备输入载荷 (Payload) - 结构化传递
 	payload := make(map[string]interface{})
-	for k, v := range config {
-		if k == "workflow" || k == "action" || k == "file" {
-			continue
-		}
-		payload[k] = v
+	
+	if d, ok := config["data"].(map[string]interface{}); ok {
+		payload["data"] = d
 	}
+	if s, ok := config["secrets"].(map[string]interface{}); ok {
+		payload["secrets"] = s
+	}
+	// 兼容旧的扁平化参数 (可选，为了平滑过渡，如果新字段不存在，尝试从 config 提取非保留字段)
+	// 但为了强契约，我们这里严格只取 data 和 secrets
 
 	// 6. 启动子工作流
 	if workflowStarter == nil {
