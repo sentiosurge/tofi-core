@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"tofi-core/internal/engine"
 	"tofi-core/internal/models"
@@ -14,6 +15,11 @@ import (
 
 	"github.com/google/uuid"
 )
+
+type RunRequest struct {
+	Workflow string                 `json:"workflow"` // 可以是 YAML 内容，也可以是 ID
+	Inputs   map[string]interface{} `json:"inputs"`   // 初始参数
+}
 
 type RunResponse struct {
 	ExecutionID string `json:"execution_id"`
@@ -124,7 +130,6 @@ func (s *Server) handleDownloadArtifact(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 安全检查：防止路径逃逸
 	safeFilename := filepath.Base(filename)
 	filePath := filepath.Join(s.config.HomeDir, "artifacts", id, safeFilename)
 
@@ -150,14 +155,25 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	format := "yaml"
-	if r.Header.Get("Content-Type") == "application/json" {
-		format = "json"
+	var wf *models.Workflow
+	var initialInputs map[string]interface{}
+
+	// 尝试作为 JSON 解析 (RunRequest 结构)
+	var runReq RunRequest
+	if err := json.Unmarshal(body, &runReq); err == nil && (runReq.Workflow != "" || len(runReq.Inputs) > 0) {
+		if strings.HasPrefix(runReq.Workflow, "name:") || strings.HasPrefix(runReq.Workflow, "{") {
+			wf, err = parser.ParseWorkflowFromBytes([]byte(runReq.Workflow), "yaml")
+		} else if runReq.Workflow != "" {
+			wf, err = parser.ResolveWorkflow(runReq.Workflow, "workflows")
+		}
+		initialInputs = runReq.Inputs
+	} else {
+		// 回退到原始 YAML Body 模式
+		wf, err = parser.ParseWorkflowFromBytes(body, "yaml")
 	}
 
-	wf, err := parser.ParseWorkflowFromBytes(body, format)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Invalid workflow format: %v", err), http.StatusBadRequest)
+	if err != nil || wf == nil {
+		http.Error(w, fmt.Sprintf("Failed to parse workflow: %v", err), http.StatusBadRequest)
 		return
 	}
 
@@ -194,7 +210,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		ctx.Log("🚀 Execution Started via API")
-		engine.Start(wf, ctx)
+		engine.Start(wf, ctx, initialInputs)
 		ctx.Wg.Wait()
 
 		if err := engine.SaveReport(wf, ctx, s.db); err != nil {
