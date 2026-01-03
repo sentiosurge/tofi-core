@@ -107,6 +107,8 @@ func GetAction(nodeType string) Action {
 		return &tasks.AI{}
 	case "api":
 		return &tasks.API{}
+	case "mcp":
+		return &tasks.MCP{}
 	case "workflow":
 		return &tasks.Handoff{}
 	case "if":
