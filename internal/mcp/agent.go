@@ -314,11 +314,12 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 // ---------------- Helpers ----------------
 
 func setupClient(cfg MCPServerConfig, ctx *models.ExecutionContext) (*client.Client, func(), error) {
-	// Resolved Workspace Path: .tofi/{user}/artifacts/{workflow_name}
-	// We don't MkdirAll here to avoid empty directories.
-	// If the MCP server fails because the dir doesn't exist, we'll handle it or create it on-demand.
-	// Note: Most servers (like fs-server) will create the root if it doesn't exist or error out.
-	// Better: We can check if we should create it now.
+	// Ensure workspace exists (Artifacts directory)
+	// Many MCP servers (like fs-server) will fail to start if the root directory is missing.
+	if err := os.MkdirAll(ctx.Paths.Artifacts, 0755); err != nil {
+		return nil, nil, fmt.Errorf("failed to create artifacts directory: %v", err)
+	}
+
 	workspacePath, _ := filepath.Abs(ctx.Paths.Artifacts)
 
 	processedArgs := make([]string, len(cfg.Args))
