@@ -199,6 +199,14 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 0. 获取当前用户
+	var user string
+	if u, ok := r.Context().Value(UserContextKey).(string); ok {
+		user = u
+	} else {
+		user = "cli-admin"
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
@@ -252,13 +260,6 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	uuidStr := uuid.New().String()[:4]
 	execID := time.Now().Format("102150405") + "-" + uuidStr
 	
-	var user string
-	if u, ok := r.Context().Value(UserContextKey).(string); ok {
-		user = u
-	} else {
-		user = "cli-admin"
-	}
-
 	ctx := models.NewExecutionContext(execID, user, s.config.HomeDir)
 	ctx.SetWorkflowName(wf.Name)
 	ctx.DB = s.db
