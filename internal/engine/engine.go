@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -15,6 +15,7 @@ import (
 	"tofi-core/internal/engine/logic"
 	"tofi-core/internal/engine/tasks"
 	"tofi-core/internal/models"
+	"tofi-core/internal/pkg/logger"
 	"tofi-core/internal/storage"
 
 	"github.com/Knetic/govaluate"
@@ -105,8 +106,8 @@ func GetAction(nodeType string) Action {
 		return &tasks.Shell{}
 	case "ai":
 		return &tasks.AI{}
-	case "api":
-		return &tasks.API{}
+	case "file":
+		return &tasks.File{}
 	case "workflow":
 		return &tasks.Handoff{}
 	case "if":
@@ -157,7 +158,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 
 	// 0. Resume 检查：如果我已经有结果了（从磁盘恢复），直接跳过
 	if res, completed := ctx.GetResult(nodeID); completed {
-		log.Printf("[%s] [RESUME]  [%s] 已从状态恢复，跳过执行 (结果: %s)", ctx.ExecutionID, node.ID, res)
+		logger.Printf("[%s] [RESUME]  [%s] 已从状态恢复，跳过执行 (结果: %s)", ctx.ExecutionID, node.ID, res)
 		// 仍然需要触发后续节点！因为后续节点可能还没跑
 		for _, nextID := range node.Next {
 			ctx.Wg.Add(1)
@@ -171,7 +172,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	for _, depID := range node.Dependencies {
 		res, completed := ctx.GetResult(depID)
 		if !completed {
-			log.Printf("[%s] [WAIT]    [%s] Waiting for: %s", ctx.ExecutionID, node.ID, depID)
+			logger.Printf("[%s] [WAIT]    [%s] Waiting for: %s", ctx.ExecutionID, node.ID, depID)
 			return
 		}
 
@@ -180,7 +181,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 			// 🆕 关键修复：run_if 导致的 SKIP 不传播
 			// 这允许分支汇聚：F 可以依赖 [C, D]，即使 D 被 run_if 跳过
 			if res == "SKIPPED_BY: run_if" {
-				log.Printf("[%s] [DEBUG]   [%s] 忽略依赖 %s 的 run_if SKIP（条件性跳过不传播）",
+				logger.Printf("[%s] [DEBUG]   [%s] 忽略依赖 %s 的 run_if SKIP（条件性跳过不传播）",
 					ctx.ExecutionID, node.ID, depID)
 				continue // 忽略这个依赖的条件性跳过
 			}
@@ -211,7 +212,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 				})
 				ctx.SetResult(node.ID, skipMsg)
 				SaveState(ctx) // 持久化 Skip 状态
-				log.Printf("[%s] [SKIP]    [%s] 由于上游失败自动跳过", ctx.ExecutionID, node.ID)
+				logger.Printf("[%s] [SKIP]    [%s] 由于上游失败自动跳过", ctx.ExecutionID, node.ID)
 
 				for _, nextID := range node.Next {
 					ctx.Wg.Add(1)
@@ -255,7 +256,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 			ctx.RecordStat(stat)
 			ctx.SetResult(node.ID, fmt.Sprintf("SKIPPED_BY: run_if 语法错误 (%v)", err))
 			SaveState(ctx)
-			log.Printf("[%s] [SKIP]    [%s] run_if 语法错误: %v (原始: %s, 展开: %s)",
+			logger.Printf("[%s] [SKIP]    [%s] run_if 语法错误: %v (原始: %s, 展开: %s)",
 				ctx.ExecutionID, node.ID, err, node.RunIf, expandedRunIf)
 
 			// 传播 Skip 信号
@@ -275,7 +276,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 			ctx.RecordStat(stat)
 			ctx.SetResult(node.ID, fmt.Sprintf("SKIPPED_BY: run_if 计算出错 (%v)", err))
 			SaveState(ctx)
-			log.Printf("[%s] [SKIP]    [%s] run_if 计算出错: %v (表达式: %s)",
+			logger.Printf("[%s] [SKIP]    [%s] run_if 计算出错: %v (表达式: %s)",
 				ctx.ExecutionID, node.ID, err, expandedRunIf)
 
 			// 传播 Skip 信号
@@ -294,7 +295,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 			ctx.RecordStat(stat)
 			ctx.SetResult(node.ID, "SKIPPED_BY: run_if")
 			SaveState(ctx)
-			log.Printf("[%s] [SKIP]    [%s] run_if 条件不满足 (%s)", ctx.ExecutionID, node.ID, expandedRunIf)
+			logger.Printf("[%s] [SKIP]    [%s] run_if 条件不满足 (%s)", ctx.ExecutionID, node.ID, expandedRunIf)
 
 			// 传播 Skip 信号
 			for _, nextID := range node.Next {
@@ -309,7 +310,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	action := GetAction(node.Type)
 	prefix := getLogPrefix(ctx.ExecutionID)
 	runtimeID := node.GetRuntimeID()
-	log.Printf("%s[%s] [START]   [%s] 类型: %s", prefix, ctx.ExecutionID, runtimeID, node.Type)
+	logger.Printf("%s[%s] [START]   [%s] 类型: %s", prefix, ctx.ExecutionID, runtimeID, node.Type)
 
 	// --- 🆕 核心规范重构：解析局部作用域 ---
 	var resolvedConfig map[string]interface{}
@@ -333,7 +334,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 			if db, ok := ctx.DB.(*storage.DB); ok {
 				resolved, err := resolveSecretReferences(effectiveConfig, ctx.User, db)
 				if err != nil {
-					log.Printf("%s[%s] [ERROR]   [%s] Secret 引用解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
+					logger.Printf("%s[%s] [ERROR]   [%s] Secret 引用解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
 					ctx.SetResult(nodeID, fmt.Sprintf("ERR_PROPAGATION: Secret reference resolution failed: %v", err))
 					ctx.RecordStat(models.NodeStat{NodeID: runtimeID, Type: node.Type, Status: "ERROR", StartTime: time.Now()})
 					SaveState(ctx)
@@ -355,7 +356,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 		var localContext map[string]interface{}
 		localContext, err = models.ResolveLocalContext(node, ctx)
 		if err != nil {
-			log.Printf("%s[%s] [ERROR]   [%s] Input 解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
+			logger.Printf("%s[%s] [ERROR]   [%s] Input 解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
 			ctx.SetResult(nodeID, fmt.Sprintf("ERR_PROPAGATION: Input resolution failed: %v", err))
 			ctx.RecordStat(models.NodeStat{NodeID: runtimeID, Type: node.Type, Status: "ERROR", StartTime: time.Now()})
 			SaveState(ctx)
@@ -370,7 +371,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 			if db, ok := ctx.DB.(*storage.DB); ok {
 				resolved, err := resolveSecretReferences(node.Config, ctx.User, db)
 				if err != nil {
-					log.Printf("%s[%s] [ERROR]   [%s] Secret 引用解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
+					logger.Printf("%s[%s] [ERROR]   [%s] Secret 引用解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
 					ctx.SetResult(nodeID, fmt.Sprintf("ERR_PROPAGATION: Secret reference resolution failed: %v", err))
 					ctx.RecordStat(models.NodeStat{NodeID: runtimeID, Type: node.Type, Status: "ERROR", StartTime: time.Now()})
 					SaveState(ctx)
@@ -388,7 +389,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 		// 第三阶段：Local Context -> Config
 		resolvedConfig, err = models.ResolveConfig(preprocessedConfig, localContext, ctx)
 		if err != nil {
-			log.Printf("%s[%s] [ERROR]   [%s] Config 解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
+			logger.Printf("%s[%s] [ERROR]   [%s] Config 解析失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
 			ctx.SetResult(nodeID, fmt.Sprintf("ERR_PROPAGATION: Config resolution failed: %v", err))
 			ctx.RecordStat(models.NodeStat{NodeID: runtimeID, Type: node.Type, Status: "ERROR", StartTime: time.Now()})
 			SaveState(ctx)
@@ -423,7 +424,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 		var execErr error
 		for i := 0; i <= node.RetryCount; i++ {
 			if i > 0 {
-				log.Printf("%s[%s] [RETRY]   [%s] 第 %d 次重试...", prefix, ctx.ExecutionID, runtimeID, i)
+				logger.Printf("%s[%s] [RETRY]   [%s] 第 %d 次重试...", prefix, ctx.ExecutionID, runtimeID, i)
 			}
 			output, execErr = action.Execute(resolvedConfig, ctx)
 			if execErr == nil {
@@ -442,10 +443,10 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 		// 超时或被取消
 		if nodeCtx.Err() == context.DeadlineExceeded {
 			err = fmt.Errorf("节点执行超时 (限制: %d秒)", node.Timeout)
-			log.Printf("%s[%s] [TIMEOUT] [%s] 执行超时", prefix, ctx.ExecutionID, runtimeID)
+			logger.Printf("%s[%s] [TIMEOUT] [%s] 执行超时", prefix, ctx.ExecutionID, runtimeID)
 		} else {
 			err = fmt.Errorf("节点执行被取消: %v", nodeCtx.Err())
-			log.Printf("%s[%s] [CANCEL]  [%s] 执行被取消", prefix, ctx.ExecutionID, runtimeID)
+			logger.Printf("%s[%s] [CANCEL]  [%s] 执行被取消", prefix, ctx.ExecutionID, runtimeID)
 		}
 	}
 	duration := time.Since(startTime)
@@ -462,12 +463,12 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 		if err.Error() == "CONDITION_NOT_MET" {
 			stat.Status = "SKIP"
 			ctx.RecordStat(stat)
-			log.Printf("%s[%s] [SKIP]    [%s] 条件不满足", prefix, ctx.ExecutionID, runtimeID)
+			logger.Printf("%s[%s] [SKIP]    [%s] 条件不满足", prefix, ctx.ExecutionID, runtimeID)
 			ctx.SetResult(nodeID, "SKIPPED_BY_LOGIC")
 		} else {
 			stat.Status = "ERROR"
 			ctx.RecordStat(stat)
-			log.Printf("%s[%s] [ERROR]   [%s] 执行失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
+			logger.Printf("%s[%s] [ERROR]   [%s] 执行失败: %v", prefix, ctx.ExecutionID, runtimeID, err)
 			ctx.SetResult(nodeID, fmt.Sprintf("ERR_PROPAGATION: %v", err))
 		}
 
@@ -485,7 +486,7 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	// 状态持久化
 	SaveState(ctx)
 
-	log.Printf("%s[%s] [SUCCESS] [%s] 输出: %s",
+	logger.Printf("%s[%s] [SUCCESS] [%s] 输出: %s",
 		prefix,
 		ctx.ExecutionID,
 		runtimeID,
@@ -529,7 +530,7 @@ func InitializeGlobals(wf *models.Workflow, ctx *models.ExecutionContext, inputs
 	if d, ok := inputs["data"].(map[string]interface{}); ok {
 		inputData = d
 	}
-	
+
 	inputSecrets := make(map[string]interface{})
 	if s, ok := inputs["secrets"].(map[string]interface{}); ok {
 		inputSecrets = s
@@ -540,14 +541,14 @@ func InitializeGlobals(wf *models.Workflow, ctx *models.ExecutionContext, inputs
 		dataMap := make(map[string]interface{})
 		for k, defaultVal := range wf.Data {
 			var finalVal interface{} = defaultVal
-			
+
 			// 覆盖逻辑
 			if override, ok := inputData[k]; ok {
 				finalVal = override
 			}
 			dataMap[k] = finalVal
 		}
-		
+
 		// 序列化并存入名为 "data" 的虚拟节点结果中
 		jb, _ := json.Marshal(dataMap)
 		ctx.SetResult("data", string(jb))
@@ -578,7 +579,7 @@ func InitializeGlobals(wf *models.Workflow, ctx *models.ExecutionContext, inputs
 				ctx.AddSecretValue(realValue)
 			}
 		}
-		
+
 		jb, _ := json.Marshal(secretsMap)
 		ctx.SetResult("secrets", string(jb))
 	}
@@ -606,7 +607,7 @@ func Start(wf *models.Workflow, ctx *models.ExecutionContext, inputs map[string]
 		go func() {
 			<-timeoutCtx.Done()
 			if timeoutCtx.Err() == context.DeadlineExceeded {
-				log.Printf("[%s] [TIMEOUT] 工作流全局超时 (限制: %d秒)", ctx.ExecutionID, wf.Timeout)
+				logger.Printf("[%s] [TIMEOUT] 工作流全局超时 (限制: %d秒)", ctx.ExecutionID, wf.Timeout)
 			}
 		}()
 	}
@@ -617,6 +618,23 @@ func Start(wf *models.Workflow, ctx *models.ExecutionContext, inputs map[string]
 		if len(node.Dependencies) == 0 && !isFailureBranch(wf, id) {
 			ctx.Wg.Add(1)
 			go RunNode(wf, id, ctx)
+		}
+	}
+}
+
+// Cleanup handles post-execution maintenance
+func Cleanup(ctx *models.ExecutionContext) {
+	if ctx.Paths.Artifacts != "" {
+		if _, err := os.Stat(ctx.Paths.Artifacts); err == nil {
+			f, err := os.Open(ctx.Paths.Artifacts)
+			if err == nil {
+				defer f.Close()
+				_, err = f.Readdirnames(1)
+				if err == io.EOF {
+					logger.Printf("[Cleanup] 移除空 Artifacts 目录: %s", ctx.Paths.Artifacts)
+					os.Remove(ctx.Paths.Artifacts)
+				}
+			}
 		}
 	}
 }

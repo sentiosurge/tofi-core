@@ -98,6 +98,8 @@ func (wp *WorkerPool) executeJob(job *WorkflowJob) {
 	engine.Start(job.Workflow, job.Context, job.InitialInputs)
 	job.Context.Wg.Wait()
 
+	engine.Cleanup(job.Context)
+
 	if err := engine.SaveReport(job.Workflow, job.Context, job.DB); err != nil {
 		job.Context.Log("Failed to save report to DB: %v", err)
 	} else {

@@ -1,0 +1,21 @@
+name: agent_research_demo
+description: "Autonomous Agent using MCP to research on YouTube. Requires 'chrome' and 'fs' MCP servers in mcp_config.json."
+
+secrets:
+  openai_key: env.OPENAI_API_KEY
+
+nodes:
+  research_agent:
+    type: ai
+    config:
+      provider: openai
+      model: gpt-4o
+      api_key: "{{secrets.openai_key}}"
+      mcp_servers: ["chrome", "fs"]
+      system: "You are a professional web researcher."
+      prompt: |
+        Go to YouTube (youtube.com).
+        Search for "Workflow Automation".
+        Wait for results.
+        Extract the Title and URL for the top 3 videos.
+        Save the result to "youtube_top3.json" using the filesystem tool.

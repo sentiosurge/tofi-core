@@ -68,7 +68,56 @@ func InitDB(homeDir string) (*DB, error) {
 		return nil, err
 	}
 
+	// 创建 logs 表 (结构化日志)
+	logsQuery := `
+	CREATE TABLE IF NOT EXISTS execution_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		execution_id TEXT NOT NULL,
+		node_id TEXT,
+		log_type TEXT, -- info, think, tool_call, tool_result, error
+		content TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_logs_exec ON execution_logs(execution_id);`
+	if _, err := conn.Exec(logsQuery); err != nil {
+		return nil, err
+	}
+
 	return &DB{conn: conn}, nil
+}
+
+// ... (existing code) ...
+
+// AddLog 插入一条结构化日志
+func (db *DB) AddLog(execID, nodeID, logType, content string) error {
+	query := `INSERT INTO execution_logs (execution_id, node_id, log_type, content) VALUES (?, ?, ?, ?)`
+	_, err := db.conn.Exec(query, execID, nodeID, logType, content)
+	return err
+}
+
+// GetLogs 获取指定执行的所有日志
+func (db *DB) GetLogs(execID string) ([]map[string]interface{}, error) {
+	query := `SELECT node_id, log_type, content, created_at FROM execution_logs WHERE execution_id = ? ORDER BY id ASC`
+	rows, err := db.conn.Query(query, execID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []map[string]interface{}
+	for rows.Next() {
+		var nodeID, logType, content, createdAt string
+		if err := rows.Scan(&nodeID, &logType, &content, &createdAt); err != nil {
+			continue
+		}
+		logs = append(logs, map[string]interface{}{
+			"node_id":    nodeID,
+			"type":       logType,
+			"content":    content,
+			"created_at": createdAt,
+		})
+	}
+	return logs, nil
 }
 
 func (db *DB) Close() error {

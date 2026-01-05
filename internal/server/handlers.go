@@ -76,19 +76,14 @@ func (s *Server) handleGetExecutionLogs(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	user := "anonymous"
-	if u, ok := r.Context().Value(UserContextKey).(string); ok {
-		user = u
-	}
-
-	logPath := filepath.Join(s.config.HomeDir, user, "logs", id+".log")
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
-		http.Error(w, "Log file not found", http.StatusNotFound)
+	logs, err := s.db.GetLogs(id)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to fetch logs: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	http.ServeFile(w, r, logPath)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(logs)
 }
 
 func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +207,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var wf *models.Workflow
-	var initialInputs map[string]interface{ } 
+	var initialInputs map[string]interface{}
 
 	var runReq RunRequest
 	if err := json.Unmarshal(body, &runReq); err == nil && (runReq.Workflow != "" || len(runReq.Inputs) > 0) {
@@ -247,19 +242,14 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value(UserContextKey).(string); ok {
 		user = u
 	} else {
-		user = "anonymous"
+		user = "cli-admin"
 	}
 
 	ctx := models.NewExecutionContext(execID, user, s.config.HomeDir)
-	ctx.WorkflowName = wf.Name
+	ctx.SetWorkflowName(wf.Name)
 	ctx.DB = s.db
 
-	os.MkdirAll(ctx.Paths.Logs, 0755)
-	
-	logFilePath := filepath.Join(ctx.Paths.Logs, execID+".log")
-	if f, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-		ctx.SetLogger(f)
-	}
+	// [REMOVED] Per-execution log file is no longer needed as logs go to DB and system rotating log.
 
 	// 提交到工作池
 	job := &WorkflowJob{

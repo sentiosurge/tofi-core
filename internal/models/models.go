@@ -3,12 +3,12 @@ package models
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"tofi-core/internal/pkg/logger"
 
 	"github.com/tidwall/gjson"
 )
@@ -72,14 +72,11 @@ func NormalizeID(name string) string {
 	if name == "" {
 		return "unnamed_node"
 	}
-	// 简单实现：小写 + 空格转点 + 移除特殊字符
-	// 实际生产中可以加入拼音转换逻辑
 	s := strings.ToLower(name)
 	s = strings.ReplaceAll(s, " ", ".")
 	s = strings.ReplaceAll(s, "-", ".")
 	s = strings.ReplaceAll(s, "_", ".")
 
-	// 只保留字母、数字和点
 	var sb strings.Builder
 	for _, r := range s {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' {
@@ -88,7 +85,6 @@ func NormalizeID(name string) string {
 	}
 
 	result := sb.String()
-	// 处理重复的点
 	for strings.Contains(result, "..") {
 		result = strings.ReplaceAll(result, "..", ".")
 	}
@@ -123,69 +119,84 @@ type ExecutionContext struct {
 	mu           sync.RWMutex
 	Wg           sync.WaitGroup
 	SecretValues []string
-	Logger       *log.Logger // 每个执行专属的 Logger
-	logFile      *os.File    // 用于后续关闭文件句柄
-	Depth        int         // 递归深度 (防止死循环)
-	DB           interface{} // 存储对象 (storage.DB), 使用 interface 避免循环引用
+	Depth        int             // 递归深度 (防止死循环)
+	DB           interface{}     // 存储对象 (storage.DB), 使用 interface 避免循环引用
 	Ctx          context.Context // 用于超时控制
 	Cancel       context.CancelFunc // 用于取消执行
 }
 
 func NewExecutionContext(execID, user, homeDir string) *ExecutionContext {
 	if user == "" {
-		user = "anonymous"
+		user = "cli-admin"
 	}
 
-	// 路径空间：.tofi/{user}/...
+	// Initial paths (WorkflowName is empty initially)
 	userBase := filepath.Join(homeDir, user)
 
-	paths := ExecutionPaths{
-		Home:      homeDir,
-		Logs:      filepath.Join(userBase, "logs"),
-		Reports:   filepath.Join(userBase, "reports"),
-		Artifacts: filepath.Join(userBase, "artifacts", execID),
-		Uploads:   filepath.Join(userBase, "uploads", execID),
-	}
-
-	// 创建带取消功能的 context
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &ExecutionContext{
 		ExecutionID:  execID,
 		User:         user,
-		Paths:        paths,
+		Paths: ExecutionPaths{
+			Home:    homeDir,
+			Logs:    filepath.Join(userBase, "logs"),
+			Reports: filepath.Join(userBase, "reports"),
+			Uploads: filepath.Join(userBase, "uploads", execID),
+		},
 		Results:      make(map[string]string),
 		startedNodes: make(map[string]bool),
 		Stats:        []NodeStat{},
-		Logger:       log.Default(),
 		Depth:        0,
 		Ctx:          ctx,
 		Cancel:       cancel,
 	}
 }
 
-// SetLogger 设置专属日志输出文件
-func (ctx *ExecutionContext) SetLogger(f *os.File) {
-	ctx.logFile = f
-	ctx.Logger = log.New(f, "", log.Ldate|log.Ltime)
+// SetWorkflowName sets the name and updates relevant paths like Artifacts
+func (ctx *ExecutionContext) SetWorkflowName(name string) {
+	ctx.WorkflowName = name
+	// Artifacts are grouped by Workflow Name (Project folder style)
+	ctx.Paths.Artifacts = filepath.Join(ctx.Paths.Home, ctx.User, "artifacts", NormalizeID(name))
 }
 
 // Log 封装日志调用
 func (ctx *ExecutionContext) Log(format string, v ...interface{}) {
-	if ctx.Logger != nil {
-		ctx.Logger.Printf(format, v...)
+	msg := fmt.Sprintf(format, v...)
+	msg = ctx.MaskLog(msg)
+	
+	// Use global system logger (stdout + rotating file)
+	logger.Printf("[%s] %s", ctx.ExecutionID, msg)
+
+	// Determine Log Type for DB
+	logType := "info"
+	cleanMsg := msg
+	
+	if strings.Contains(msg, "<think>") {
+		logType = "think"
+		cleanMsg = strings.ReplaceAll(strings.ReplaceAll(msg, "<think>", ""), "</think>", "")
+	} else if strings.Contains(msg, "<tool_call") {
+		logType = "tool_call"
+	} else if strings.Contains(msg, "[Result]") {
+		logType = "tool_result"
+	} else if strings.Contains(msg, "[Error]") || strings.Contains(msg, "Failed") {
+		logType = "error"
 	}
-	// 同时打印到控制台方便调试
-	log.Printf("[%s] "+format, append([]interface{}{ctx.ExecutionID}, v...)...)
+
+	// Persist to DB if available
+	if ctx.DB != nil {
+		if db, ok := ctx.DB.(interface {
+			AddLog(execID, nodeID, logType, content string) error
+		}); ok {
+			_ = db.AddLog(ctx.ExecutionID, "", logType, cleanMsg)
+		}
+	}
 }
 
 // Close 释放资源
 func (ctx *ExecutionContext) Close() {
 	if ctx.Cancel != nil {
 		ctx.Cancel()
-	}
-	if ctx.logFile != nil {
-		ctx.logFile.Close()
 	}
 }
 
@@ -232,6 +243,20 @@ func (ctx *ExecutionContext) replaceParamsInternal(script string, strict bool) (
 	defer ctx.mu.RUnlock()
 
 	finalScript := script
+
+	// 1. System Variables Replacement
+	sysVars := map[string]string{
+		"{{ctx.execution_id}}":  ctx.ExecutionID,
+		"{{ctx.user}}":          ctx.User,
+		"{{ctx.workflow_name}}": ctx.WorkflowName,
+	}
+	for k, v := range sysVars {
+		if strings.Contains(finalScript, k) {
+			finalScript = strings.ReplaceAll(finalScript, k, v)
+		}
+	}
+
+	// 2. Node Output Replacement
 	for nodeID, output := range ctx.Results {
 		placeholder := "{{" + nodeID + "}}"
 		if strings.Contains(finalScript, placeholder) {
@@ -359,7 +384,6 @@ func (ctx *ExecutionContext) Clone() *ExecutionContext {
 		startedNodes: make(map[string]bool),
 		Stats:        []NodeStat{},
 		SecretValues: make([]string, len(ctx.SecretValues)),
-		Logger:       ctx.Logger,
 		Depth:        ctx.Depth,
 		DB:           ctx.DB,
 		Ctx:          ctx.Ctx, // 继承父 context
@@ -376,7 +400,6 @@ func (ctx *ExecutionContext) Clone() *ExecutionContext {
 }
 
 // Derive 创建一个派生的子上下文，用于 Loop 等场景
-// 它会隔离 Artifacts 和 Uploads 目录，并为日志增加前缀
 func (ctx *ExecutionContext) Derive(subID string) *ExecutionContext {
 	ctx.mu.RLock()
 	defer ctx.mu.RUnlock()
@@ -397,7 +420,6 @@ func (ctx *ExecutionContext) Derive(subID string) *ExecutionContext {
 		startedNodes: make(map[string]bool),
 		Stats:        []NodeStat{},
 		SecretValues: make([]string, len(ctx.SecretValues)),
-		Logger:       ctx.Logger, // 默认继承
 		Depth:        ctx.Depth,  // 深度不变，因为 Loop 同级
 		DB:           ctx.DB,
 		Ctx:          ctx.Ctx, // 继承父 context

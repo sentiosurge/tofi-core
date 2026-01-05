@@ -1,0 +1,15 @@
+name: basic_demo
+description: "A simple hello world workflow to verify the engine core."
+
+nodes:
+  step_1_hello:
+    type: var
+    value: "Hello, Tofi!"
+    next: ["step_2_write"]
+
+  step_2_write:
+    type: file
+    config:
+      operation: write
+      path: "hello.txt"
+      content: "{{step_1_hello}}\nTimestamp: {{ctx.execution_id}}"

@@ -3,13 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
-	"path/filepath"
 	"time"
 	"tofi-core/internal/engine"
 	"tofi-core/internal/models"
 	"tofi-core/internal/parser"
+	"tofi-core/internal/pkg/logger"
 	"tofi-core/internal/server"
 	"tofi-core/internal/storage"
 
@@ -20,6 +19,17 @@ import (
 func main() {
 	// 0. 加载环境变量 (开发环境)
 	_ = godotenv.Load()
+
+	// 1. 初始化全局日志 (轮转系统日志)
+	// 简单预解析 home 目录，默认为 .tofi
+
+homeDir := ".tofi"
+	for i, arg := range os.Args {
+		if (arg == "-home" || arg == "--home") && i+1 < len(os.Args) {
+			homeDir = os.Args[i+1]
+		}
+	}
+	logger.Init(homeDir)
 
 	if len(os.Args) < 2 {
 		printHelp()
@@ -60,7 +70,7 @@ func tokenCommand(args []string) {
 	tokenCmd := flag.NewFlagSet("token", flag.ExitOnError)
 	user := tokenCmd.String("user", "jack", "Username to encode in token")
 	secret := tokenCmd.String("secret", "", "JWT secret (defaults to TOFI_JWT_SECRET env)")
-	
+
 	tokenCmd.Parse(args)
 
 	if *secret != "" {
@@ -70,7 +80,7 @@ func tokenCommand(args []string) {
 	server.InitAuth()
 	token, err := server.GenerateToken(*user)
 	if err != nil {
-		log.Fatalf("Failed to generate token: %v", err)
+		logger.Fatalf("Failed to generate token: %v", err)
 	}
 
 	fmt.Printf("JWT Token for user '%s':\n\n%s\n\n", *user, token)
@@ -89,7 +99,7 @@ func runCommand(args []string) {
 	// 0. 初始化数据库
 	db, err := storage.InitDB(*homeDir)
 	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		logger.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
 
@@ -101,7 +111,7 @@ func runCommand(args []string) {
 		execID = *resumeID
 		ctx, err = engine.LoadState(execID, db, *homeDir)
 		if err != nil {
-			log.Fatalf("Resume failed: %v", err)
+			logger.Fatalf("Resume failed: %v", err)
 		}
 		ctx.Log("Attempting to resume execution: %s", execID)
 	} else {
@@ -114,11 +124,15 @@ func runCommand(args []string) {
 	// 2. 环境准备 (仅创建日志目录，其他按需创建)
 	os.MkdirAll(ctx.Paths.Logs, 0755)
 
+	// [REMOVED] Individual .log file per execution is now replaced by structured DB logs 
+	// and shared system rotating log.
+	/*
 	logFilePath := filepath.Join(ctx.Paths.Logs, execID+".log")
 	if f, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 		defer f.Close()
 		ctx.SetLogger(f)
 	}
+	*/
 
 	// 3. 加载 YAML
 	wf, err := parser.LoadWorkflow(*workflowPath)
@@ -126,7 +140,7 @@ func runCommand(args []string) {
 		ctx.Log("Failed to load workflow %s: %v", *workflowPath, err)
 		os.Exit(1)
 	}
-	ctx.WorkflowName = wf.Name
+	ctx.SetWorkflowName(wf.Name)
 
 	// 4. 验证
 	if err := engine.ValidateAll(wf); err != nil {
@@ -138,6 +152,7 @@ func runCommand(args []string) {
 	engine.Start(wf, ctx, nil) // CLI 暂时不传初始 inputs
 	ctx.Wg.Wait()
 
+	engine.Cleanup(ctx)
 	engine.PrintSummary(ctx)
 
 	// 8. 保存最终报告 (DB)
@@ -166,9 +181,9 @@ func serverCommand(args []string) {
 
 	srv, err := server.NewServer(cfg)
 	if err != nil {
-		log.Fatalf("Failed to initialize server: %v", err)
+		logger.Fatalf("Failed to initialize server: %v", err)
 	}
 	if err := srv.Start(); err != nil {
-		log.Fatalf("Server failed: %v", err)
+		logger.Fatalf("Server failed: %v", err)
 	}
 }

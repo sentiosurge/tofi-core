@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
@@ -313,13 +314,32 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 // ---------------- Helpers ----------------
 
 func setupClient(cfg MCPServerConfig, ctx *models.ExecutionContext) (*client.Client, func(), error) {
+	// Resolved Workspace Path: .tofi/{user}/artifacts/{workflow_name}
+	// We don't MkdirAll here to avoid empty directories.
+	// If the MCP server fails because the dir doesn't exist, we'll handle it or create it on-demand.
+	// Note: Most servers (like fs-server) will create the root if it doesn't exist or error out.
+	// Better: We can check if we should create it now.
+	workspacePath, _ := filepath.Abs(ctx.Paths.Artifacts)
+
+	processedArgs := make([]string, len(cfg.Args))
+	for i, arg := range cfg.Args {
+		processedArgs[i] = strings.ReplaceAll(arg, "{{workspace}}", workspacePath)
+	}
+
 	// Construct environment variables
 	env := os.Environ()
 	for k, v := range cfg.Env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
+		processedVal := strings.ReplaceAll(v, "{{workspace}}", workspacePath)
+		env = append(env, fmt.Sprintf("%s=%s", k, processedVal))
 	}
 
-	tr := transport.NewStdio(cfg.Command, env, cfg.Args...)
+	// Create Transport
+	tr := transport.NewStdio(cfg.Command, env, processedArgs...)
+
+	// Note: transport.Stdio doesn't expose a way to set Dir directly easily 
+	// because it manages its own *exec.Cmd. 
+	// However, we can use reflection hack again or just rely on the absolute path injection.
+	// Most MCP servers take the root as an argument.
 
 	if err := tr.Start(context.Background()); err != nil {
 		return nil, nil, fmt.Errorf("failed to start stdio transport: %v", err)

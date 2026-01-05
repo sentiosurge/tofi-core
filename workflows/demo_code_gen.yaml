@@ -1,0 +1,23 @@
+name: code_gen_demo
+description: "AI generates Python code and saves it to artifacts."
+
+secrets:
+  openai_key: env.OPENAI_API_KEY
+
+nodes:
+  generate_code:
+    type: ai
+    config:
+      provider: openai
+      model: gpt-4o
+      api_key: "{{secrets.openai_key}}"
+      system: "You are a Python expert. Output ONLY pure code without markdown backticks."
+      prompt: "Write a high-performance Python script to calculate Fibonacci sequence up to 1000."
+    next: ["save_script"]
+
+  save_script:
+    type: file
+    config:
+      operation: write
+      path: "fib_{{ctx.execution_id}}.py"
+      content: "{{generate_code}}"

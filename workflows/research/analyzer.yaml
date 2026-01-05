@@ -1,6 +1,0 @@
-name: Research Analyzer
-nodes:
-  step1:
-    type: shell
-    config:
-      script: 'echo "Analyzer is working on: {{inputs.topic}}"'
