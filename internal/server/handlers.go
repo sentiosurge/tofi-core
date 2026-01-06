@@ -52,7 +52,8 @@ type SaveWorkflowRequest struct {
 }
 
 type WorkflowListItem struct {
-	Name        string    `json:"name"`
+	ID          string    `json:"id"`          // Unique identifier (filename without extension)
+	Name        string    `json:"name"`        // Display name
 	Description string    `json:"description"`
 	Icon        string    `json:"icon"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -72,6 +73,40 @@ type SecretResponse struct {
 
 type SecretListResponse struct {
 	Secrets []SecretResponse `json:"secrets"`
+}
+
+// --- Workflow Helper Functions ---
+
+// generateWorkflowID converts a display name to a valid workflow ID
+// Example: "My Awesome Workflow" -> "my_awesome_workflow"
+func generateWorkflowID(displayName string) string {
+	// Convert to lowercase
+	id := strings.ToLower(displayName)
+	// Replace spaces with underscores
+	id = strings.ReplaceAll(id, " ", "_")
+	// Remove special characters (keep only alphanumeric and underscores)
+	var result strings.Builder
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
+}
+
+// idToDisplayName converts a workflow ID to a display name
+// Example: "demo_agent_research" -> "Demo Agent Research"
+func idToDisplayName(id string) string {
+	// Replace underscores with spaces
+	name := strings.ReplaceAll(id, "_", " ")
+	// Title case each word
+	words := strings.Fields(name)
+	for i, word := range words {
+		if len(word) > 0 {
+			words[i] = strings.ToUpper(string(word[0])) + word[1:]
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // --- Auth Handlers ---
@@ -179,21 +214,40 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	for _, f := range files {
 		if !f.IsDir() && (strings.HasSuffix(f.Name(), ".yaml") || strings.HasSuffix(f.Name(), ".yml")) {
 			info, _ := f.Info()
-			name := strings.TrimSuffix(f.Name(), filepath.Ext(f.Name()))
-			
-			// Try to read sidecar metadata from {name}.json
-			metaPath := filepath.Join(dir, name+".json")
+			id := strings.TrimSuffix(f.Name(), filepath.Ext(f.Name()))
+
+			// Try to read sidecar metadata from {id}.json
+			metaPath := filepath.Join(dir, id+".json")
 			var meta struct {
+				ID          string `json:"id"`
+				Name        string `json:"name"`
 				Description string `json:"description"`
 				Icon        string `json:"icon"`
 			}
-			
+
+			// Auto-migration: create metadata JSON if not exists
 			if mData, err := os.ReadFile(metaPath); err == nil {
 				_ = json.Unmarshal(mData, &meta)
+			} else {
+				// Generate display name from ID
+				meta.ID = id
+				meta.Name = idToDisplayName(id)
+				meta.Description = ""
+				meta.Icon = "FileText"
+
+				// Save metadata JSON
+				metaData, _ := json.MarshalIndent(meta, "", "  ")
+				_ = os.WriteFile(metaPath, metaData, 0644)
+			}
+
+			// If metadata doesn't have name, generate it
+			if meta.Name == "" {
+				meta.Name = idToDisplayName(id)
 			}
 
 			items = append(items, WorkflowListItem{
-				Name:        name,
+				ID:          id,
+				Name:        meta.Name,
 				Description: meta.Description,
 				Icon:        meta.Icon,
 				UpdatedAt:   info.ModTime(),
@@ -206,18 +260,35 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(UserContextKey).(string)
-	name := r.PathValue("name")
-	
-	path := filepath.Join(s.config.HomeDir, user, "workflows", name+".yaml")
-	content, err := os.ReadFile(path)
+	id := r.PathValue("name") // URL param is still called "name" for backward compatibility
+
+	dir := filepath.Join(s.config.HomeDir, user, "workflows")
+	yamlPath := filepath.Join(dir, id+".yaml")
+	content, err := os.ReadFile(yamlPath)
 	if err != nil {
 		http.Error(w, "Workflow not found", http.StatusNotFound)
 		return
 	}
 
+	// Read metadata
+	metaPath := filepath.Join(dir, id+".json")
+	var meta struct {
+		Name string `json:"name"`
+	}
+	if mData, err := os.ReadFile(metaPath); err == nil {
+		_ = json.Unmarshal(mData, &meta)
+	}
+
+	// If no display name in metadata, generate from ID
+	displayName := meta.Name
+	if displayName == "" {
+		displayName = idToDisplayName(id)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"name":    name,
+		"id":      id,
+		"name":    displayName,
 		"content": string(content),
 	})
 }
@@ -228,6 +299,44 @@ func (s *Server) handleSaveWorkflow(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
+	}
+
+	// Generate ID from Name (display name)
+	id := generateWorkflowID(req.Name)
+	if id == "" {
+		http.Error(w, "Workflow name cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	dir := filepath.Join(s.config.HomeDir, user, "workflows")
+	os.MkdirAll(dir, 0755)
+
+	yamlPath := filepath.Join(dir, id+".yaml")
+	metaPath := filepath.Join(dir, id+".json")
+
+	// Check if this is an update (workflow exists) or a new creation
+	isUpdate := false
+	if _, err := os.Stat(yamlPath); err == nil {
+		// Workflow exists - check if it's the same workflow being edited
+		// Read existing metadata to compare
+		var existingMeta struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if mData, err := os.ReadFile(metaPath); err == nil {
+			json.Unmarshal(mData, &existingMeta)
+			// If the ID matches, this is an update
+			if existingMeta.ID == id {
+				isUpdate = true
+			} else {
+				// Different workflow with same generated ID - conflict
+				http.Error(w, fmt.Sprintf("Workflow with ID '%s' already exists. Please choose a different name.", id), http.StatusConflict)
+				return
+			}
+		} else {
+			// File exists but no metadata - likely an update of migrated workflow
+			isUpdate = true
+		}
 	}
 
 	// Detect format
@@ -247,22 +356,48 @@ func (s *Server) handleSaveWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dir := filepath.Join(s.config.HomeDir, user, "workflows")
-	os.MkdirAll(dir, 0755)
-
-	path := filepath.Join(dir, req.Name+".yaml")
-	if err := os.WriteFile(path, []byte(req.Content), 0644); err != nil {
+	// Save YAML file
+	if err := os.WriteFile(yamlPath, []byte(req.Content), 0644); err != nil {
 		http.Error(w, "Failed to save workflow file", http.StatusInternalServerError)
 		return
 	}
 
-	// Save Sidecar Metadata
-	metaPath := filepath.Join(dir, req.Name+".json")
-	metaData, _ := json.MarshalIndent(req.Metadata, "", "  ")
+	// Save Sidecar Metadata with ID and Name
+	metadata := map[string]interface{}{
+		"id":          id,
+		"name":        req.Name,
+		"description": req.Metadata.Description,
+		"icon":        req.Metadata.Icon,
+		"updated_at":  time.Now().Format(time.RFC3339),
+	}
+
+	// Preserve created_at if this is an update
+	if isUpdate {
+		var existingMeta map[string]interface{}
+		if mData, err := os.ReadFile(metaPath); err == nil {
+			json.Unmarshal(mData, &existingMeta)
+			if createdAt, ok := existingMeta["created_at"]; ok {
+				metadata["created_at"] = createdAt
+			} else {
+				metadata["created_at"] = time.Now().Format(time.RFC3339)
+			}
+		} else {
+			metadata["created_at"] = time.Now().Format(time.RFC3339)
+		}
+	} else {
+		// New workflow
+		metadata["created_at"] = time.Now().Format(time.RFC3339)
+	}
+
+	metaData, _ := json.MarshalIndent(metadata, "", "  ")
 	_ = os.WriteFile(metaPath, metaData, 0644)
 
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "Workflow saved successfully")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Workflow saved successfully",
+		"id":      id,
+		"name":    req.Name,
+	})
 }
 
 func (s *Server) handleValidateWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -588,4 +723,47 @@ func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	s.db.DeleteSecret(user, name)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Workflow Schema Handler ---
+
+type WorkflowSchemaResponse struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Icon        string                 `json:"icon"`
+	Data        map[string]interface{} `json:"data"`
+	Secrets     map[string]string      `json:"secrets"`
+}
+
+// handleGetWorkflowSchema 返回指定 workflow 的 schema (data 和 secrets 字段)
+// 用于前端动态生成表单
+func (s *Server) handleGetWorkflowSchema(w http.ResponseWriter, r *http.Request) {
+	// 从 URL 路径获取 workflow ID
+	// 格式: /api/v1/workflows/:id/schema
+	// 例如: /api/v1/workflows/tofi/ai_response/schema
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "Workflow ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// 使用 parser 解析 workflow
+	workflowsDir := filepath.Join(s.config.HomeDir, "workflows")
+	wf, err := parser.ResolveWorkflow(id, workflowsDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Workflow not found: %v", err), http.StatusNotFound)
+		return
+	}
+
+	// 构造响应
+	resp := WorkflowSchemaResponse{
+		Name:        wf.Name,
+		Description: wf.Description,
+		Icon:        wf.Icon,
+		Data:        wf.Data,
+		Secrets:     wf.Secrets,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
