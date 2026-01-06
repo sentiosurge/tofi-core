@@ -12,6 +12,33 @@ import (
 
 type AI struct{}
 
+// detectProviderFromModel infers the AI provider from the model name
+func detectProviderFromModel(model string) string {
+	modelLower := strings.ToLower(model)
+
+	// Claude models
+	if strings.HasPrefix(modelLower, "claude") {
+		return "claude"
+	}
+
+	// Gemini models
+	if strings.HasPrefix(modelLower, "gemini") {
+		return "gemini"
+	}
+
+	// OpenAI models (gpt-*, o1-*, o3-*, etc.)
+	if strings.HasPrefix(modelLower, "gpt-") ||
+	   strings.HasPrefix(modelLower, "o1-") ||
+	   strings.HasPrefix(modelLower, "o3-") ||
+	   strings.HasPrefix(modelLower, "text-") ||
+	   strings.HasPrefix(modelLower, "davinci") {
+		return "openai"
+	}
+
+	// Default to OpenAI for unknown models
+	return "openai"
+}
+
 func (a *AI) Execute(config map[string]interface{}, ctx *models.ExecutionContext) (string, error) {
 	// 1. Check for Agent Mode (MCP Servers)
 	if serversRaw, ok := config["mcp_servers"].([]interface{}); ok && len(serversRaw) > 0 {
@@ -20,33 +47,34 @@ func (a *AI) Execute(config map[string]interface{}, ctx *models.ExecutionContext
 
 	// 2. Standard Generation Mode
 
+	model := fmt.Sprint(config["model"])
+
+	// Auto-detect provider from model name if not explicitly set
 	provider := strings.ToLower(fmt.Sprint(config["provider"]))
+	if provider == "" || provider == "<nil>" {
+		provider = detectProviderFromModel(model)
+	}
 
 	var endpoint string
-
 	if ep, ok := config["endpoint"].(string); ok {
-
 		endpoint = ep
-
 	}
 
 	// Apply default endpoints if not specified
-
 	if endpoint == "" {
-
 		switch provider {
-		case "openai", "":
+		case "openai":
 			endpoint = "https://api.openai.com/v1"
-		case "anthropic":
+		case "anthropic", "claude":
 			endpoint = "https://api.anthropic.com/v1"
 		case "gemini":
 			endpoint = "https://generativelanguage.googleapis.com/v1beta"
+		default:
+			endpoint = "https://api.openai.com/v1" // Default to OpenAI
 		}
 	}
 
 	apiKey := fmt.Sprint(config["api_key"])
-	model := fmt.Sprint(config["model"])
-
 	system := fmt.Sprint(config["system"])
 	prompt := fmt.Sprint(config["prompt"])
 
@@ -210,13 +238,19 @@ func (a *AI) executeAgent(config map[string]interface{}, serverIDs []interface{}
 
 	}
 
-	agentCfg.AI.Provider = strings.ToLower(fmt.Sprint(config["provider"]))
+	model := fmt.Sprint(config["model"])
+	agentCfg.AI.Model = model
 
-	agentCfg.AI.Model = fmt.Sprint(config["model"])
+	// Auto-detect provider from model if not explicitly set
+	provider := strings.ToLower(fmt.Sprint(config["provider"]))
+	if provider == "" || provider == "<nil>" {
+		provider = detectProviderFromModel(model)
+	}
+	agentCfg.AI.Provider = provider
 
 	agentCfg.AI.APIKey = fmt.Sprint(config["api_key"])
 
-	
+
 
 	// Handle BaseURL/Endpoint
 
@@ -227,10 +261,6 @@ func (a *AI) executeAgent(config map[string]interface{}, serverIDs []interface{}
 		endpoint = ep
 
 	}
-
-	provider := agentCfg.AI.Provider
-
-	model := agentCfg.AI.Model
 
 
 
@@ -301,19 +331,9 @@ func (a *AI) executeAgent(config map[string]interface{}, serverIDs []interface{}
 
 
 func (a *AI) Validate(n *models.Node) error {
-	provider, _ := n.Config["provider"].(string)
-	endpoint, hasEndpoint := n.Config["endpoint"]
-
-	// If endpoint is missing, check if provider is known
-	if !hasEndpoint || fmt.Sprint(endpoint) == "" {
-		knownProviders := map[string]bool{"openai": true, "anthropic": true, "gemini": true}
-		if !knownProviders[strings.ToLower(provider)] {
-			// If provider is also missing or unknown, then endpoint is required
-			return fmt.Errorf("config.endpoint is required for custom provider '%s'", provider)
-		}
-	}
-
-	if _, ok := n.Config["model"]; !ok {
+	// Only model is required - provider and endpoint are auto-detected
+	model, ok := n.Config["model"]
+	if !ok || fmt.Sprint(model) == "" {
 		return fmt.Errorf("config.model is required")
 	}
 	return nil
