@@ -372,6 +372,35 @@ func (ctx *ExecutionContext) Snapshot() (map[string]string, []NodeStat) {
 	return results, stats
 }
 
+// MaskedSnapshot 返回脱敏后的快照，用于 API 返回和数据库存储
+// 所有包含 secrets 的输出都会被替换为 ********
+func (ctx *ExecutionContext) MaskedSnapshot() (map[string]string, []NodeStat) {
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+
+	results := make(map[string]string, len(ctx.Results))
+	for k, v := range ctx.Results {
+		// 对每个输出进行脱敏
+		results[k] = ctx.maskString(v)
+	}
+
+	stats := make([]NodeStat, len(ctx.Stats))
+	copy(stats, ctx.Stats)
+
+	return results, stats
+}
+
+// maskString 内部方法，对字符串进行脱敏（不加锁，调用方需持有锁）
+func (ctx *ExecutionContext) maskString(input string) string {
+	output := input
+	for _, secret := range ctx.SecretValues {
+		if secret != "" {
+			output = strings.ReplaceAll(output, secret, "********")
+		}
+	}
+	return output
+}
+
 // Clone 深度拷贝当前的上下文
 func (ctx *ExecutionContext) Clone() *ExecutionContext {
 	ctx.mu.RLock()

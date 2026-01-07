@@ -557,7 +557,8 @@ func (s *Server) handleGetExecution(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if ctx, ok := s.registry.Get(id); ok {
-		results, stats := ctx.Snapshot()
+		// 使用脱敏后的快照，确保 secrets 不会泄露到前端
+		results, stats := ctx.MaskedSnapshot()
 		resp := models.ExecutionResult{
 			ExecutionID:  ctx.ExecutionID,
 			WorkflowName: ctx.WorkflowName,

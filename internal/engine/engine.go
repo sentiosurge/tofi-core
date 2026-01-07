@@ -569,6 +569,41 @@ func InitializeGlobals(wf *models.Workflow, ctx *models.ExecutionContext, inputs
 					realValue = os.Getenv(source[4:])
 				} else if len(source) > 7 && source[:6] == "{{env." && source[len(source)-2:] == "}}" {
 					realValue = os.Getenv(source[6 : len(source)-2])
+				} else if len(source) > 4 && source[:4] == "ref:" {
+					// 2.3 从数据库加载 Secret (ref:SECRET_NAME 语法)
+					secretName := source[4:]
+					if ctx.DB != nil {
+						if db, ok := ctx.DB.(*storage.DB); ok {
+							record, err := db.GetSecret(ctx.User, secretName)
+							if err != nil {
+								if err == sql.ErrNoRows {
+									logger.Printf("[%s] [WARN] Secret '%s' not found for user '%s', using empty value",
+										ctx.ExecutionID, secretName, ctx.User)
+									realValue = ""
+								} else {
+									logger.Printf("[%s] [ERROR] Failed to get secret '%s': %v",
+										ctx.ExecutionID, secretName, err)
+									realValue = ""
+								}
+							} else {
+								// 解密 Secret
+								decrypted, err := crypto.Decrypt(record.EncryptedValue)
+								if err != nil {
+									logger.Printf("[%s] [ERROR] Failed to decrypt secret '%s': %v",
+										ctx.ExecutionID, secretName, err)
+									realValue = ""
+								} else {
+									realValue = decrypted
+								}
+							}
+						} else {
+							logger.Printf("[%s] [WARN] DB not available for secret resolution", ctx.ExecutionID)
+							realValue = source
+						}
+					} else {
+						logger.Printf("[%s] [WARN] DB not available for secret resolution", ctx.ExecutionID)
+						realValue = source
+					}
 				} else {
 					realValue = source
 				}

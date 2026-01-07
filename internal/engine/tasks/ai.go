@@ -2,13 +2,56 @@ package tasks
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"tofi-core/internal/executor"
 	"tofi-core/internal/mcp"
 	"tofi-core/internal/models"
+	"tofi-core/internal/pkg/logger"
 
 	"github.com/tidwall/gjson"
 )
+
+// resolveAPIKey 解析 API Key，支持系统 key 模式
+// 当 use_system_key 为 true 时，根据 provider 从环境变量加载对应的 API key
+func resolveAPIKey(config map[string]interface{}, provider string, ctx *models.ExecutionContext) (string, error) {
+	// 检查是否使用系统 key
+	useSystemKey, _ := config["use_system_key"].(bool)
+
+	if useSystemKey {
+		// TODO: 检查用户是否是 paid 用户
+		// 目前测试阶段，所有用户都视为 paid
+		isPaidUser := true
+
+		if !isPaidUser {
+			return "", fmt.Errorf("system API key is only available for paid users")
+		}
+
+		// 根据 provider 加载对应的环境变量
+		var envKey string
+		switch provider {
+		case "openai":
+			envKey = "TOFI_OPENAI_API_KEY"
+		case "anthropic", "claude":
+			envKey = "TOFI_ANTHROPIC_API_KEY"
+		case "gemini":
+			envKey = "TOFI_GEMINI_API_KEY"
+		default:
+			envKey = "TOFI_OPENAI_API_KEY" // 默认使用 OpenAI
+		}
+
+		apiKey := os.Getenv(envKey)
+		if apiKey == "" {
+			return "", fmt.Errorf("system API key not configured (env: %s)", envKey)
+		}
+
+		logger.Printf("[%s] Using system API key for provider '%s'", ctx.ExecutionID, provider)
+		return apiKey, nil
+	}
+
+	// 使用用户自己的 key
+	return fmt.Sprint(config["api_key"]), nil
+}
 
 type AI struct{}
 
@@ -74,7 +117,12 @@ func (a *AI) Execute(config map[string]interface{}, ctx *models.ExecutionContext
 		}
 	}
 
-	apiKey := fmt.Sprint(config["api_key"])
+	// 解析 API Key（支持系统 key 模式）
+	apiKey, err := resolveAPIKey(config, provider, ctx)
+	if err != nil {
+		return "", err
+	}
+
 	system := fmt.Sprint(config["system"])
 	prompt := fmt.Sprint(config["prompt"])
 
@@ -248,7 +296,12 @@ func (a *AI) executeAgent(config map[string]interface{}, serverIDs []interface{}
 	}
 	agentCfg.AI.Provider = provider
 
-	agentCfg.AI.APIKey = fmt.Sprint(config["api_key"])
+	// 解析 API Key（支持系统 key 模式）
+	apiKey, err := resolveAPIKey(config, provider, ctx)
+	if err != nil {
+		return "", err
+	}
+	agentCfg.AI.APIKey = apiKey
 
 
 

@@ -7,6 +7,7 @@ import (
 )
 
 // SaveState 保存工作流执行的中间状态到数据库
+// 使用脱敏后的快照，确保 secrets 不会被持久化
 func SaveState(ctx *models.ExecutionContext) error {
 	if ctx.DB == nil {
 		return nil
@@ -16,7 +17,8 @@ func SaveState(ctx *models.ExecutionContext) error {
 		return nil
 	}
 
-	results, stats := ctx.Snapshot()
+	// 使用脱敏后的快照
+	results, stats := ctx.MaskedSnapshot()
 	state := models.ExecutionResult{
 		ExecutionID:  ctx.ExecutionID,
 		WorkflowName: ctx.WorkflowName,
@@ -54,20 +56,32 @@ func LoadState(execID string, db *storage.DB, homeDir string) (*models.Execution
 }
 
 // SaveReport 将最终报告存入数据库
+// 使用脱敏后的快照，确保 secrets 不会被持久化
 func SaveReport(wf *models.Workflow, ctx *models.ExecutionContext, db *storage.DB) error {
 	if db == nil {
 		return nil
 	}
 
-	results, stats := ctx.Snapshot()
+	// 使用脱敏后的快照
+	results, stats := ctx.MaskedSnapshot()
+
+	// 检测是否有节点失败
+	status := "COMPLETED"
+	for _, stat := range stats {
+		if stat.Status == "ERROR" {
+			status = "FAILED"
+			break
+		}
+	}
+
 	report := models.ExecutionResult{
 		ExecutionID:  ctx.ExecutionID,
 		WorkflowName: wf.Name,
-		Status:       "COMPLETED",
+		Status:       status,
 		Stats:        stats,
 		Outputs:      results,
 	}
 
 	jb, _ := json.Marshal(report)
-	return db.SaveExecution(ctx.ExecutionID, wf.Name, ctx.User, "COMPLETED", "", string(jb))
+	return db.SaveExecution(ctx.ExecutionID, wf.Name, ctx.User, status, "", string(jb))
 }
