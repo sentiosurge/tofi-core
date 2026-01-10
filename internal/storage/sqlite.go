@@ -132,6 +132,85 @@ func (db *DB) CountUsers() (int, error) {
 	return count, err
 }
 
+// Admin: ListAllUsers 返回所有用户
+func (db *DB) ListAllUsers() ([]*UserRecord, error) {
+	query := `SELECT id, username, password_hash, role, created_at FROM users ORDER BY created_at DESC`
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []*UserRecord
+	for rows.Next() {
+		var u UserRecord
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt); err != nil {
+			continue
+		}
+		records = append(records, &u)
+	}
+	return records, nil
+}
+
+// Admin: DeleteUser 删除用户
+func (db *DB) DeleteUser(id string) error {
+	query := `DELETE FROM users WHERE id = ?`
+	result, err := db.conn.Exec(query, id)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// Admin: ListAllExecutions 返回所有用户的执行记录
+func (db *DB) ListAllExecutions(limit, offset int) ([]*ExecutionRecord, error) {
+	query := `SELECT id, workflow_name, user, status, state_json, result_json, created_at FROM executions ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	rows, err := db.conn.Query(query, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []*ExecutionRecord
+	for rows.Next() {
+		var r ExecutionRecord
+		if err := rows.Scan(&r.ID, &r.WorkflowName, &r.User, &r.Status, &r.StateJSON, &r.ResultJSON, &r.CreatedAt); err != nil {
+			continue
+		}
+		records = append(records, &r)
+	}
+	return records, nil
+}
+
+// SystemStats 系统统计数据
+type SystemStats struct {
+	TotalUsers           int `json:"total_users"`
+	TotalExecutions      int `json:"total_executions"`
+	SuccessfulExecutions int `json:"successful_executions"`
+	FailedExecutions     int `json:"failed_executions"`
+	RunningExecutions    int `json:"running_executions"`
+}
+
+// Admin: GetSystemStats 返回系统统计数据
+func (db *DB) GetSystemStats() (*SystemStats, error) {
+	var stats SystemStats
+
+	db.conn.QueryRow("SELECT COUNT(*) FROM users").Scan(&stats.TotalUsers)
+	db.conn.QueryRow("SELECT COUNT(*) FROM executions").Scan(&stats.TotalExecutions)
+	db.conn.QueryRow("SELECT COUNT(*) FROM executions WHERE status = 'SUCCESS'").Scan(&stats.SuccessfulExecutions)
+	db.conn.QueryRow("SELECT COUNT(*) FROM executions WHERE status = 'ERROR'").Scan(&stats.FailedExecutions)
+	db.conn.QueryRow("SELECT COUNT(*) FROM executions WHERE status = 'RUNNING'").Scan(&stats.RunningExecutions)
+
+	return &stats, nil
+}
+
 // AddLog 插入一条结构化日志
 func (db *DB) AddLog(execID, nodeID, logType, content string) error {
 	query := `INSERT INTO execution_logs (execution_id, node_id, log_type, content) VALUES (?, ?, ?, ?)`
@@ -299,5 +378,40 @@ func (db *DB) DeleteSecret(user, name string) error {
 		return sql.ErrNoRows
 	}
 
+	return nil
+}
+
+// Admin: ListAllSecrets 返回所有用户的 secrets 元数据（不含加密值）
+func (db *DB) ListAllSecrets() ([]*SecretRecord, error) {
+	query := `SELECT id, user, name, created_at, updated_at FROM secrets ORDER BY user, name`
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var secrets []*SecretRecord
+	for rows.Next() {
+		var r SecretRecord
+		if err := rows.Scan(&r.ID, &r.User, &r.Name, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		// 注意：不包含 EncryptedValue
+		secrets = append(secrets, &r)
+	}
+	return secrets, nil
+}
+
+// Admin: DeleteSecretByID 通过 ID 删除 secret
+func (db *DB) DeleteSecretByID(id string) error {
+	query := `DELETE FROM secrets WHERE id = ?`
+	result, err := db.conn.Exec(query, id)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
 	return nil
 }

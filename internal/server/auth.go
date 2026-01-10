@@ -28,15 +28,16 @@ func InitAuth() {
 }
 
 // GenerateToken 为指定用户生成一个长期有效的 Token (用于 CLI 测试)
-func GenerateToken(username string) (string, error) {
+func GenerateToken(username string, role string) (string, error) {
 	if len(jwtSecret) == 0 {
 		InitAuth()
 	}
 	claims := jwt.MapClaims{
-		"sub": username,
-		"iss": "tofi-engine",
-		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(365 * 24 * time.Hour).Unix(), // 1年有效期
+		"sub":  username,
+		"role": role,
+		"iss":  "tofi-engine",
+		"iat":  time.Now().Unix(),
+		"exp":  time.Now().Add(365 * 24 * time.Hour).Unix(), // 1年有效期
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(jwtSecret)
@@ -93,4 +94,22 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		ctx := context.WithValue(r.Context(), UserContextKey, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
+}
+
+// AdminMiddleware 验证用户是否为 Admin
+// 在 AuthMiddleware 的基础上检查用户角色
+func (s *Server) AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return s.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		username := r.Context().Value(UserContextKey).(string)
+		user, err := s.db.GetUser(username)
+		if err != nil {
+			http.Error(w, "User not found", http.StatusUnauthorized)
+			return
+		}
+		if user.Role != "admin" {
+			http.Error(w, "Admin access required", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
