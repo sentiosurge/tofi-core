@@ -78,7 +78,7 @@ func tokenCommand(args []string) {
 	}
 
 	server.InitAuth()
-	token, err := server.GenerateToken(*user)
+	token, err := server.GenerateToken(*user, "user") // CLI 生成的 token 默认 user 角色
 	if err != nil {
 		logger.Fatalf("Failed to generate token: %v", err)
 	}
