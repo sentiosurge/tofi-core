@@ -48,8 +48,9 @@ type SaveWorkflowRequest struct {
 	Name     string `json:"name"`
 	Content  string `json:"content"`
 	Metadata struct {
-		Description string `json:"description"`
-		Icon        string `json:"icon"`
+		Description string                       `json:"description"`
+		Icon        string                       `json:"icon"`
+		Positions   map[string]map[string]float64 `json:"positions,omitempty"` // Node positions: { nodeId: { x, y } }
 	} `json:"metadata"`
 }
 
@@ -275,7 +276,8 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	// Read metadata
 	metaPath := filepath.Join(dir, id+".json")
 	var meta struct {
-		Name string `json:"name"`
+		Name      string                          `json:"name"`
+		Positions map[string]map[string]float64   `json:"positions,omitempty"`
 	}
 	if mData, err := os.ReadFile(metaPath); err == nil {
 		_ = json.Unmarshal(mData, &meta)
@@ -288,10 +290,11 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"id":      id,
-		"name":    displayName,
-		"content": string(content),
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":        id,
+		"name":      displayName,
+		"content":   string(content),
+		"positions": meta.Positions,
 	})
 }
 
@@ -392,6 +395,11 @@ func (s *Server) handleSaveWorkflow(w http.ResponseWriter, r *http.Request) {
 		"description": req.Metadata.Description,
 		"icon":        req.Metadata.Icon,
 		"updated_at":  time.Now().Format(time.RFC3339),
+	}
+
+	// Save node positions if provided
+	if len(req.Metadata.Positions) > 0 {
+		metadata["positions"] = req.Metadata.Positions
 	}
 
 	// Preserve created_at if this is an update
