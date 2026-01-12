@@ -116,6 +116,7 @@ type ExecutionContext struct {
 	User         string // 执行用户 (租户)
 	Paths        ExecutionPaths
 	Results      map[string]string
+	Approvals    map[string]string // 存储人工审批状态: nodeID -> action (approve/reject)
 	startedNodes map[string]bool
 	Stats        []NodeStat
 	mu           sync.RWMutex
@@ -147,12 +148,26 @@ func NewExecutionContext(execID, user, homeDir string) *ExecutionContext {
 			Uploads: filepath.Join(userBase, "uploads", execID),
 		},
 		Results:      make(map[string]string),
+		Approvals:    make(map[string]string),
 		startedNodes: make(map[string]bool),
 		Stats:        []NodeStat{},
 		Depth:        0,
 		Ctx:          ctx,
 		Cancel:       cancel,
 	}
+}
+
+func (ctx *ExecutionContext) ApproveNode(nodeID, action string) {
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	ctx.Approvals[nodeID] = action
+}
+
+func (ctx *ExecutionContext) GetApproval(nodeID string) (string, bool) {
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+	val, ok := ctx.Approvals[nodeID]
+	return val, ok
 }
 
 // SetWorkflowName sets the name and updates relevant paths like Artifacts

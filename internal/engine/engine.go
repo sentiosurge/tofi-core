@@ -106,6 +106,8 @@ func GetAction(nodeType string) Action {
 		return &tasks.Shell{}
 	case "ai":
 		return &tasks.AI{}
+	case "hold":
+		return &tasks.Hold{}
 	case "file":
 		return &tasks.File{}
 	case "workflow":
@@ -411,6 +413,9 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 			resolvedConfig["fields"] = rawFields
 		}
 	}
+	
+	// 注入系统元数据
+	resolvedConfig["_node_id"] = node.ID
 	// ------------------------------------
 
 	startTime := time.Now()

@@ -78,6 +78,10 @@ type SecretListResponse struct {
 	Secrets []SecretResponse `json:"secrets"`
 }
 
+type ApproveRequest struct {
+	Action string `json:"action"` // "approve" or "reject"
+}
+
 // --- Workflow Helper Functions ---
 
 // generateWorkflowID converts a display name to a valid workflow ID
@@ -624,6 +628,32 @@ func (s *Server) handleGetExecutionLogs(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(logs)
+}
+
+func (s *Server) handleApproveExecution(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	nodeID := r.PathValue("node_id")
+
+	var req ApproveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		req.Action = "approve"
+	}
+	if req.Action == "" {
+		req.Action = "approve"
+	}
+
+	if ctx, ok := s.registry.Get(id); ok {
+		ctx.ApproveNode(nodeID, req.Action)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "success",
+			"node_id": nodeID,
+			"action":  req.Action,
+		})
+		return
+	}
+
+	http.Error(w, "Execution not found or not running", http.StatusNotFound)
 }
 
 // --- Artifact Handlers ---
