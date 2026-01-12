@@ -14,6 +14,7 @@ import (
 	"tofi-core/internal/engine"
 	"tofi-core/internal/models"
 	"tofi-core/internal/parser"
+	"tofi-core/internal/storage"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -501,7 +502,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	var runReq RunRequest
 	if err := json.Unmarshal(body, &runReq); err == nil && (runReq.Workflow != "" || len(runReq.Inputs) > 0) {
-		if strings.HasPrefix(runReq.Workflow, "name:") || strings.HasPrefix(runReq.Workflow, "{") {
+		if strings.HasPrefix(runReq.Workflow, "name:") || strings.HasPrefix(runReq.Workflow, "id:") || strings.HasPrefix(runReq.Workflow, "{") {
 			// Detect format
 			format := "yaml"
 			if strings.HasPrefix(strings.TrimSpace(runReq.Workflow), "{") {
@@ -538,11 +539,27 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ensure Workflow ID is set for recovery
+	if wf.ID == "" {
+		if !strings.Contains(runReq.Workflow, "\n") && !strings.HasPrefix(runReq.Workflow, "{") {
+			wf.ID = runReq.Workflow
+		} else {
+			wf.ID = models.NormalizeID(wf.Name)
+		}
+	}
+
+	// CLEANUP: Cancel any existing running instances of this workflow
+	// This prevents multiple "zombies" and ensures the UI always connects to the latest run.
+	if err := s.db.CancelRunningExecutions(user, wf.ID); err != nil {
+		fmt.Printf("⚠️ Failed to cancel old executions: %v\n", err)
+	}
+
 	uuidStr := uuid.New().String()[:4]
 	execID := time.Now().Format("102150405") + "-" + uuidStr
 	
 	ctx := models.NewExecutionContext(execID, user, s.config.HomeDir)
 	ctx.SetWorkflowName(wf.Name)
+	ctx.WorkflowID = wf.ID
 	ctx.DB = s.db
 
 	job := &WorkflowJob{
@@ -574,8 +591,17 @@ func (s *Server) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 		limit = 20
 	}
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	workflowID := r.URL.Query().Get("workflow_id")
 
-	records, err := s.db.ListExecutions(user, limit, offset)
+	var records []*storage.ExecutionRecord
+	var err error
+
+	if workflowID != "" {
+		records, err = s.db.ListExecutionsByWorkflow(user, workflowID, limit)
+	} else {
+		records, err = s.db.ListExecutions(user, limit, offset)
+	}
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
