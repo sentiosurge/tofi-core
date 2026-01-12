@@ -57,7 +57,11 @@ func ResolveWorkflow(id string, workflowsDir string) (*models.Workflow, error) {
 		path = filepath.Join(workflowsDir, cleanID+".yaml")
 	}
 
-	return LoadWorkflow(path)
+	wf, err := LoadWorkflow(path)
+	if err == nil {
+		wf.ID = cleanID
+	}
+	return wf, err
 }
 
 // LoadWorkflow 会根据文件后缀名自动选择解析方式

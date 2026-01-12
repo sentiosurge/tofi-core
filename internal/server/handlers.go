@@ -510,6 +510,8 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	initialInputs = runReq.Inputs
 
+	fmt.Printf("[DEBUG] RunRequest: ID='%s', ContentLen=%d\n", runReq.WorkflowID, len(runReq.Content))
+
 	// 兼容性逻辑：将旧的 Workflow 字段映射到新的 WorkflowID 或 Content
 	if runReq.Workflow != "" && runReq.WorkflowID == "" && runReq.Content == "" {
 		// 如果看起来像 YAML/JSON 内容，则是 Content
@@ -567,6 +569,8 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to load workflow definition", http.StatusInternalServerError)
 		return
 	}
+
+	fmt.Printf("[DEBUG] Loaded Workflow '%s' (ID: %s) with %d nodes\n", wf.Name, wf.ID, len(wf.Nodes))
 
 	if err := engine.ValidateAll(wf); err != nil {
 		http.Error(w, fmt.Sprintf("Workflow validation failed: %v", err), http.StatusBadRequest)

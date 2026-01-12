@@ -21,6 +21,7 @@ func SaveState(ctx *models.ExecutionContext) error {
 	results, stats := ctx.MaskedSnapshot()
 	state := models.ExecutionResult{
 		ExecutionID:  ctx.ExecutionID,
+		WorkflowID:   ctx.WorkflowID,
 		WorkflowName: ctx.WorkflowName,
 		Status:       "RUNNING",
 		Outputs:      results,
@@ -28,7 +29,7 @@ func SaveState(ctx *models.ExecutionContext) error {
 	}
 
 	jb, _ := json.Marshal(state)
-	return db.SaveExecution(ctx.ExecutionID, ctx.WorkflowName, ctx.User, "RUNNING", string(jb), "")
+	return db.SaveExecution(ctx.ExecutionID, ctx.WorkflowID, ctx.WorkflowName, ctx.User, "RUNNING", string(jb), "")
 }
 
 // LoadState 从数据库中恢复执行状态
@@ -45,6 +46,7 @@ func LoadState(execID string, db *storage.DB, homeDir string) (*models.Execution
 
 	ctx := models.NewExecutionContext(execID, record.User, homeDir)
 	ctx.WorkflowName = record.WorkflowName
+	ctx.WorkflowID = record.WorkflowID
 	ctx.DB = db
 	
 	for k, v := range state.Outputs {
@@ -76,6 +78,7 @@ func SaveReport(wf *models.Workflow, ctx *models.ExecutionContext, db *storage.D
 
 	report := models.ExecutionResult{
 		ExecutionID:  ctx.ExecutionID,
+		WorkflowID:   wf.ID,
 		WorkflowName: wf.Name,
 		Status:       status,
 		Stats:        stats,
@@ -83,5 +86,5 @@ func SaveReport(wf *models.Workflow, ctx *models.ExecutionContext, db *storage.D
 	}
 
 	jb, _ := json.Marshal(report)
-	return db.SaveExecution(ctx.ExecutionID, wf.Name, ctx.User, status, "", string(jb))
+	return db.SaveExecution(ctx.ExecutionID, wf.ID, wf.Name, ctx.User, status, "", string(jb))
 }

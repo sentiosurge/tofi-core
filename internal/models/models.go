@@ -15,11 +15,11 @@ import (
 
 // NodeStat 记录单个节点的运行履历
 type NodeStat struct {
-	NodeID    string
-	Type      string
-	Status    string // SUCCESS, ERROR, SKIP
-	Duration  time.Duration
-	StartTime time.Time
+	NodeID    string        `json:"node_id"`
+	Type      string        `json:"type"`
+	Status    string        `json:"status"` // SUCCESS, ERROR, SKIP
+	Duration  time.Duration `json:"duration"`
+	StartTime time.Time     `json:"start_time"`
 }
 
 // Parameter 定义了节点输入的原子单位
@@ -92,6 +92,7 @@ func NormalizeID(name string) string {
 }
 
 type Workflow struct {
+	ID          string                 `json:"id" yaml:"id"`
 	Name        string                 `json:"name" yaml:"name"`
 	Description string                 `json:"description" yaml:"description"`
 	Icon        string                 `json:"icon" yaml:"icon"`
@@ -112,6 +113,7 @@ type ExecutionPaths struct {
 
 type ExecutionContext struct {
 	ExecutionID  string
+	WorkflowID   string // 工作流 ID
 	WorkflowName string // 工作流名称
 	User         string // 执行用户 (租户)
 	Paths        ExecutionPaths
@@ -349,6 +351,7 @@ func (ctx *ExecutionContext) ReplaceParamsAny(val interface{}) interface{} {
 
 type ExecutionResult struct {
 	ExecutionID  string            `json:"execution_id"`
+	WorkflowID   string            `json:"workflow_id"`
 	WorkflowName string            `json:"workflow_name"`
 	Status       string            `json:"status"`
 	StartTime    time.Time         `json:"start_time"`
@@ -423,6 +426,7 @@ func (ctx *ExecutionContext) Clone() *ExecutionContext {
 
 	cloned := &ExecutionContext{
 		ExecutionID:  ctx.ExecutionID,
+		WorkflowID:   ctx.WorkflowID,
 		WorkflowName: ctx.WorkflowName,
 		User:         ctx.User,
 		Paths:        ctx.Paths,
@@ -459,6 +463,7 @@ func (ctx *ExecutionContext) Derive(subID string) *ExecutionContext {
 
 	derived := &ExecutionContext{
 		ExecutionID:  newID,
+		WorkflowID:   ctx.WorkflowID,
 		WorkflowName: ctx.WorkflowName,
 		User:         ctx.User,
 		Paths:        newPaths,
