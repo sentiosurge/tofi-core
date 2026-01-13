@@ -316,6 +316,15 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	runtimeID := node.GetRuntimeID()
 	logger.Printf("%s[%s] [START]   [%s] 类型: %s", prefix, ctx.ExecutionID, runtimeID, node.Type)
 
+	// 立即记录 RUNNING 状态并持久化，确保前端能看到
+	ctx.RecordStat(models.NodeStat{
+		NodeID:    runtimeID,
+		Type:      node.Type,
+		Status:    "RUNNING",
+		StartTime: time.Now(),
+	})
+	SaveState(ctx)
+
 	// --- 🆕 核心规范重构：解析局部作用域 ---
 	var resolvedConfig map[string]interface{}
 	var err error
