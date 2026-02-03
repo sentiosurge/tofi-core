@@ -426,147 +426,206 @@ process_results:
 
 ---
 
+### compare
+
+Compare two values and output `"true"` or `"false"`. Supports multiple data types.
+
+**Config:**
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `left` | string | Yes | Left operand |
+| `right` | string | Yes | Right operand |
+| `operator` | string | Yes | Comparison operator |
+
+**Operators by Type:**
+
+| Category | Operators | Type Requirements |
+|----------|-----------|-------------------|
+| **Universal** | `==`, `!=` | Try number first, fallback to string |
+| **Numeric** | `>`, `<`, `>=`, `<=` | Both must be valid numbers |
+| **Numeric** | `between` | left=number, right=`[min, max]` array |
+| **String** | `contains`, `not_contains` | Converted to string |
+| **String** | `starts_with`, `ends_with` | Converted to string |
+| **String** | `matches` | left=string, right=regex pattern |
+| **List** | `in`, `not_in` | right must be JSON array |
+
+**Output:** `"true"` or `"false"` (string)
+
+**Error:** Throws if type conversion fails (e.g., non-numeric for `>`)
+
+**Example:**
+```yaml
+check_score:
+  type: "compare"
+  config:
+    left: "{{metrics.score}}"
+    operator: ">"
+    right: "80"
+  next: ["branch_node"]
+
+check_range:
+  type: "compare"
+  config:
+    left: "{{value}}"
+    operator: "between"
+    right: "[10, 100]"
+
+check_contains:
+  type: "compare"
+  config:
+    left: "{{response}}"
+    operator: "contains"
+    right: "success"
+
+check_in_list:
+  type: "compare"
+  config:
+    left: "{{status}}"
+    operator: "in"
+    right: '["active", "pending"]'
+```
+
+---
+
 ### check
 
-Simple value checking for boolean conditions.
+Check a single value and output `"true"` or `"false"`.
 
 **Config:**
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `mode` | string | Yes | - | Check mode |
-| `value` | string | Yes | - | Value to check |
-| `output_bool` | string | No | - | If "true", output "true"/"false" instead of error |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `value` | string | Yes | Value to check |
+| `operator` | string | Yes | Check type |
 
-**Modes:**
-| Mode | Description |
-|------|-------------|
-| `is_true` | Value equals "true" (case-insensitive) or "1" |
-| `is_false` | Value equals "false" (case-insensitive) or "0" |
+**Operators:**
+| Operator | Description |
+|----------|-------------|
 | `is_empty` | Value is empty or whitespace only |
-| `exists` | Value is not empty |
+| `not_empty` | Value is not empty |
+| `is_true` | Value equals "true"/"1" (case-insensitive) |
+| `is_false` | Value equals "false"/"0" (case-insensitive) |
+| `is_number` | Value is a valid number |
+| `is_json` | Value is valid JSON |
 
-**Output:**
-- On match: "CHECK_PASSED" (or "true" if output_bool="true")
-- On no match: Error "CONDITION_NOT_MET" (or "false" if output_bool="true")
+**Output:** `"true"` or `"false"` (string)
 
 **Example:**
 ```yaml
-check_enabled:
+check_data_exists:
   type: "check"
   config:
-    mode: "is_true"
-    value: "{{feature_flag}}"
-  next: ["feature_enabled"]
-  on_failure: ["feature_disabled"]
-
-check_with_bool_output:
-  type: "check"
-  config:
-    mode: "exists"
     value: "{{optional_data}}"
-    output_bool: "true"
-  # Output will be "true" or "false", no error thrown
+    operator: "not_empty"
+  next: ["process_data"]
+
+check_is_valid_json:
+  type: "check"
+  config:
+    value: "{{api_response}}"
+    operator: "is_json"
 ```
 
 ---
 
-### text
+### branch
 
-String pattern matching and validation.
-
-**Config:**
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `mode` | string | Yes | - | Match mode |
-| `text` | string | Yes | - | String to check |
-| `pattern` | string | Yes | - | Pattern or substring to match |
-| `output_bool` | string | No | - | If "true", output "true"/"false" instead of error |
-
-**Modes:**
-| Mode | Description |
-|------|-------------|
-| `contains` | Text contains pattern |
-| `not_contains` | Text does not contain pattern |
-| `starts_with` | Text starts with pattern |
-| `ends_with` | Text ends with pattern |
-| `matches` | Text matches regex pattern |
-
-**Output:**
-- On match: "TEXT_MATCHED" (or "true" if output_bool="true")
-- On no match: Error "CONDITION_NOT_MET" (or "false" if output_bool="true")
-
-**Example:**
-```yaml
-validate_email:
-  type: "text"
-  config:
-    mode: "matches"
-    text: "{{user.email}}"
-    pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
-  next: ["valid_email"]
-  on_failure: ["invalid_email"]
-
-check_not_error:
-  type: "text"
-  config:
-    mode: "not_contains"
-    text: "{{response}}"
-    pattern: "error"
-    output_bool: "true"
-```
-
----
-
-### math
-
-Numeric comparison operations.
+Route workflow based on a boolean condition. Reads a `"true"` or `"false"` value and routes to `on_true` or `on_false` nodes.
 
 **Config:**
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `operator` | string | Yes | - | Comparison operator |
-| `left` | string | Yes | - | Left operand (must be numeric) |
-| `right` | string | Yes | - | Right operand (must be numeric) |
-| `output_bool` | string | No | - | If "true", output "true"/"false" instead of error |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `condition` | string | Yes | Value to evaluate (typically `{{compare_node}}`) |
+| `on_true` | array | No* | Nodes to execute when condition is truthy |
+| `on_false` | array | No* | Nodes to execute when condition is falsy |
 
-**Operators:** `>`, `<`, `==`, `>=`, `<=`, `!=`
+*At least one of `on_true` or `on_false` must be defined.
 
-**Output:**
-- On match: "MATH_PASSED" (or "true" if output_bool="true")
-- On no match: Error "CONDITION_NOT_MET" (or "false" if output_bool="true")
+**Truthy values:** `"true"`, `"1"`, `"yes"`, any non-empty string
+**Falsy values:** `"false"`, `"0"`, `"no"`, empty string
 
-**Example:**
+**Output:** `"true"` or `"false"` (passes through the evaluated boolean)
+
+**Example (Standalone):**
 ```yaml
-check_cpu:
-  type: "math"
+score_check:
+  type: "compare"
   config:
-    operator: ">"
-    left: "{{metrics.cpu_usage}}"
-    right: "80"
-  next: ["alert_high_cpu"]
-
-compare_scores:
-  type: "math"
-  config:
-    operator: ">="
     left: "{{score}}"
-    right: "60"
-    output_bool: "true"
+    operator: ">"
+    right: "80"
+  next: ["router"]
+
+router:
+  type: "branch"
+  config:
+    condition: "{{score_check}}"
+    on_true: ["high_score_handler"]
+    on_false: ["low_score_handler"]
+```
+
+**Example (Combined with Compare):**
+
+In practice, `compare` + `branch` are often used together. The frontend UI combines them into a single "Compare" node that auto-generates both:
+
+```yaml
+# Frontend shows this as ONE node, but generates TWO:
+score_check:
+  type: "compare"
+  config:
+    left: "{{score}}"
+    operator: ">"
+    right: "80"
+  next: ["score_check_branch"]
+
+score_check_branch:
+  type: "branch"
+  config:
+    condition: "{{score_check}}"
+    on_true: ["high_score_handler"]
+    on_false: ["low_score_handler"]
 ```
 
 ---
 
-### list
+### text (Legacy)
 
-JSON array operations.
+String pattern matching. **Prefer using `compare` with string operators instead.**
 
 **Config:**
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `mode` | string | Yes | - | Operation mode |
-| `list` | string/array | Yes | - | JSON array string or array |
-| `value` | string | If mode needs it | - | Value to check (length or item) |
-| `output_bool` | string | No | - | If "true", output "true"/"false" instead of error |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `mode` | string | Yes | Match mode: `contains`, `not_contains`, `starts_with`, `ends_with`, `matches` |
+| `text` | string | Yes | String to check |
+| `pattern` | string | Yes | Pattern or substring |
+| `output_bool` | string | No | If "true", output boolean instead of error |
+
+---
+
+### math (Legacy)
+
+Numeric comparison. **Prefer using `compare` with numeric operators instead.**
+
+**Config:**
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `operator` | string | Yes | `>`, `<`, `==`, `>=`, `<=`, `!=` |
+| `left` | string | Yes | Left operand |
+| `right` | string | Yes | Right operand |
+| `output_bool` | string | No | If "true", output boolean instead of error |
+
+---
+
+### list (Legacy)
+
+JSON array operations. **Prefer using `compare` with list operators instead.**
+
+**Config:**
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `mode` | string | Yes | `length_equals`, `length_gt`, `length_lt`, `contains`, `not_contains` |
+| `list` | string/array | Yes | JSON array |
+| `value` | string | If needed | Value to check |
+| `output_bool` | string | No | If "true", output boolean instead of error |
 
 **Modes:**
 | Mode | Description |
@@ -895,10 +954,12 @@ nodes:
 | `hold` | Task | Wait for approval | (input data) |
 | `if` | Logic | Expression branching | `if` |
 | `loop` | Logic | Iterate items | `mode`, `items`, `task` |
-| `check` | Logic | Simple value check | `mode`, `value` |
-| `text` | Logic | String matching | `mode`, `text`, `pattern` |
-| `math` | Logic | Numeric comparison | `operator`, `left`, `right` |
-| `list` | Logic | Array operations | `mode`, `list` |
+| `compare` | Logic | Compare two values → true/false | `left`, `operator`, `right` |
+| `check` | Logic | Check single value → true/false | `value`, `operator` |
+| `branch` | Logic | Route based on boolean | `condition`, `on_true`, `on_false` |
+| `text` | Logic | (Legacy) String matching | `mode`, `text`, `pattern` |
+| `math` | Logic | (Legacy) Numeric comparison | `operator`, `left`, `right` |
+| `list` | Logic | (Legacy) Array operations | `mode`, `list` |
 | `var` | Data | Define values | `value` |
 | `secret` | Data | Sensitive values | key-values (supports env) |
 | `dict` | Data | JSON extraction | `input`, `fields` |

@@ -1,7 +1,9 @@
 package logic
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"tofi-core/internal/models"
 )
@@ -10,38 +12,61 @@ type Check struct{}
 
 func (c *Check) Execute(config map[string]interface{}, ctx *models.ExecutionContext) (string, error) {
 	val := fmt.Sprint(config["value"])
-	mode := fmt.Sprint(config["mode"])
+	operator := fmt.Sprint(config["operator"])
 
 	var result bool
-	switch mode {
-	case "is_true":
-		result = strings.ToLower(val) == "true" || val == "1"
-	case "is_false":
-		result = strings.ToLower(val) == "false" || val == "0"
+
+	switch operator {
 	case "is_empty":
 		result = len(strings.TrimSpace(val)) == 0
-	case "exists":
-		result = len(val) > 0
+
+	case "not_empty":
+		result = len(strings.TrimSpace(val)) > 0
+
+	case "is_true":
+		lowerVal := strings.ToLower(val)
+		result = lowerVal == "true" || val == "1"
+
+	case "is_false":
+		lowerVal := strings.ToLower(val)
+		result = lowerVal == "false" || val == "0"
+
+	case "is_number":
+		_, err := strconv.ParseFloat(val, 64)
+		result = err == nil
+
+	case "is_json":
+		var js json.RawMessage
+		result = json.Unmarshal([]byte(val), &js) == nil
+
 	default:
-		return "", fmt.Errorf("unsupported check mode: %s", mode)
+		return "", fmt.Errorf("unsupported check operator: %s", operator)
 	}
 
-	if !result {
-		if strings.ToLower(fmt.Sprint(config["output_bool"])) == "true" {
-			return "false", nil
-		}
-		return "", fmt.Errorf("CONDITION_NOT_MET")
-	}
-
-	if strings.ToLower(fmt.Sprint(config["output_bool"])) == "true" {
+	if result {
 		return "true", nil
 	}
-	return "CHECK_PASSED", nil
+	return "false", nil
 }
 
 func (c *Check) Validate(n *models.Node) error {
-	if _, ok := n.Config["mode"]; !ok {
-		return fmt.Errorf("config.mode is required")
+	op, ok := n.Config["operator"]
+	if !ok {
+		return fmt.Errorf("config.operator is required")
 	}
+
+	validOps := map[string]bool{
+		"is_empty":  true,
+		"not_empty": true,
+		"is_true":   true,
+		"is_false":  true,
+		"is_number": true,
+		"is_json":   true,
+	}
+
+	if !validOps[fmt.Sprint(op)] {
+		return fmt.Errorf("invalid check operator: %v", op)
+	}
+
 	return nil
 }

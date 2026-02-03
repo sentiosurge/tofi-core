@@ -116,6 +116,10 @@ func GetAction(nodeType string) Action {
 		return &logic.If{}
 	case "check":
 		return &logic.Check{}
+	case "compare":
+		return &logic.Compare{}
+	case "branch":
+		return &logic.Branch{}
 	case "text":
 		return &logic.Text{}
 	case "math":
@@ -509,7 +513,6 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 	// 7. 成功逻辑
 	stat.Status = "SUCCESS"
 	ctx.RecordStat(stat)
-	ctx.SetResult(nodeID, res)
 
 	// 状态持久化
 	SaveState(ctx)
@@ -520,9 +523,64 @@ func RunNode(wf *models.Workflow, nodeID string, ctx *models.ExecutionContext) {
 		runtimeID,
 		ctx.MaskLog(res),
 	)
-	for _, nextID := range node.Next {
-		ctx.Wg.Add(1)
-		go RunNode(wf, nextID, ctx)
+
+	// 8. 触发下游节点
+	// Branch 节点特殊处理：根据返回值决定走 on_true 还是 on_false (从 Config 中读取)
+	if node.Type == "branch" {
+		if strings.HasPrefix(res, logic.BranchTruePrefix) {
+			ctx.SetResult(nodeID, "true")
+			logger.Printf("%s[%s] [BRANCH]  [%s] 条件为 true，走 on_true 分支", prefix, ctx.ExecutionID, runtimeID)
+			onTrue := getStringSliceFromConfig(node.Config, "on_true")
+			for _, nextID := range onTrue {
+				ctx.Wg.Add(1)
+				go RunNode(wf, nextID, ctx)
+			}
+		} else if strings.HasPrefix(res, logic.BranchFalsePrefix) {
+			ctx.SetResult(nodeID, "false")
+			logger.Printf("%s[%s] [BRANCH]  [%s] 条件为 false，走 on_false 分支", prefix, ctx.ExecutionID, runtimeID)
+			onFalse := getStringSliceFromConfig(node.Config, "on_false")
+			for _, nextID := range onFalse {
+				ctx.Wg.Add(1)
+				go RunNode(wf, nextID, ctx)
+			}
+		} else {
+			// 兜底：走普通 next
+			ctx.SetResult(nodeID, res)
+			for _, nextID := range node.Next {
+				ctx.Wg.Add(1)
+				go RunNode(wf, nextID, ctx)
+			}
+		}
+	} else {
+		// 普通节点：存储结果并走 next
+		ctx.SetResult(nodeID, res)
+		for _, nextID := range node.Next {
+			ctx.Wg.Add(1)
+			go RunNode(wf, nextID, ctx)
+		}
+	}
+}
+
+// getStringSliceFromConfig 从 Config 中提取字符串数组
+func getStringSliceFromConfig(config map[string]interface{}, key string) []string {
+	val, ok := config[key]
+	if !ok {
+		return nil
+	}
+
+	switch v := val.(type) {
+	case []string:
+		return v
+	case []interface{}:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	default:
+		return nil
 	}
 }
 
@@ -538,12 +596,28 @@ func triggerNext(wf *models.Workflow, node *models.Node, ctx *models.ExecutionCo
 	}
 }
 
-// isFailureBranch 检查某个节点是否被任何其他节点定义为 OnFailure 分支
-func isFailureBranch(wf *models.Workflow, targetID string) bool {
+// isNonEntryBranch 检查某个节点是否被任何其他节点定义为 OnFailure 或 Branch 的 on_true/on_false 分支
+// 这些分支不应该作为工作流的起点
+func isNonEntryBranch(wf *models.Workflow, targetID string) bool {
 	for _, node := range wf.Nodes {
 		for _, failID := range node.OnFailure {
 			if failID == targetID {
 				return true
+			}
+		}
+		// Branch 节点的 on_true/on_false 在 Config 中
+		if node.Type == "branch" {
+			onTrue := getStringSliceFromConfig(node.Config, "on_true")
+			for _, trueID := range onTrue {
+				if trueID == targetID {
+					return true
+				}
+			}
+			onFalse := getStringSliceFromConfig(node.Config, "on_false")
+			for _, falseID := range onFalse {
+				if falseID == targetID {
+					return true
+				}
 			}
 		}
 	}
@@ -648,12 +722,12 @@ func InitializeGlobals(wf *models.Workflow, ctx *models.ExecutionContext, inputs
 	}
 }
 
-// InferEdges 自动推导 next 和 dependencies 的双向关系
+// InferEdges 自动推导 next/on_true/on_false 和 dependencies 的双向关系
 // 这样用户只需要写其中一个，另一个会自动补全
 func InferEdges(wf *models.Workflow) {
-	// 1. 从 next 推导 dependencies
-	// 如果 A.next 包含 B，那么 B.dependencies 应该包含 A
+	// 1. 从 next/on_true/on_false 推导 dependencies
 	for nodeID, node := range wf.Nodes {
+		// 处理普通 next
 		for _, nextID := range node.Next {
 			if nextNode, ok := wf.Nodes[nextID]; ok {
 				if !containsString(nextNode.Dependencies, nodeID) {
@@ -661,10 +735,28 @@ func InferEdges(wf *models.Workflow) {
 				}
 			}
 		}
+		// 处理 Branch 节点的 on_true/on_false (从 Config 中读取)
+		if node.Type == "branch" {
+			onTrue := getStringSliceFromConfig(node.Config, "on_true")
+			for _, trueID := range onTrue {
+				if trueNode, ok := wf.Nodes[trueID]; ok {
+					if !containsString(trueNode.Dependencies, nodeID) {
+						trueNode.Dependencies = append(trueNode.Dependencies, nodeID)
+					}
+				}
+			}
+			onFalse := getStringSliceFromConfig(node.Config, "on_false")
+			for _, falseID := range onFalse {
+				if falseNode, ok := wf.Nodes[falseID]; ok {
+					if !containsString(falseNode.Dependencies, nodeID) {
+						falseNode.Dependencies = append(falseNode.Dependencies, nodeID)
+					}
+				}
+			}
+		}
 	}
 
-	// 2. 从 dependencies 推导 next
-	// 如果 B.dependencies 包含 A，那么 A.next 应该包含 B
+	// 2. 从 dependencies 推导 next (不推导 on_true/on_false，那是特殊分支)
 	for nodeID, node := range wf.Nodes {
 		for _, depID := range node.Dependencies {
 			if depNode, ok := wf.Nodes[depID]; ok {
@@ -719,7 +811,7 @@ func Start(wf *models.Workflow, ctx *models.ExecutionContext, inputs map[string]
 	// 2. 启动所有起点节点
 	for id, node := range wf.Nodes {
 		// 只有 0 依赖，且不是任何节点的"失败分支"，才是合法的起点
-		if len(node.Dependencies) == 0 && !isFailureBranch(wf, id) {
+		if len(node.Dependencies) == 0 && !isNonEntryBranch(wf, id) {
 			ctx.Wg.Add(1)
 			go RunNode(wf, id, ctx)
 		}
