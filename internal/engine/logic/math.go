@@ -15,9 +15,13 @@ func (m *Math) Execute(config map[string]interface{}, ctx *models.ExecutionConte
 	operator := fmt.Sprint(config["operator"])
 
 	l, errL := strconv.ParseFloat(leftVal, 64)
+	if errL != nil {
+		return "", fmt.Errorf("math error: LEFT operand is not a number (got: '%s')", leftVal)
+	}
+
 	r, errR := strconv.ParseFloat(rightVal, 64)
-	if errL != nil || errR != nil {
-		return "", fmt.Errorf("math operation failed: values must be numbers (left: %v, right: %v)", leftVal, rightVal)
+	if errR != nil {
+		return "", fmt.Errorf("math error: RIGHT operand is not a number (got: '%s')", rightVal)
 	}
 
 	var result bool
