@@ -319,46 +319,6 @@ POST /api/v1/executions/{exec_id}/nodes/approval_gate/approve
 
 ## Logic Nodes
 
-### if
-
-Evaluate boolean expression for conditional branching.
-
-**Config:**
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `if` | string | Yes | Expression to evaluate |
-| `output_bool` | string | No | If "true", output "true"/"false" instead of error |
-
-**Built-in Functions:**
-| Function | Description |
-|----------|-------------|
-| `contains(str, substr)` | Check if string contains substring |
-| `len(str)` | Get string length |
-
-**Variables:** All upstream node outputs are available as variables.
-
-**Output:**
-- On true: "EXPR_MATCHED" (or "true" if output_bool)
-- On false: Error "CONDITION_NOT_MET" (or "false" if output_bool)
-
-**Example:**
-```yaml
-check_threshold:
-  type: "if"
-  config:
-    if: "score > 80 && status == 'active'"
-  next: ["high_priority_path"]
-  on_failure: ["normal_path"]
-
-check_content:
-  type: "if"
-  config:
-    if: "contains(response, 'success')"
-  next: ["success_handler"]
-```
-
----
-
 ### loop
 
 Iterate over a list or range, executing a task for each item.
@@ -878,7 +838,6 @@ nodes:
 | `file` | Task | Load file from library | `file_id` |
 | `workflow` | Task | Call sub-workflow | `uses` or `file` |
 | `hold` | Task | Wait for approval | (input data) |
-| `if` | Logic | Expression branching | `if` |
 | `loop` | Logic | Iterate items | `mode`, `items`, `task` |
 | `compare` | Logic | Compare two values → true/false | `left`, `operator`, `right` |
 | `check` | Logic | Check single value → true/false | `value`, `operator` |

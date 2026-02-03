@@ -112,8 +112,6 @@ func GetAction(nodeType string) Action {
 		return &tasks.File{}
 	case "workflow":
 		return &tasks.Handoff{}
-	case "if":
-		return &logic.If{}
 	case "check":
 		return &logic.Check{}
 	case "compare":
