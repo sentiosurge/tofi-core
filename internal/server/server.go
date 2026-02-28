@@ -22,6 +22,7 @@ type Server struct {
 	registry   *ExecutionRegistry
 	db         *storage.DB
 	workerPool *WorkerPool
+	scheduler  *Scheduler
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -66,6 +67,13 @@ func (s *Server) Start() error {
 
 	// 启动工作池
 	s.workerPool.Start()
+
+	// 启动 Cron 调度器
+	s.scheduler = NewScheduler(s)
+	if err := s.scheduler.Start(); err != nil {
+		log.Printf("⚠️  Cron 调度器启动失败: %v", err)
+	}
+	defer s.scheduler.Stop()
 
 	// 启动前恢复僵尸任务（通过工作池提交）
 	if err := s.recoverZombiesWithPool(); err != nil {
@@ -143,6 +151,12 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/v1/webhooks", s.AuthMiddleware(s.handleListWebhooks))
 	mux.HandleFunc("DELETE /api/v1/webhooks/{id}", s.AuthMiddleware(s.handleDeleteWebhook))
 	mux.HandleFunc("PUT /api/v1/webhooks/{id}", s.AuthMiddleware(s.handleToggleWebhook))
+
+	// Cron 管理路由（受保护）
+	mux.HandleFunc("POST /api/v1/crons", s.AuthMiddleware(s.handleCreateCronTrigger))
+	mux.HandleFunc("GET /api/v1/crons", s.AuthMiddleware(s.handleListCronTriggers))
+	mux.HandleFunc("PUT /api/v1/crons/{id}", s.AuthMiddleware(s.handleUpdateCronTrigger))
+	mux.HandleFunc("DELETE /api/v1/crons/{id}", s.AuthMiddleware(s.handleDeleteCronTrigger))
 
 	// Secret 管理路由
 	mux.HandleFunc("POST /api/v1/secrets", s.AuthMiddleware(s.handleCreateSecret))
