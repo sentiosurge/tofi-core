@@ -126,6 +126,8 @@ func GetAction(nodeType string) Action {
 		return &tasks.Save{}
 	case "api":
 		return &tasks.API{}
+	case "notify":
+		return &tasks.Notify{}
 	case "dict":
 		return &data.Dict{}
 	case "secret":
