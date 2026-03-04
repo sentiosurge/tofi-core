@@ -187,7 +187,14 @@ func InitDB(homeDir string) (*DB, error) {
 		log.Printf("⚠️  cron_triggers table creation (may already exist): %v", err)
 	}
 
-	return &DB{conn: conn}, nil
+	db := &DB{conn: conn}
+
+	// 创建 skills 表
+	if err := db.initSkillsTable(); err != nil {
+		log.Printf("⚠️  skills table creation (may already exist): %v", err)
+	}
+
+	return db, nil
 }
 
 // User Management
