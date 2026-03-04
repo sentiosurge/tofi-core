@@ -19,7 +19,7 @@ import (
 
 // handleListSkills GET /api/v1/skills — 列出用户安装的所有 Skills
 func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 
 	keyword := r.URL.Query().Get("q")
 
@@ -68,7 +68,7 @@ func (s *Server) handleGetSkill(w http.ResponseWriter, r *http.Request) {
 //   - source: "local" + content (SKILL.md 内容)
 //   - source: "git" + url (git repo URL)
 func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 
 	var req struct {
 		Source  string `json:"source"`  // "local" | "git"
@@ -214,7 +214,7 @@ func (s *Server) installFromGit(w http.ResponseWriter, userID, gitURL string) {
 
 // handleDeleteSkill DELETE /api/v1/skills/{id} — 卸载 Skill
 func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	id := r.PathValue("id")
 	if id == "" {
 		http.Error(w, "skill id required", http.StatusBadRequest)
@@ -239,7 +239,7 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 // handleRunSkill POST /api/v1/skills/{id}/run — 直接运行 Skill
 // 构建临时单节点工作流并提交到 WorkerPool 执行
 func (s *Server) handleRunSkill(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	id := r.PathValue("id")
 
 	var req struct {
