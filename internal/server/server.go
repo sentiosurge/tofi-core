@@ -164,6 +164,17 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/v1/secrets/{name}", s.AuthMiddleware(s.handleGetSecret))
 	mux.HandleFunc("DELETE /api/v1/secrets/{name}", s.AuthMiddleware(s.handleDeleteSecret))
 
+	// Skills 管理路由
+	mux.HandleFunc("GET /api/v1/skills", s.AuthMiddleware(s.handleListSkills))
+	mux.HandleFunc("GET /api/v1/skills/{id}", s.AuthMiddleware(s.handleGetSkill))
+	mux.HandleFunc("POST /api/v1/skills/install", s.AuthMiddleware(s.handleInstallSkill))
+	mux.HandleFunc("POST /api/v1/skills/{id}/run", s.AuthMiddleware(s.handleRunSkill))
+	mux.HandleFunc("DELETE /api/v1/skills/{id}", s.AuthMiddleware(s.handleDeleteSkill))
+
+	// Skills Registry (搜索 skills.sh 生态)
+	mux.HandleFunc("GET /api/v1/registry/search", s.AuthMiddleware(s.handleRegistrySearch))
+	mux.HandleFunc("GET /api/v1/registry/trending", s.AuthMiddleware(s.handleRegistryTrending))
+
 	// Admin 管理路由 (需要 admin 权限)
 	mux.HandleFunc("GET /api/v1/admin/stats", s.AdminMiddleware(s.handleAdminGetStats))
 	mux.HandleFunc("GET /api/v1/admin/users", s.AdminMiddleware(s.handleAdminListUsers))
