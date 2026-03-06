@@ -6,15 +6,33 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 	"tofi-core/internal/crypto"
+	"tofi-core/internal/executor"
+	"tofi-core/internal/models"
+	"tofi-core/internal/skills"
 	"tofi-core/internal/storage"
 )
 
 type Config struct {
 	Port                   int
 	HomeDir                string
-	MaxConcurrentWorkflows int // 最大并发工作流数（默认 10）
+	MaxConcurrentWorkflows int    // 最大并发工作流数（默认 10）
+	SandboxMode            string // "direct" (default) or "docker" (future)
+}
+
+// HoldSignal is sent through a hold channel to resume a paused agent
+type HoldSignal struct {
+	Action string // "continue" or "abort"
+}
+
+// PreviewSession 缓存已 clone 但尚未确认安装的 skill 预览
+type PreviewSession struct {
+	Skills    []*models.SkillFile
+	Source    *skills.ParsedSource
+	Cleanup   func()
+	CreatedAt time.Time
 }
 
 type Server struct {
@@ -23,6 +41,16 @@ type Server struct {
 	db         *storage.DB
 	workerPool *WorkerPool
 	scheduler  *Scheduler
+	executor   executor.Executor // Sandbox command executor
+	sseHub     *SSEHub           // SSE real-time push hub
+
+	// Hold channel management for agent suggest_install blocking
+	holdMu       sync.Mutex
+	holdChannels map[string]chan HoldSignal // cardID → signal channel
+
+	// Preview session cache for two-phase skill install
+	previewMu       sync.Mutex
+	previewSessions map[string]*PreviewSession // sessionID → session
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -53,12 +81,105 @@ func NewServer(config Config) (*Server, error) {
 	registry := NewExecutionRegistry()
 	workerPool := NewWorkerPool(config.MaxConcurrentWorkflows, registry)
 
+	// Initialize sandbox executor based on config
+	var exec executor.Executor
+	switch config.SandboxMode {
+	case "docker":
+		dockerExec, err := executor.NewDockerExecutor(config.HomeDir, "tofi-sandbox:latest")
+		if err != nil {
+			log.Printf("⚠️  Docker executor failed: %v, falling back to direct mode", err)
+			exec = executor.NewDirectExecutor(config.HomeDir)
+		} else {
+			exec = dockerExec
+			log.Println("🐳 Docker sandbox mode enabled")
+		}
+	default:
+		exec = executor.NewDirectExecutor(config.HomeDir)
+	}
+
 	return &Server{
-		config:     config,
-		registry:   registry,
-		db:         db,
-		workerPool: workerPool,
+		config:       config,
+		registry:     registry,
+		db:           db,
+		workerPool:   workerPool,
+		executor:     exec,
+		sseHub:       NewSSEHub(),
+		holdChannels:    make(map[string]chan HoldSignal),
+		previewSessions: make(map[string]*PreviewSession),
 	}, nil
+}
+
+// createHoldChannel creates a buffered channel for a card to wait on
+func (s *Server) createHoldChannel(cardID string) chan HoldSignal {
+	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
+	ch := make(chan HoldSignal, 1)
+	s.holdChannels[cardID] = ch
+	return ch
+}
+
+// signalHold sends a signal to unblock the agent waiting on this card
+func (s *Server) signalHold(cardID string, action string) bool {
+	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
+	ch, ok := s.holdChannels[cardID]
+	if !ok {
+		return false
+	}
+	ch <- HoldSignal{Action: action}
+	delete(s.holdChannels, cardID)
+	return true
+}
+
+// removeHoldChannel cleans up a hold channel (used on timeout/cleanup)
+func (s *Server) removeHoldChannel(cardID string) {
+	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
+	delete(s.holdChannels, cardID)
+}
+
+// --- Preview Session Management ---
+
+func (s *Server) createPreviewSession(id string, session *PreviewSession) {
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	s.previewSessions[id] = session
+}
+
+func (s *Server) getPreviewSession(id string) *PreviewSession {
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	return s.previewSessions[id]
+}
+
+func (s *Server) removePreviewSession(id string) {
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	if sess, ok := s.previewSessions[id]; ok {
+		if sess.Cleanup != nil {
+			sess.Cleanup()
+		}
+		delete(s.previewSessions, id)
+	}
+}
+
+func (s *Server) cleanupPreviewSessions() {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.previewMu.Lock()
+		now := time.Now()
+		for id, sess := range s.previewSessions {
+			if now.Sub(sess.CreatedAt) > 10*time.Minute {
+				if sess.Cleanup != nil {
+					sess.Cleanup()
+				}
+				delete(s.previewSessions, id)
+				log.Printf("[skills] preview session %s expired, cleaned up", id)
+			}
+		}
+		s.previewMu.Unlock()
+	}
 }
 
 func (s *Server) Start() error {
@@ -79,6 +200,12 @@ func (s *Server) Start() error {
 	if err := s.recoverZombiesWithPool(); err != nil {
 		log.Printf("⚠️  僵尸任务恢复失败: %v", err)
 	}
+
+	// 恢复僵尸 Hold 卡片（server 重启后 hold channel 丢失，标记为 failed）
+	s.recoverHoldCards()
+
+	// 启动 preview session 清理 goroutine
+	go s.cleanupPreviewSessions()
 
 	mux := http.NewServeMux()
 
@@ -165,14 +292,43 @@ func (s *Server) Start() error {
 	mux.HandleFunc("DELETE /api/v1/secrets/{name}", s.AuthMiddleware(s.handleDeleteSecret))
 
 	// Skills 管理路由
+	mux.HandleFunc("GET /api/v1/skills/collection", s.AuthMiddleware(s.handleGetCollection))
+	mux.HandleFunc("DELETE /api/v1/skills/collection", s.AuthMiddleware(s.handleDeleteCollection))
 	mux.HandleFunc("GET /api/v1/skills", s.AuthMiddleware(s.handleListSkills))
 	mux.HandleFunc("GET /api/v1/skills/{id}", s.AuthMiddleware(s.handleGetSkill))
+	mux.HandleFunc("POST /api/v1/skills/create", s.AuthMiddleware(s.handleCreateSkill))
+	mux.HandleFunc("PUT /api/v1/skills/{id}", s.AuthMiddleware(s.handleUpdateSkill))
 	mux.HandleFunc("POST /api/v1/skills/install", s.AuthMiddleware(s.handleInstallSkill))
 	mux.HandleFunc("POST /api/v1/skills/{id}/run", s.AuthMiddleware(s.handleRunSkill))
+	mux.HandleFunc("POST /api/v1/skills/{id}/test", s.AuthMiddleware(s.handleTestSkill))
+	mux.HandleFunc("POST /api/v1/skills/{id}/export", s.AuthMiddleware(s.handleExportSkill))
 	mux.HandleFunc("DELETE /api/v1/skills/{id}", s.AuthMiddleware(s.handleDeleteSkill))
+	mux.HandleFunc("GET /api/v1/skills/{id}/resources", s.AuthMiddleware(s.handleGetSkillResources))
+	mux.HandleFunc("PUT /api/v1/skills/{id}/resources", s.AuthMiddleware(s.handlePutSkillResource))
+	mux.HandleFunc("DELETE /api/v1/skills/{id}/resources", s.AuthMiddleware(s.handleDeleteSkillResource))
 
 	// Skills Registry (搜索 skills.sh 生态)
 	mux.HandleFunc("GET /api/v1/registry/search", s.AuthMiddleware(s.handleRegistrySearch))
+
+	// Settings / AI Key 管理
+	mux.HandleFunc("GET /api/v1/settings/ai-keys", s.AuthMiddleware(s.handleListAIKeys))
+	mux.HandleFunc("POST /api/v1/settings/ai-keys", s.AuthMiddleware(s.handleSetAIKey))
+	mux.HandleFunc("DELETE /api/v1/settings/ai-keys/{provider}", s.AuthMiddleware(s.handleDeleteAIKey))
+
+	// Wish 许愿路由
+	mux.HandleFunc("POST /api/v1/wish", s.AuthMiddleware(s.handleWish))
+
+	// Kanban 看板路由
+	mux.HandleFunc("POST /api/v1/kanban", s.AuthMiddleware(s.handleCreateKanbanCard))
+	mux.HandleFunc("GET /api/v1/kanban", s.AuthMiddleware(s.handleListKanbanCards))
+	mux.HandleFunc("GET /api/v1/kanban/{id}", s.AuthMiddleware(s.handleGetKanbanCard))
+	mux.HandleFunc("PUT /api/v1/kanban/{id}", s.AuthMiddleware(s.handleUpdateKanbanCard))
+	mux.HandleFunc("DELETE /api/v1/kanban/{id}", s.AuthMiddleware(s.handleDeleteKanbanCard))
+	mux.HandleFunc("POST /api/v1/kanban/{id}/actions/{index}/approve", s.AuthMiddleware(s.handleApproveAction))
+	mux.HandleFunc("POST /api/v1/kanban/{id}/continue", s.AuthMiddleware(s.handleContinueCard))
+	mux.HandleFunc("POST /api/v1/kanban/{id}/abort", s.AuthMiddleware(s.handleAbortCard))
+	mux.HandleFunc("POST /api/v1/kanban/{id}/retry", s.AuthMiddleware(s.handleRetryCard))
+	mux.HandleFunc("GET /api/v1/kanban/{id}/stream", s.handleCardStream) // SSE, auth via query param
 
 	// Admin 管理路由 (需要 admin 权限)
 	mux.HandleFunc("GET /api/v1/admin/stats", s.AdminMiddleware(s.handleAdminGetStats))
@@ -207,4 +363,18 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+// recoverHoldCards 恢复僵尸 Hold 卡片（server 重启后 channel 丢失）
+func (s *Server) recoverHoldCards() {
+	// ListKanbanCards 需要 userID，这里直接用 SQL 查 hold 状态的卡片
+	rows, err := s.db.QueryHoldCards()
+	if err != nil {
+		log.Printf("⚠️  Hold 卡片恢复查询失败: %v", err)
+		return
+	}
+	for _, id := range rows {
+		log.Printf("🔄 恢复 hold 卡片 %s → failed", id)
+		s.db.UpdateKanbanCardStatus(id, "failed")
+	}
 }

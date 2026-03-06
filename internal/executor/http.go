@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -78,6 +79,61 @@ func ExecuteHTTP(method, targetURL string, headers map[string]string, queryParam
 	}
 
 	return string(respBody), nil
+}
+
+// StreamCallback is called for each SSE data chunk from a streaming response
+type StreamCallback func(chunk string) error
+
+// PostJSONStream sends a POST request and reads the response as an SSE stream.
+// Each "data: {...}" line is passed to the callback. Stops on "data: [DONE]".
+func PostJSONStream(targetURL string, headers map[string]string, payload interface{}, timeout int, callback StreamCallback) error {
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	if timeout <= 0 {
+		timeout = 120
+	}
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+
+	req, err := http.NewRequest("POST", targetURL, strings.NewReader(string(jsonData)))
+	if err != nil {
+		return fmt.Errorf("create request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP Error %d: %s", resp.StatusCode, string(body))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	// Increase buffer for large chunks
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+		if err := callback(data); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }
 
 // PostJSON 发送通用的 OpenAI 兼容请求 (保留给 AI 任务使用)

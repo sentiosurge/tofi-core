@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"tofi-core/internal/models"
@@ -16,7 +19,7 @@ import (
 
 // --- Skill API Handlers ---
 
-// handleListSkills GET /api/v1/skills — 列出用户安装的所有 Skills
+// handleListSkills GET /api/v1/skills — 列出用户可见的所有 Skills（私有 + 公共）
 func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
 
@@ -62,20 +65,18 @@ func (s *Server) handleGetSkill(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(skill)
 }
 
-// handleInstallSkill POST /api/v1/skills/install — 安装 Skill
-//
-// 统一安装入口，支持三种方式:
-//
-//	1. source: "local" + content  — 直接粘贴 SKILL.md 内容
-//	2. source: "git" + url        — owner/repo@skill 或 Git URL（兼容 skills CLI 格式）
-//	3. source 省略 + content      — 等同于 local
-func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
+// handleCreateSkill POST /api/v1/skills/create — 表单式创建 Skill
+func (s *Server) handleCreateSkill(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
 
 	var req struct {
-		Source  string `json:"source"`  // "local" | "git" | ""
-		Content string `json:"content"` // SKILL.md 内容 (source=local)
-		URL     string `json:"url"`     // owner/repo@skill 或 Git URL (source=git)
+		Name         string                       `json:"name"`
+		Description  string                       `json:"description"`
+		Model        string                       `json:"model"`
+		AllowedTools string                       `json:"allowed_tools"`
+		Instructions string                       `json:"instructions"` // Markdown body
+		Inputs       map[string]*models.SkillInput `json:"inputs"`
+		Output       *models.SkillOutput           `json:"output"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -83,6 +84,272 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if req.Instructions == "" {
+		http.Error(w, "instructions is required", http.StatusBadRequest)
+		return
+	}
+
+	// 构建 SkillManifest
+	manifest := models.SkillManifest{
+		Name:         req.Name,
+		Description:  req.Description,
+		Model:        req.Model,
+		AllowedTools: req.AllowedTools,
+		Inputs:       req.Inputs,
+		Output:       req.Output,
+	}
+
+	manifestJSON, _ := json.Marshal(manifest)
+	inputSchema, _ := json.Marshal(req.Inputs)
+	outputSchema, _ := json.Marshal(req.Output)
+
+	now := time.Now().Format("2006-01-02 15:04:05")
+	record := &storage.SkillRecord{
+		ID:           fmt.Sprintf("%s/%s", userID, req.Name),
+		Name:         req.Name,
+		Description:  req.Description,
+		Version:      "1.0",
+		Scope:        "private",
+		Source:       "local",
+		ManifestJSON: string(manifestJSON),
+		Instructions: req.Instructions,
+		InputSchema:  string(inputSchema),
+		OutputSchema: string(outputSchema),
+		AllowedTools: toJSON(manifest.AllowedToolsList()),
+		UserID:       userID,
+		InstalledAt:  now,
+	}
+
+	if err := s.db.SaveSkill(record); err != nil {
+		http.Error(w, fmt.Sprintf("failed to save skill: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 同时保存到本地文件系统
+	localStore := skills.NewLocalStore(s.config.HomeDir)
+	content := buildSkillMDFromRecord(record)
+	if err := localStore.SaveLocal(req.Name, content); err != nil {
+		log.Printf("[skills] warning: failed to save to local store: %v", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(record)
+}
+
+// handleUpdateSkill PUT /api/v1/skills/{id} — 编辑已有 Skill
+func (s *Server) handleUpdateSkill(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	id := r.PathValue("id")
+
+	existing, err := s.db.GetSkill(id)
+	if err != nil {
+		http.Error(w, "skill not found", http.StatusNotFound)
+		return
+	}
+
+	// 只能编辑自己的私有 Skill
+	if existing.Scope == "public" || (existing.UserID != userID && existing.UserID != "system") {
+		http.Error(w, "cannot edit public or others' skills", http.StatusForbidden)
+		return
+	}
+
+	var req struct {
+		Name         string                       `json:"name"`
+		Description  string                       `json:"description"`
+		Model        string                       `json:"model"`
+		AllowedTools string                       `json:"allowed_tools"`
+		Instructions string                       `json:"instructions"`
+		Inputs       map[string]*models.SkillInput `json:"inputs"`
+		Output       *models.SkillOutput           `json:"output"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// 更新字段
+	if req.Name != "" {
+		existing.Name = req.Name
+	}
+	if req.Description != "" {
+		existing.Description = req.Description
+	}
+	if req.Instructions != "" {
+		existing.Instructions = req.Instructions
+	}
+
+	manifest := models.SkillManifest{
+		Name:         existing.Name,
+		Description:  existing.Description,
+		Model:        req.Model,
+		AllowedTools: req.AllowedTools,
+		Inputs:       req.Inputs,
+		Output:       req.Output,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	existing.ManifestJSON = string(manifestJSON)
+
+	if req.Inputs != nil {
+		inputSchema, _ := json.Marshal(req.Inputs)
+		existing.InputSchema = string(inputSchema)
+	}
+	if req.Output != nil {
+		outputSchema, _ := json.Marshal(req.Output)
+		existing.OutputSchema = string(outputSchema)
+	}
+
+	existing.AllowedTools = toJSON(manifest.AllowedToolsList())
+
+	if err := s.db.SaveSkill(existing); err != nil {
+		http.Error(w, fmt.Sprintf("failed to update skill: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(existing)
+}
+
+// handleTestSkill POST /api/v1/skills/{id}/test — 在线测试 Skill（不保存执行记录）
+func (s *Server) handleTestSkill(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	id := r.PathValue("id")
+
+	var req struct {
+		Prompt string                 `json:"prompt"`
+		Inputs map[string]interface{} `json:"inputs"` // 结构化输入
+		Model  string                 `json:"model"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Prompt == "" && len(req.Inputs) == 0 {
+		http.Error(w, "prompt or inputs is required", http.StatusBadRequest)
+		return
+	}
+
+	skill, err := s.db.GetSkill(id)
+	if err != nil {
+		http.Error(w, "skill not found", http.StatusNotFound)
+		return
+	}
+
+	// 构建 prompt — 如果有结构化输入，组合成完整 prompt
+	prompt := req.Prompt
+	if len(req.Inputs) > 0 && prompt == "" {
+		parts := []string{}
+		for k, v := range req.Inputs {
+			parts = append(parts, fmt.Sprintf("%s: %v", k, v))
+		}
+		prompt = strings.Join(parts, "\n")
+	}
+
+	model := req.Model
+	if model == "" {
+		model = "gpt-4o"
+	}
+
+	wf := buildSkillWorkflow(skill, prompt, model, true) // test 默认使用系统 key
+
+	uuidStr := uuid.New().String()[:4]
+	execID := "test-" + time.Now().Format("150405") + "-" + uuidStr
+
+	ctx := models.NewExecutionContext(execID, userID, s.config.HomeDir)
+	ctx.SetWorkflowName(wf.Name)
+	ctx.WorkflowID = wf.ID
+	ctx.DB = s.db
+
+	job := &WorkflowJob{
+		ExecutionID: execID,
+		Workflow:    wf,
+		Context:     ctx,
+		DB:          s.db,
+	}
+
+	if err := s.workerPool.Submit(job); err != nil {
+		http.Error(w, fmt.Sprintf("failed to submit: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{
+		"execution_id": execID,
+		"skill_id":     id,
+		"status":       "queued",
+	})
+}
+
+// handleExportSkill POST /api/v1/skills/{id}/export — 导出为 SKILL.md 文件
+func (s *Server) handleExportSkill(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	skill, err := s.db.GetSkill(id)
+	if err != nil {
+		http.Error(w, "skill not found", http.StatusNotFound)
+		return
+	}
+
+	content := buildSkillMDFromRecord(skill)
+
+	w.Header().Set("Content-Type", "text/markdown")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.SKILL.md\"", skill.Name))
+	w.Write([]byte(content))
+}
+
+// handleInstallSkill POST /api/v1/skills/install — 安装 Skill
+//
+// 统一安装入口，支持多种方式:
+//
+//  1. source: "local" + content          — 直接粘贴 SKILL.md 内容
+//  2. source: "git" + url                — owner/repo@skill 或 Git URL（直接安装，向后兼容）
+//  3. source 省略 + content              — 等同于 local
+//  4. mode: "preview" + url              — 预览安装：clone + discover，返回 skill 列表
+//  5. mode: "confirm" + session_id       — 确认安装：从缓存安装选中的 skills
+func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+
+	var req struct {
+		Source     string   `json:"source"`      // "local" | "git" | ""
+		Content    string   `json:"content"`     // SKILL.md 内容 (source=local)
+		URL        string   `json:"url"`         // owner/repo@skill 或 Git URL (source=git)
+		Mode       string   `json:"mode"`        // "" | "preview" | "confirm"
+		SessionID  string   `json:"session_id"`  // confirm 模式需要
+		SkillNames []string `json:"skill_names"` // confirm 模式可选（选择性安装）
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// 两阶段安装模式
+	switch req.Mode {
+	case "preview":
+		if req.URL == "" {
+			http.Error(w, "url is required for preview", http.StatusBadRequest)
+			return
+		}
+		s.installPreview(w, userID, req.URL)
+		return
+	case "confirm":
+		if req.SessionID == "" {
+			http.Error(w, "session_id is required for confirm", http.StatusBadRequest)
+			return
+		}
+		s.installConfirm(w, userID, req.SessionID, req.SkillNames)
+		return
+	}
+
+	// 原有逻辑（向后兼容）
 	switch req.Source {
 	case "local", "":
 		if req.Content == "" {
@@ -103,7 +370,7 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// installFromContent 从 SKILL.md 内容安装（本地粘贴）
+// installFromContent 从 SKILL.md 内容安装（本地粘贴 → 私有 Skill）
 func (s *Server) installFromContent(w http.ResponseWriter, userID, content, source, sourceURL string) {
 	skillFile, err := skills.Parse([]byte(content))
 	if err != nil {
@@ -117,8 +384,8 @@ func (s *Server) installFromContent(w http.ResponseWriter, userID, content, sour
 		log.Printf("[skills] warning: failed to save to local store: %v", err)
 	}
 
-	// 保存到数据库
-	record := s.buildSkillRecord(userID, skillFile, source, sourceURL)
+	// 保存到数据库（私有）
+	record := s.buildSkillRecord(userID, skillFile, source, sourceURL, "private")
 	if err := s.db.SaveSkill(record); err != nil {
 		http.Error(w, fmt.Sprintf("failed to save skill: %v", err), http.StatusInternalServerError)
 		return
@@ -129,9 +396,19 @@ func (s *Server) installFromContent(w http.ResponseWriter, userID, content, sour
 	json.NewEncoder(w).Encode(record)
 }
 
-// installFromSource 从 source 字符串安装（支持 owner/repo@skill、Git URL 等）
-// 兼容 skills CLI 的所有格式: owner/repo, owner/repo@skill, https://github.com/...
+// installFromSource 从 source 字符串安装（Git → 公共 Skill 池）
+// 支持 owner/repo@skill、Git URL 等格式
 func (s *Server) installFromSource(w http.ResponseWriter, userID, source string) {
+	// 去重检查：同一 source_url 是否已有公共 Skill
+	existing, err := s.db.FindPublicSkillBySource(source)
+	if err == nil && existing != nil {
+		// 已存在，直接返回（不重复下载）
+		log.Printf("[skills] skip duplicate install: %s already exists as %s", source, existing.ID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(existing)
+		return
+	}
+
 	localStore := skills.NewLocalStore(s.config.HomeDir)
 	installer := skills.NewSkillInstaller(localStore)
 
@@ -141,10 +418,10 @@ func (s *Server) installFromSource(w http.ResponseWriter, userID, source string)
 		return
 	}
 
-	// 保存所有发现的 skills 到数据库
+	// Git 安装的 Skills 进入公共池（scope=public, user_id=system）
 	var records []*storage.SkillRecord
 	for _, sf := range result.Skills {
-		record := s.buildSkillRecord(userID, sf, string(result.Source.Type), result.Source.DisplayURL())
+		record := s.buildSkillRecord("system", sf, string(result.Source.Type), result.Source.DisplayURL(), "public")
 		if err := s.db.SaveSkill(record); err != nil {
 			log.Printf("[skills] warning: failed to save skill %s: %v", sf.Manifest.Name, err)
 			continue
@@ -160,7 +437,6 @@ func (s *Server) installFromSource(w http.ResponseWriter, userID, source string)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 
-	// 如果只安装了一个 skill，返回单个对象（保持向后兼容）
 	if len(records) == 1 {
 		json.NewEncoder(w).Encode(records[0])
 	} else {
@@ -172,24 +448,36 @@ func (s *Server) installFromSource(w http.ResponseWriter, userID, source string)
 }
 
 // buildSkillRecord 构建 SkillRecord 数据库记录
-func (s *Server) buildSkillRecord(userID string, sf *models.SkillFile, source, sourceURL string) *storage.SkillRecord {
+func (s *Server) buildSkillRecord(userID string, sf *models.SkillFile, source, sourceURL, scope string) *storage.SkillRecord {
 	manifest := sf.Manifest
 	manifestJSON, _ := json.Marshal(manifest)
 
+	// ID 格式：public/skill-name 或 user/skill-name
+	idPrefix := userID
+	if scope == "public" {
+		idPrefix = "public"
+	}
+
+	inputSchema, _ := json.Marshal(manifest.Inputs)
+	outputSchema, _ := json.Marshal(manifest.Output)
+
 	return &storage.SkillRecord{
-		ID:              fmt.Sprintf("%s/%s", userID, manifest.Name),
-		Name:            manifest.Name,
-		Description:     manifest.Description,
-		Version:         "1.0",
-		Source:          source,
-		SourceURL:       sourceURL,
-		ManifestJSON:    string(manifestJSON),
-		Instructions:    sf.Body,
-		HasScripts:      len(sf.ScriptDirs) > 0,
+		ID:           fmt.Sprintf("%s/%s", idPrefix, manifest.Name),
+		Name:         manifest.Name,
+		Description:  manifest.Description,
+		Version:      "1.0",
+		Scope:        scope,
+		Source:       source,
+		SourceURL:    sourceURL,
+		ManifestJSON: string(manifestJSON),
+		Instructions: sf.Body,
+		InputSchema:  string(inputSchema),
+		OutputSchema: string(outputSchema),
+		HasScripts:   len(sf.ScriptDirs) > 0,
 		RequiredSecrets: toJSON(manifest.RequiredEnvVars()),
 		AllowedTools:    toJSON(manifest.AllowedToolsList()),
-		UserID:          userID,
-		InstalledAt:     time.Now().Format("2006-01-02 15:04:05"),
+		UserID:       userID,
+		InstalledAt:  time.Now().Format("2006-01-02 15:04:05"),
 	}
 }
 
@@ -217,24 +505,11 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRunSkill POST /api/v1/skills/{id}/run — 直接运行 Skill
-func (s *Server) handleRunSkill(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(UserContextKey).(string)
+// handleGetSkillResources GET /api/v1/skills/{id}/resources — 获取 Skill 的所有资源目录和文件
+func (s *Server) handleGetSkillResources(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-
-	var req struct {
-		Prompt       string `json:"prompt"`         // 用户输入
-		Model        string `json:"model"`          // 可选覆盖模型
-		UseSystemKey bool   `json:"use_system_key"` // 使用系统 API Key
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if req.Prompt == "" {
-		http.Error(w, "prompt is required", http.StatusBadRequest)
+	if id == "" {
+		http.Error(w, "skill id required", http.StatusBadRequest)
 		return
 	}
 
@@ -244,7 +519,253 @@ func (s *Server) handleRunSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wf := buildSkillWorkflow(skill, req.Prompt, req.Model, req.UseSystemKey)
+	type ResourceFile struct {
+		Name      string `json:"name"`
+		Content   string `json:"content"`
+		Size      int64  `json:"size"`
+		Truncated bool   `json:"truncated,omitempty"`
+		Binary    bool   `json:"binary,omitempty"`
+	}
+
+	type ResourceDirectory struct {
+		Name  string         `json:"name"`
+		Files []ResourceFile `json:"files"`
+	}
+
+	localStore := skills.NewLocalStore(s.config.HomeDir)
+	skillDir := localStore.SkillDir(skill.Name)
+
+	topEntries, err := os.ReadDir(skillDir)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
+
+	// 二进制文件扩展名
+	binaryExts := map[string]bool{
+		".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".ico": true,
+		".webp": true, ".svg": true, ".bmp": true, ".tiff": true,
+		".zip": true, ".tar": true, ".gz": true, ".whl": true,
+		".pdf": true, ".exe": true, ".bin": true, ".so": true, ".dylib": true,
+		".wasm": true, ".pyc": true,
+	}
+
+	const maxSize = 100 * 1024 // 100KB
+
+	var dirs []ResourceDirectory
+	for _, de := range topEntries {
+		if !de.IsDir() {
+			continue
+		}
+		dirName := de.Name()
+		// 跳过隐藏目录和 __pycache__
+		if strings.HasPrefix(dirName, ".") || dirName == "__pycache__" || dirName == "node_modules" {
+			continue
+		}
+
+		subDir := filepath.Join(skillDir, dirName)
+		fileEntries, err := os.ReadDir(subDir)
+		if err != nil {
+			continue
+		}
+
+		var files []ResourceFile
+		for _, fe := range fileEntries {
+			if fe.IsDir() {
+				continue
+			}
+			info, err := fe.Info()
+			if err != nil {
+				continue
+			}
+
+			rf := ResourceFile{
+				Name: fe.Name(),
+				Size: info.Size(),
+			}
+
+			ext := strings.ToLower(filepath.Ext(fe.Name()))
+			if binaryExts[ext] {
+				rf.Binary = true
+			} else {
+				data, err := os.ReadFile(filepath.Join(subDir, fe.Name()))
+				if err == nil {
+					if len(data) > maxSize {
+						rf.Content = string(data[:maxSize])
+						rf.Truncated = true
+					} else {
+						rf.Content = string(data)
+					}
+				}
+			}
+			files = append(files, rf)
+		}
+
+		if files == nil {
+			files = []ResourceFile{}
+		}
+		dirs = append(dirs, ResourceDirectory{Name: dirName, Files: files})
+	}
+
+	if dirs == nil {
+		dirs = []ResourceDirectory{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(dirs)
+}
+
+// handlePutSkillResource PUT /api/v1/skills/{id}/resources — 创建/更新资源文件
+func (s *Server) handlePutSkillResource(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "skill id required", http.StatusBadRequest)
+		return
+	}
+
+	skill, err := s.db.GetSkill(id)
+	if err != nil {
+		http.Error(w, "skill not found", http.StatusNotFound)
+		return
+	}
+
+	// 仅允许 local skill 修改资源
+	if skill.Source != "local" {
+		http.Error(w, "only local skills can be modified", http.StatusForbidden)
+		return
+	}
+
+	var req struct {
+		Dir      string `json:"dir"`
+		Filename string `json:"filename"`
+		Content  string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Dir == "" || req.Filename == "" {
+		http.Error(w, "dir and filename are required", http.StatusBadRequest)
+		return
+	}
+	// 安全检查：防止路径遍历
+	if strings.Contains(req.Dir, "..") || strings.Contains(req.Filename, "..") ||
+		strings.Contains(req.Dir, "/") || strings.Contains(req.Filename, "/") {
+		http.Error(w, "invalid dir or filename", http.StatusBadRequest)
+		return
+	}
+
+	localStore := skills.NewLocalStore(s.config.HomeDir)
+	dirPath := filepath.Join(localStore.SkillDir(skill.Name), req.Dir)
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		http.Error(w, "failed to create directory", http.StatusInternalServerError)
+		return
+	}
+
+	filePath := filepath.Join(dirPath, req.Filename)
+	if err := os.WriteFile(filePath, []byte(req.Content), 0644); err != nil {
+		http.Error(w, "failed to write file", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleDeleteSkillResource DELETE /api/v1/skills/{id}/resources — 删除资源文件
+func (s *Server) handleDeleteSkillResource(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "skill id required", http.StatusBadRequest)
+		return
+	}
+
+	skill, err := s.db.GetSkill(id)
+	if err != nil {
+		http.Error(w, "skill not found", http.StatusNotFound)
+		return
+	}
+
+	if skill.Source != "local" {
+		http.Error(w, "only local skills can be modified", http.StatusForbidden)
+		return
+	}
+
+	var req struct {
+		Dir      string `json:"dir"`
+		Filename string `json:"filename"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Dir == "" || req.Filename == "" {
+		http.Error(w, "dir and filename are required", http.StatusBadRequest)
+		return
+	}
+	if strings.Contains(req.Dir, "..") || strings.Contains(req.Filename, "..") ||
+		strings.Contains(req.Dir, "/") || strings.Contains(req.Filename, "/") {
+		http.Error(w, "invalid dir or filename", http.StatusBadRequest)
+		return
+	}
+
+	localStore := skills.NewLocalStore(s.config.HomeDir)
+	filePath := filepath.Join(localStore.SkillDir(skill.Name), req.Dir, req.Filename)
+	if err := os.Remove(filePath); err != nil {
+		http.Error(w, "failed to delete file", http.StatusNotFound)
+		return
+	}
+
+	// 清理空目录
+	dirPath := filepath.Join(localStore.SkillDir(skill.Name), req.Dir)
+	entries, _ := os.ReadDir(dirPath)
+	if len(entries) == 0 {
+		os.Remove(dirPath)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRunSkill POST /api/v1/skills/{id}/run — 直接运行 Skill
+func (s *Server) handleRunSkill(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	id := r.PathValue("id")
+
+	var req struct {
+		Prompt       string                 `json:"prompt"`         // 用户输入
+		Inputs       map[string]interface{} `json:"inputs"`         // 结构化输入
+		Model        string                 `json:"model"`          // 可选覆盖模型
+		UseSystemKey bool                   `json:"use_system_key"` // 使用系统 API Key
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Prompt == "" && len(req.Inputs) == 0 {
+		http.Error(w, "prompt or inputs is required", http.StatusBadRequest)
+		return
+	}
+
+	skill, err := s.db.GetSkill(id)
+	if err != nil {
+		http.Error(w, "skill not found", http.StatusNotFound)
+		return
+	}
+
+	// 构建 prompt
+	prompt := req.Prompt
+	if len(req.Inputs) > 0 && prompt == "" {
+		parts := []string{}
+		for k, v := range req.Inputs {
+			parts = append(parts, fmt.Sprintf("%s: %v", k, v))
+		}
+		prompt = strings.Join(parts, "\n")
+	}
+
+	wf := buildSkillWorkflow(skill, prompt, req.Model, req.UseSystemKey)
 
 	uuidStr := uuid.New().String()[:4]
 	execID := time.Now().Format("102150405") + "-" + uuidStr
@@ -278,7 +799,7 @@ func (s *Server) handleRunSkill(w http.ResponseWriter, r *http.Request) {
 // buildSkillWorkflow 构建用于执行 Skill 的临时工作流对象
 func buildSkillWorkflow(skill *storage.SkillRecord, prompt, model string, useSystemKey bool) *models.Workflow {
 	if model == "" {
-		model = "claude-sonnet-4-20250514"
+		model = "gpt-4o"
 	}
 
 	wfName := "skill-" + skill.Name
@@ -330,6 +851,86 @@ func (s *Server) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+// --- Settings / AI Key Handlers ---
+
+// handleListAIKeys GET /api/v1/settings/ai-keys — 列出 AI Key 配置
+func (s *Server) handleListAIKeys(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+
+	// 获取系统级 + 用户级
+	systemKeys, _ := s.db.ListAIKeys("system")
+	userKeys, _ := s.db.ListAIKeys(userID)
+
+	if systemKeys == nil {
+		systemKeys = []map[string]string{}
+	}
+	if userKeys == nil {
+		userKeys = []map[string]string{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"system": systemKeys,
+		"user":   userKeys,
+	})
+}
+
+// handleSetAIKey POST /api/v1/settings/ai-keys — 设置 AI Key
+func (s *Server) handleSetAIKey(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+
+	var req struct {
+		Provider string `json:"provider"` // anthropic, openai, gemini
+		APIKey   string `json:"api_key"`
+		Scope    string `json:"scope"` // "system" | "user"
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Provider == "" || req.APIKey == "" {
+		http.Error(w, "provider and api_key are required", http.StatusBadRequest)
+		return
+	}
+
+	scope := userID
+	if req.Scope == "system" {
+		scope = "system"
+	}
+
+	if err := s.db.SetAIKey(req.Provider, scope, req.APIKey); err != nil {
+		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":   "ok",
+		"provider": req.Provider,
+		"scope":    scope,
+	})
+}
+
+// handleDeleteAIKey DELETE /api/v1/settings/ai-keys/{provider} — 删除 AI Key
+func (s *Server) handleDeleteAIKey(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	provider := r.PathValue("provider")
+
+	scope := r.URL.Query().Get("scope")
+	if scope == "" || scope == "user" {
+		scope = userID
+	}
+
+	if err := s.db.DeleteAIKey(provider, scope); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // --- Helper functions ---
 
 func toJSON(v interface{}) string {
@@ -338,4 +939,207 @@ func toJSON(v interface{}) string {
 		return "[]"
 	}
 	return string(b)
+}
+
+// --- Two-Phase Install: Preview + Confirm ---
+
+// installPreview 预览安装：clone + discover，缓存 session，返回 skill 列表
+func (s *Server) installPreview(w http.ResponseWriter, userID, source string) {
+	// 去重检查
+	existing, err := s.db.FindPublicSkillBySource(source)
+	if err == nil && existing != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"already_installed": true,
+			"skill":            existing,
+		})
+		return
+	}
+
+	localStore := skills.NewLocalStore(s.config.HomeDir)
+	installer := skills.NewSkillInstaller(localStore)
+
+	result, cleanup, err := installer.PreviewInstall(source)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("preview failed: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// 如果只有 1 个 skill，无需预览，直接安装
+	if len(result.Skills) == 1 {
+		cleanup() // 关闭预览临时目录
+		s.installFromSource(w, userID, source)
+		return
+	}
+
+	// 多个 skill → 缓存 session，返回预览
+	sessionID := uuid.New().String()[:8]
+	s.createPreviewSession(sessionID, &PreviewSession{
+		Skills:    result.Skills,
+		Source:    result.Source,
+		Cleanup:   cleanup,
+		CreatedAt: time.Now(),
+	})
+
+	type skillPreview struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	previews := make([]skillPreview, len(result.Skills))
+	for i, sf := range result.Skills {
+		previews[i] = skillPreview{
+			Name:        sf.Manifest.Name,
+			Description: sf.Manifest.Description,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"preview":    true,
+		"session_id": sessionID,
+		"source_url": result.Source.DisplayURL(),
+		"skills":     previews,
+		"total":      len(previews),
+	})
+}
+
+// installConfirm 确认安装：从缓存的 session 中安装选中的 skills
+func (s *Server) installConfirm(w http.ResponseWriter, userID, sessionID string, skillNames []string) {
+	session := s.getPreviewSession(sessionID)
+	if session == nil {
+		http.Error(w, "session expired or not found", http.StatusNotFound)
+		return
+	}
+	defer s.removePreviewSession(sessionID)
+
+	// 确定要安装的 skills
+	toInstall := session.Skills
+	if len(skillNames) > 0 {
+		nameSet := make(map[string]bool)
+		for _, n := range skillNames {
+			nameSet[n] = true
+		}
+		var filtered []*models.SkillFile
+		for _, sf := range session.Skills {
+			if nameSet[sf.Manifest.Name] {
+				filtered = append(filtered, sf)
+			}
+		}
+		toInstall = filtered
+	}
+
+	if len(toInstall) == 0 {
+		http.Error(w, "no skills selected", http.StatusBadRequest)
+		return
+	}
+
+	// 安装到 local store + DB
+	localStore := skills.NewLocalStore(s.config.HomeDir)
+	installer := skills.NewSkillInstaller(localStore)
+
+	var records []*storage.SkillRecord
+	for _, sf := range toInstall {
+		if err := installer.InstallOne(sf); err != nil {
+			log.Printf("[skills] warning: failed to install %s to local: %v", sf.Manifest.Name, err)
+		}
+
+		record := s.buildSkillRecord("system", sf, string(session.Source.Type), session.Source.DisplayURL(), "public")
+		if err := s.db.SaveSkill(record); err != nil {
+			log.Printf("[skills] warning: failed to save skill %s: %v", sf.Manifest.Name, err)
+			continue
+		}
+		records = append(records, record)
+	}
+
+	if len(records) == 0 {
+		http.Error(w, "failed to save any skills to database", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"installed": len(records),
+		"skills":    records,
+	})
+}
+
+// --- Collection Handlers ---
+
+// handleGetCollection GET /api/v1/skills/collection?source=xxx — 获取 Collection 中的所有 skills
+func (s *Server) handleGetCollection(w http.ResponseWriter, r *http.Request) {
+	sourceURL := r.URL.Query().Get("source")
+	if sourceURL == "" {
+		http.Error(w, "source query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	records, err := s.db.ListSkillsBySourceURL(sourceURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if records == nil {
+		records = []*storage.SkillRecord{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"source_url": sourceURL,
+		"skills":     records,
+		"total":      len(records),
+	})
+}
+
+// handleDeleteCollection DELETE /api/v1/skills/collection?source=xxx — 删除整个 Collection
+func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	sourceURL := r.URL.Query().Get("source")
+	if sourceURL == "" {
+		http.Error(w, "source query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	// 先获取 collection 中的所有 skill，清理本地文件
+	records, _ := s.db.ListSkillsBySourceURL(sourceURL)
+	localStore := skills.NewLocalStore(s.config.HomeDir)
+	for _, skill := range records {
+		localStore.Remove(skill.Name)
+	}
+
+	count, err := s.db.DeleteSkillsBySourceURL(sourceURL, userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"deleted": count,
+	})
+}
+
+// buildSkillMDFromRecord 从数据库记录重建 SKILL.md 内容
+func buildSkillMDFromRecord(skill *storage.SkillRecord) string {
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("name: %s\n", skill.Name))
+	if skill.Description != "" {
+		sb.WriteString(fmt.Sprintf("description: %s\n", skill.Description))
+	}
+
+	// 从 ManifestJSON 还原其他字段
+	var manifest models.SkillManifest
+	if err := json.Unmarshal([]byte(skill.ManifestJSON), &manifest); err == nil {
+		if manifest.Model != "" {
+			sb.WriteString(fmt.Sprintf("model: %s\n", manifest.Model))
+		}
+		if manifest.AllowedTools != "" {
+			sb.WriteString(fmt.Sprintf("allowed-tools: %s\n", manifest.AllowedTools))
+		}
+	}
+
+	sb.WriteString("---\n\n")
+	sb.WriteString(skill.Instructions)
+	return sb.String()
 }

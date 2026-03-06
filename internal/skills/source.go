@@ -49,6 +49,9 @@ func (p *ParsedSource) DisplayURL() string {
 // shorthandRegex 匹配 owner/repo 或 owner/repo@skill
 var shorthandRegex = regexp.MustCompile(`^([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+?)(?:@(.+))?$`)
 
+// threeSegmentRegex 匹配 owner/repo/skill (marketplace format)
+var threeSegmentRegex = regexp.MustCompile(`^([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)$`)
+
 // ParseSource 解析技能来源字符串，兼容 skills CLI 的多种格式
 //
 // 支持的格式:
@@ -88,7 +91,18 @@ func ParseSource(input string) (*ParsedSource, error) {
 		return parseHTTPURL(input)
 	}
 
-	// 4. owner/repo[@skill] shorthand
+	// 4a. owner/repo/skill (marketplace 3-segment format → owner/repo@skill)
+	if m := threeSegmentRegex.FindStringSubmatch(input); m != nil {
+		return &ParsedSource{
+			Type:        SourceGitHub,
+			Owner:       m[1],
+			Repo:        m[2],
+			CloneURL:    fmt.Sprintf("https://github.com/%s/%s.git", m[1], m[2]),
+			SkillFilter: m[3],
+		}, nil
+	}
+
+	// 4b. owner/repo[@skill] shorthand
 	if m := shorthandRegex.FindStringSubmatch(input); m != nil {
 		ps := &ParsedSource{
 			Type:     SourceGitHub,

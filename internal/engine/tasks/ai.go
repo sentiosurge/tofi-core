@@ -14,20 +14,29 @@ import (
 
 // resolveAPIKey 解析 API Key，支持系统 key 模式
 // 当 use_system_key 为 true 时，根据 provider 从环境变量加载对应的 API key
+// 也尝试从 Settings 表解析（如果 DB 可用）
 func resolveAPIKey(config map[string]interface{}, provider string, ctx *models.ExecutionContext) (string, error) {
 	// 检查是否使用系统 key
 	useSystemKey, _ := config["use_system_key"].(bool)
 
 	if useSystemKey {
-		// TODO: 检查用户是否是 paid 用户
-		// 目前测试阶段，所有用户都视为 paid
-		isPaidUser := true
-
-		if !isPaidUser {
-			return "", fmt.Errorf("system API key is only available for paid users")
+		// 先尝试从 Settings 表获取
+		if db, ok := ctx.DB.(SkillStore); ok {
+			apiKey, err := db.ResolveAIKey(provider, ctx.User)
+			if err == nil && apiKey != "" {
+				logger.Printf("[%s] Using settings AI key for provider '%s'", ctx.ExecutionID, provider)
+				return apiKey, nil
+			}
+			// claude -> anthropic fallback
+			if provider == "claude" {
+				apiKey, err = db.ResolveAIKey("anthropic", ctx.User)
+				if err == nil && apiKey != "" {
+					return apiKey, nil
+				}
+			}
 		}
 
-		// 根据 provider 加载对应的环境变量
+		// 回退到环境变量
 		var envKey string
 		switch provider {
 		case "openai":
@@ -37,7 +46,7 @@ func resolveAPIKey(config map[string]interface{}, provider string, ctx *models.E
 		case "gemini":
 			envKey = "TOFI_GEMINI_API_KEY"
 		default:
-			envKey = "TOFI_OPENAI_API_KEY" // 默认使用 OpenAI
+			envKey = "TOFI_OPENAI_API_KEY"
 		}
 
 		apiKey := os.Getenv(envKey)
@@ -45,12 +54,24 @@ func resolveAPIKey(config map[string]interface{}, provider string, ctx *models.E
 			return "", fmt.Errorf("system API key not configured (env: %s)", envKey)
 		}
 
-		logger.Printf("[%s] Using system API key for provider '%s'", ctx.ExecutionID, provider)
+		logger.Printf("[%s] Using env API key for provider '%s'", ctx.ExecutionID, provider)
 		return apiKey, nil
 	}
 
-	// 使用用户自己的 key
-	return fmt.Sprint(config["api_key"]), nil
+	// 使用用户自己的 key（从 config 或 settings）
+	if apiKey, ok := config["api_key"].(string); ok && apiKey != "" {
+		return apiKey, nil
+	}
+
+	// 最后尝试 settings 表
+	if db, ok := ctx.DB.(SkillStore); ok {
+		apiKey, err := db.ResolveAIKey(provider, ctx.User)
+		if err == nil && apiKey != "" {
+			return apiKey, nil
+		}
+	}
+
+	return "", nil
 }
 
 type AI struct{}

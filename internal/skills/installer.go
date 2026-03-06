@@ -351,6 +351,55 @@ func copyDir(src, dst string) error {
 	return nil
 }
 
+// PreviewInstall 预览安装: clone → discover，但不安装到 local store
+// 返回发现的 skills 和 cleanup 函数（调用方控制临时目录生命周期）
+func (si *SkillInstaller) PreviewInstall(source string) (*InstallResult, func(), error) {
+	ps, err := ParseSource(source)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid source: %w", err)
+	}
+
+	sourceDir, cleanup, err := si.fetchSource(ps)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	discovered, err := DiscoverSkills(sourceDir)
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("no skills found: %w", err)
+	}
+
+	if len(discovered) == 0 {
+		cleanup()
+		return nil, nil, fmt.Errorf("no valid SKILL.md files found in %s", ps.DisplayURL())
+	}
+
+	if ps.SkillFilter != "" {
+		filtered := filterByName(discovered, ps.SkillFilter)
+		if len(filtered) == 0 {
+			cleanup()
+			names := make([]string, len(discovered))
+			for i, s := range discovered {
+				names[i] = s.Manifest.Name
+			}
+			return nil, nil, fmt.Errorf("skill %q not found in repo, available: [%s]",
+				ps.SkillFilter, strings.Join(names, ", "))
+		}
+		discovered = filtered
+	}
+
+	return &InstallResult{Skills: discovered, Source: ps}, cleanup, nil
+}
+
+// InstallOne 安装单个已 discover 的技能到本地 store（公开方法，供 confirm 流程使用）
+func (si *SkillInstaller) InstallOne(skill *models.SkillFile) error {
+	if err := si.store.EnsureDir(); err != nil {
+		return fmt.Errorf("create skills directory: %w", err)
+	}
+	return si.installOne(skill)
+}
+
 // Update 更新已安装的 skill（git pull）
 func (si *SkillInstaller) Update(skillDir string) error {
 	cmd := exec.Command("git", "-C", skillDir, "pull", "--rebase")

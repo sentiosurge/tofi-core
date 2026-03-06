@@ -9,6 +9,13 @@ import (
 
 // recoverZombiesWithPool 使用工作池恢复僵尸任务
 func (s *Server) recoverZombiesWithPool() error {
+	// Recover zombie kanban cards (working status from previous run)
+	if n, err := s.db.RecoverZombieKanbanCards(); err != nil {
+		logger.Printf("⚠️ Kanban 僵尸恢复失败: %v", err)
+	} else if n > 0 {
+		logger.Printf("🔄 已恢复 %d 个 Kanban 僵尸卡片 (working → failed)", n)
+	}
+
 	logger.Printf("🔍 开始扫描僵尸任务...")
 
 	zombies, err := s.db.ListRunningExecutions()

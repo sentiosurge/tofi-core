@@ -1,6 +1,6 @@
 package models
 
-import "time"
+// models/skill.go — Skill 相关数据模型
 
 // SkillManifest 表示解析后的 SKILL.md 前置元数据
 // 遵循 Agent Skills 开放标准 (agentskills.io/specification)
@@ -40,34 +40,29 @@ type SkillManifest struct {
 
 	// Agent 子代理类型 (需 context: fork)
 	Agent string `yaml:"agent,omitempty" json:"agent,omitempty"`
+
+	// === Tofi 3.0 扩展 ===
+
+	// Inputs 结构化输入定义
+	Inputs map[string]*SkillInput `yaml:"inputs,omitempty" json:"inputs,omitempty"`
+
+	// Output 输出格式定义
+	Output *SkillOutput `yaml:"output,omitempty" json:"output,omitempty"`
 }
 
-// SkillRecord 数据库中的技能记录
-type SkillRecord struct {
-	ID          string `json:"id"`          // slug: "owner/skill-name" 或 "skill-name"
-	Name        string `json:"name"`        // 从 SKILL.md name 字段
-	Description string `json:"description"` // 从 SKILL.md description
-	Version     string `json:"version"`     // 版本号
+// SkillInput 定义 Skill 的一个输入参数
+type SkillInput struct {
+	Type        string   `yaml:"type" json:"type"`                                   // text, number, file, select, boolean
+	Description string   `yaml:"description" json:"description"`                     // 参数描述
+	Required    bool     `yaml:"required" json:"required"`                           // 是否必填
+	Default     string   `yaml:"default,omitempty" json:"default,omitempty"`         // 默认值
+	Options     []string `yaml:"options,omitempty" json:"options,omitempty"`         // type=select 时的选项列表
+}
 
-	// 来源信息
-	Source    string `json:"source"`               // "local" | "git" | "registry"
-	SourceURL string `json:"source_url,omitempty"` // git repo URL
-
-	// 内容
-	ManifestJSON string `json:"manifest_json"` // 完整 frontmatter JSON
-	Instructions string `json:"instructions"`  // SKILL.md body (Markdown)
-
-	// 能力标记
-	HasScripts      bool     `json:"has_scripts"`      // 是否有 scripts/ 目录
-	RequiredSecrets []string `json:"required_secrets"`  // 需要的环境变量/密钥
-	AllowedTools    []string `json:"allowed_tools"`     // 允许使用的工具列表
-
-	// 所有者
-	UserID string `json:"user_id"` // 安装者
-
-	// 时间
-	InstalledAt time.Time `json:"installed_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+// SkillOutput 定义 Skill 的输出格式
+type SkillOutput struct {
+	Type        string `yaml:"type" json:"type"`                 // text, json, markdown, file
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 }
 
 // SkillFile 表示完整的解析后 SKILL.md 文件

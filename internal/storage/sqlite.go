@@ -193,6 +193,17 @@ func InitDB(homeDir string) (*DB, error) {
 	if err := db.initSkillsTable(); err != nil {
 		log.Printf("⚠️  skills table creation (may already exist): %v", err)
 	}
+	db.migrateSkillsTable() // 添加新字段（scope, input_schema, output_schema）
+
+	// 创建 settings 表 (AI Key 管理等)
+	if err := db.initSettingsTable(); err != nil {
+		log.Printf("⚠️  settings table creation (may already exist): %v", err)
+	}
+
+	// 创建 kanban_cards 表
+	if err := db.initKanbanTable(); err != nil {
+		log.Printf("⚠️  kanban_cards table creation (may already exist): %v", err)
+	}
 
 	return db, nil
 }

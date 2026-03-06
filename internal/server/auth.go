@@ -47,10 +47,34 @@ type contextKey string
 
 const UserContextKey contextKey = "user"
 
+// parseJWT 解析并验证 JWT Token，返回用户 ID
+func parseJWT(tokenString string) (string, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return jwtSecret, nil
+	})
+	if err != nil || !token.Valid {
+		return "", fmt.Errorf("invalid or expired token")
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return "", fmt.Errorf("invalid token claims")
+	}
+
+	user, ok := claims["sub"].(string)
+	if !ok || user == "" {
+		return "", fmt.Errorf("token missing 'sub' claim")
+	}
+
+	return user, nil
+}
+
 // AuthMiddleware 验证 JWT 并注入 User 到 Context
 func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 1. 获取 Token
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			http.Error(w, "Missing Authorization header", http.StatusUnauthorized)
@@ -62,35 +86,13 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "Invalid Authorization format (expected 'Bearer <token>')", http.StatusUnauthorized)
 			return
 		}
-		tokenString := parts[1]
 
-		// 2. 解析并验证 Token
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return jwtSecret, nil
-		})
-
-		if err != nil || !token.Valid {
-			http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
+		user, err := parseJWT(parts[1])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
 
-		// 3. 提取用户信息
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			http.Error(w, "Invalid token claims", http.StatusUnauthorized)
-			return
-		}
-
-		user, ok := claims["sub"].(string)
-		if !ok || user == "" {
-			http.Error(w, "Token missing 'sub' claim", http.StatusUnauthorized)
-			return
-		}
-
-		// 4. 注入 Context 并放行
 		ctx := context.WithValue(r.Context(), UserContextKey, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
