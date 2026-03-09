@@ -6,10 +6,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"tofi-core/internal/models"
 )
+
+// agentsSkillRegex 从 AGENTS.md 中提取 <skill name="xxx" .../> 的 name 属性
+var agentsSkillRegex = regexp.MustCompile(`<skill\s+[^>]*name="([^"]+)"`)
+
+// parseAgentsMD 从 AGENTS.md 内容中提取所有技能名称
+func parseAgentsMD(data []byte) []string {
+	matches := agentsSkillRegex.FindAllSubmatch(data, -1)
+	names := make([]string, 0, len(matches))
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		name := string(m[1])
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names
+}
 
 // skipDirs 递归搜索时跳过的目录
 var skipDirs = map[string]bool{
@@ -170,8 +189,9 @@ func gitClone(repoURL, ref, destDir string) error {
 }
 
 // DiscoverSkills 在目录中递归发现所有 SKILL.md
-// 采用三层搜索策略（与 skills CLI 一致）:
+// 采用四层搜索策略:
 //  1. 直接检查: 目标目录是否直接包含 SKILL.md
+//  1.5. AGENTS.md: 解析 agentskills.io 标准索引，定位 skills/<name>/SKILL.md
 //  2. 优先目录: 扫描标准 skill 目录 (skills/, .agents/skills/ 等)
 //  3. 递归回退: 遍历整个目录树
 func DiscoverSkills(rootDir string) ([]*models.SkillFile, error) {
@@ -190,6 +210,21 @@ func DiscoverSkills(rootDir string) ([]*models.SkillFile, error) {
 	if sf, err := ParseDir(rootDir); err == nil {
 		addSkill(sf)
 		return results, nil // 单技能仓库，直接返回
+	}
+
+	// Layer 1.5: 检查 AGENTS.md（agentskills.io 标准）
+	agentsMDPath := filepath.Join(rootDir, "AGENTS.md")
+	if data, err := os.ReadFile(agentsMDPath); err == nil {
+		names := parseAgentsMD(data)
+		for _, name := range names {
+			skillDir := filepath.Join(rootDir, "skills", name)
+			if sf, err := ParseDir(skillDir); err == nil {
+				addSkill(sf)
+			}
+		}
+		if len(results) > 0 {
+			return results, nil
+		}
 	}
 
 	// Layer 2: 优先目录

@@ -205,6 +205,11 @@ func InitDB(homeDir string) (*DB, error) {
 		log.Printf("⚠️  kanban_cards table creation (may already exist): %v", err)
 	}
 
+	// 创建 agents + agent_runs 表
+	if err := db.initAgentsTable(); err != nil {
+		log.Printf("⚠️  agents table creation (may already exist): %v", err)
+	}
+
 	return db, nil
 }
 

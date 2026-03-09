@@ -59,10 +59,12 @@ type AgentConfig struct {
 	KanbanUpdater KanbanUpdater      // 看板更新器（可选）
 	SkillTools    []SkillTool        // Installed skills as callable tools
 	ExtraTools    []ExtraBuiltinTool // Additional built-in tools (search_skills, etc.)
-	SandboxDir    string             // Sandbox directory for shell command execution (optional)
-	UserDir       string             // User persistent directory for installed tools (optional)
-	Executor      executor.Executor  // Sandbox executor (nil = use legacy functions)
+	SandboxDir    string               // Sandbox directory for shell command execution (optional)
+	UserDir       string               // User persistent directory for installed tools (optional)
+	Executor      executor.Executor    // Sandbox executor (nil = use legacy functions)
+	SecretEnv     map[string]string    // Extra env vars injected into sandbox commands (skill secrets)
 	OnStreamChunk func(cardID, delta string) // Optional: called with each content delta during streaming
+	OnToolCall    func(toolName, input, output string, durationMs int64) // Optional: called after each tool execution
 }
 
 type MCPServerConfig struct {
@@ -224,10 +226,11 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 			Type: "function",
 			Function: OpenAIFunctionDef{
 				Name: "sandbox_exec",
-				Description: "Execute a shell command in an isolated sandbox directory. " +
-					"Use this to run npx, uv, pip, node, python, curl, git clone, etc. " +
-					"The sandbox is isolated — you cannot access files outside of it. " +
-					"Packages installed here (npm, pip) are local to the sandbox.",
+				Description: "Execute a shell command in an isolated sandbox directory (macOS). " +
+					"Use this to run python3, node, npx, curl, git clone, etc. " +
+					"Install packages with 'python3 -m pip install <pkg>' (NEVER bare 'pip'). " +
+					"For multi-line Python use heredoc: python3 <<'PYEOF'\\n...\\nPYEOF. " +
+					"The sandbox is isolated — packages persist across tasks.",
 				Parameters: map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -283,9 +286,12 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 		var inputTokens, outputTokens int64
 
 		if cfg.OnStreamChunk != nil {
-			// Streaming mode
-			sr, err := callLLMStreaming(cfg, messages, allTools, func(delta string) {
+			// Streaming mode — wrap callback to filter out <think> blocks
+			filter := &thinkStreamFilter{forward: func(delta string) {
 				cfg.OnStreamChunk(cfg.KanbanCardID, delta)
+			}}
+			sr, err := callLLMStreaming(cfg, messages, allTools, func(delta string) {
+				filter.Write(delta)
 			})
 			if err != nil {
 				return "", fmt.Errorf("LLM call failed: %v", err)
@@ -340,7 +346,10 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 
 		// Check for Termination
 		if !hasToolCalls {
-			if content != "" {
+			// Strip <think> tags — if the model only returned thinking, it's not a real answer
+			cleanContent := stripThinkTags(content)
+
+			if cleanContent != "" {
 				// Record the final "Generating Result" step
 				if cfg.KanbanCardID != "" && cfg.KanbanUpdater != nil {
 					stepData := map[string]interface{}{
@@ -354,9 +363,17 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 					cfg.KanbanUpdater.AppendKanbanStep(cfg.KanbanCardID, stepData)
 				}
 				ctx.Log("[Agent] Finished.")
-				return content, nil
+				return cleanContent, nil
 			}
-			return "", fmt.Errorf("LLM returned empty response without tool calls")
+
+			// Content was only <think> tags (model was reasoning but didn't produce a response)
+			// Re-prompt the model to continue
+			ctx.Log("[Agent] Model returned only <think> content, prompting to continue...")
+			messages = append(messages, map[string]interface{}{
+				"role":    "user",
+				"content": "Please continue. Use the available tools to get the information needed, then provide your answer.",
+			})
+			continue
 		}
 
 		// Execute Tools
@@ -406,9 +423,12 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 
 			// markStepDone is a helper to update the step status after tool execution
 			markStepDone := func(result string) {
+				durationMs := time.Since(toolStartTime).Milliseconds()
 				if fnName != "wait" && fnName != "update_kanban" && cfg.KanbanCardID != "" && cfg.KanbanUpdater != nil {
-					durationMs := time.Since(toolStartTime).Milliseconds()
 					cfg.KanbanUpdater.UpdateKanbanStep(cfg.KanbanCardID, fnName, "done", result, durationMs)
+				}
+				if cfg.OnToolCall != nil {
+					cfg.OnToolCall(fnName, fnArgs, result, durationMs)
 				}
 			}
 
@@ -473,7 +493,7 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 				if err := executor.ValidateCommand(command, cfg.SandboxDir); err != nil {
 					resultMsg = "Security violation: " + err.Error()
 				} else if cfg.Executor != nil {
-					output, err := cfg.Executor.Execute(context.Background(), cfg.SandboxDir, cfg.UserDir, command, timeout)
+					output, err := cfg.Executor.Execute(context.Background(), cfg.SandboxDir, cfg.UserDir, command, timeout, cfg.SecretEnv)
 					if err != nil {
 						resultMsg = fmt.Sprintf("Command error: %v\nOutput: %s", err, output)
 					} else {
@@ -644,6 +664,69 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 	}
 
 	return "", fmt.Errorf("max steps (%d) reached without final answer", maxSteps)
+}
+
+// stripThinkTags removes <think>...</think> blocks from LLM content.
+// Some models emit chain-of-thought in <think> tags which should not be shown to users.
+func stripThinkTags(s string) string {
+	for {
+		start := strings.Index(s, "<think>")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(s[start:], "</think>")
+		if end == -1 {
+			// Unclosed tag — strip from <think> to end
+			s = s[:start]
+			break
+		}
+		s = s[:start] + s[start+end+len("</think>"):]
+	}
+	return strings.TrimSpace(s)
+}
+
+// thinkStreamFilter wraps a streaming callback to suppress <think> blocks in real-time.
+type thinkStreamFilter struct {
+	forward func(string)
+	buf     strings.Builder
+	inside  bool
+}
+
+func (f *thinkStreamFilter) Write(delta string) {
+	f.buf.WriteString(delta)
+	text := f.buf.String()
+
+	for {
+		if f.inside {
+			end := strings.Index(text, "</think>")
+			if end == -1 {
+				// Still inside think block, consume all and wait
+				f.buf.Reset()
+				f.buf.WriteString(text)
+				return
+			}
+			// Skip past </think>
+			text = text[end+len("</think>"):]
+			f.inside = false
+		}
+
+		start := strings.Index(text, "<think>")
+		if start == -1 {
+			// No think tag, forward everything
+			if text != "" {
+				f.forward(text)
+			}
+			f.buf.Reset()
+			return
+		}
+
+		// Forward content before <think>
+		if start > 0 {
+			f.forward(text[:start])
+		}
+		text = text[start+len("<think>"):]
+		f.inside = true
+	}
 }
 
 // ---------------- Helpers ----------------
@@ -1011,14 +1094,16 @@ func executeSkillSubCall(cfg AgentConfig, skill SkillTool, input string) (string
 SKILL SCRIPTS AVAILABLE at: skills/%s/
 - This skill has bundled scripts. Reference them using the relative path above.
   Example: python3 skills/%s/scripts/xxx.py --help
-- You may also use inline code (python3 -c "..." or python3 <<'EOF')
+- You may also use inline code (python3 <<'PYEOF'...PYEOF for multi-line, python3 -c "..." for trivial one-liners only)
 - The skills/ directory is READ-ONLY — do NOT write files into it`, skill.Name, skill.Name)
 	} else {
 		constraintBlock = `
 CRITICAL constraints on commands:
 - NO script files (no "python3 xxx.py", no "node script.js") — you have NO local files
-- Only use: curl, python3 -c "...", python3 <<'EOF', node -e "...", jq, sed, grep -E, xmllint, etc.
-- For web scraping: prefer RSS feeds (curl + xmllint/sed/grep) or python3 -c with urllib`
+- Only use: curl, python3 <<'PYEOF', python3 -c "...", node -e "...", jq, sed, grep -E, xmllint, etc.
+- For multi-line Python: ALWAYS use heredoc (python3 <<'PYEOF'...PYEOF), NEVER cram complex code into python3 -c "..."
+- Install packages with: python3 -m pip install <pkg> (NEVER bare "pip")
+- For web scraping: prefer RSS feeds (curl + xmllint/sed/grep) or python3 with urllib`
 	}
 
 	systemPrompt := instructions + `

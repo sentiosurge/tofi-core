@@ -86,7 +86,7 @@ func (d *DockerExecutor) CreateSandbox(cfg SandboxConfig) (string, error) {
 
 // Execute runs a command inside the user's container.
 // No ValidateCommand needed — the container itself provides isolation.
-func (d *DockerExecutor) Execute(ctx context.Context, sandboxPath, userDir, command string, timeoutSec int) (string, error) {
+func (d *DockerExecutor) Execute(ctx context.Context, sandboxPath, userDir, command string, timeoutSec int, env map[string]string) (string, error) {
 	if timeoutSec <= 0 {
 		timeoutSec = 60
 	}
@@ -104,7 +104,13 @@ func (d *DockerExecutor) Execute(ctx context.Context, sandboxPath, userDir, comm
 	}
 	name := d.containerName(userID)
 
-	cmd := exec.CommandContext(execCtx, "docker", "exec", "-w", sandboxPath, name, "sh", "-c", command)
+	// Build docker exec args with optional env vars
+	args := []string{"exec", "-w", sandboxPath}
+	for k, v := range env {
+		args = append(args, "-e", k+"="+v)
+	}
+	args = append(args, name, "sh", "-c", command)
+	cmd := exec.CommandContext(execCtx, "docker", args...)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, limit: MaxOutputBytes}

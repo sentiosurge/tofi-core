@@ -18,7 +18,8 @@ type Executor interface {
 
 	// Execute runs a shell command in the sandbox with timeout.
 	// userDir is the user's persistent directory (for installed tools); empty string if none.
-	Execute(ctx context.Context, sandboxPath, userDir, command string, timeoutSec int) (output string, err error)
+	// env is an optional map of extra environment variables to inject (nil = none).
+	Execute(ctx context.Context, sandboxPath, userDir, command string, timeoutSec int, env map[string]string) (output string, err error)
 
 	// Cleanup removes the task-level sandbox directory (keeps user data).
 	Cleanup(sandboxPath string)

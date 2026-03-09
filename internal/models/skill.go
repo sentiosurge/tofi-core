@@ -43,6 +43,12 @@ type SkillManifest struct {
 
 	// === Tofi 3.0 扩展 ===
 
+	// RequiredSecrets 技能需要的密钥列表 (如 ["BRAVE_API_KEY"])
+	RequiredSecrets []string `yaml:"required_secrets,omitempty" json:"required_secrets,omitempty"`
+
+	// Version 技能版本
+	Version string `yaml:"version,omitempty" json:"version,omitempty"`
+
 	// Inputs 结构化输入定义
 	Inputs map[string]*SkillInput `yaml:"inputs,omitempty" json:"inputs,omitempty"`
 
@@ -89,14 +95,17 @@ func (m *SkillManifest) AllowedToolsList() []string {
 	return tools
 }
 
-// RequiredEnvVars 从 metadata 中提取所需的环境变量
+// RequiredEnvVars 提取所需的环境变量/密钥
+// 优先使用 required_secrets 字段，回退到 metadata 中的约定
 func (m *SkillManifest) RequiredEnvVars() []string {
+	// 优先: 直接声明的 required_secrets
+	if len(m.RequiredSecrets) > 0 {
+		return m.RequiredSecrets
+	}
+	// 回退: 从 metadata 中提取
 	if m.Metadata == nil {
 		return nil
 	}
-	// 约定: metadata.requires.env 是逗号分隔的环境变量列表
-	// 但标准中 metadata 是 flat map[string]string
-	// 我们检查常见的 key
 	var envVars []string
 	for _, key := range []string{"requires_env", "required_env", "env"} {
 		if val, ok := m.Metadata[key]; ok && val != "" {

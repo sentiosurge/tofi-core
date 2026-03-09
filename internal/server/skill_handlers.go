@@ -17,6 +17,40 @@ import (
 	"github.com/google/uuid"
 )
 
+// --- System Skills API ---
+
+// handleListSystemSkills returns all scope="system" skills (built-in skills).
+// GET /api/v1/skills/system
+func (s *Server) handleListSystemSkills(w http.ResponseWriter, r *http.Request) {
+	records, err := s.db.ListSystemSkills()
+	if err != nil {
+		http.Error(w, "failed to list system skills", 500)
+		return
+	}
+	type systemSkillResp struct {
+		ID              string `json:"id"`
+		Name            string `json:"name"`
+		Description     string `json:"description"`
+		RequiredSecrets string `json:"required_secrets"`
+		HasScripts      bool   `json:"has_scripts"`
+	}
+	var resp []systemSkillResp
+	for _, r := range records {
+		resp = append(resp, systemSkillResp{
+			ID:              r.ID,
+			Name:            r.Name,
+			Description:     r.Description,
+			RequiredSecrets: r.RequiredSecrets,
+			HasScripts:      r.HasScripts,
+		})
+	}
+	if resp == nil {
+		resp = []systemSkillResp{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 // --- Skill API Handlers ---
 
 // handleListSkills GET /api/v1/skills — 列出用户可见的所有 Skills（私有 + 公共）

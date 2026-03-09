@@ -1,0 +1,6 @@
+.tofi/
+*.log
+.env*
+docs/
+workflows/
+tofi-server

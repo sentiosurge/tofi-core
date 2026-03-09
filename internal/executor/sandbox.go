@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -33,6 +35,33 @@ var blockedPrefixes = []string{
 	"eval ", "exec ",
 	"kill -9 1", "kill -9 -1",
 	":(){ :|:& };:", // fork bomb
+}
+
+// blockedPatterns detects dangerous patterns anywhere in a command via regex.
+// This is a best-effort layer — OS-level sandbox-exec is the true defense.
+var blockedPatterns = []*regexp.Regexp{
+	// Pipe-to-shell (remote code execution)
+	regexp.MustCompile(`\|\s*(sh|bash|zsh|dash)\b`),
+	regexp.MustCompile(`\|\s*python3?\s`),
+
+	// Reverse shell patterns
+	regexp.MustCompile(`\bnc\s+.*-e\b`),
+	regexp.MustCompile(`\bncat\s+.*-e\b`),
+	regexp.MustCompile(`/dev/tcp/`),
+	regexp.MustCompile(`/dev/udp/`),
+	regexp.MustCompile(`\bmkfifo\b.*\bnc\b`),
+	regexp.MustCompile(`\bsocat\b.*\bexec\b`),
+
+	// Data exfiltration (curl/wget with command substitution)
+	regexp.MustCompile(`(curl|wget)\s+.*\$\(`),
+	regexp.MustCompile(`(curl|wget)\s+.*-d\s+@/`),
+
+	// Sensitive file access
+	regexp.MustCompile(`\.(ssh|aws|gnupg|kube)/`),
+	regexp.MustCompile(`Library/Keychains`),
+
+	// Encoded bypass: base64 decode | shell
+	regexp.MustCompile(`base64\s+-[dD]\b.*\|\s*(sh|bash)\b`),
 }
 
 // ─── DirectExecutor ─────────────────────────────────────────
@@ -70,13 +99,13 @@ func (d *DirectExecutor) CreateSandbox(cfg SandboxConfig) (string, error) {
 
 // Execute runs a shell command inside the sandbox directory.
 // Inherits the full host PATH with shared packages prepended.
-func (d *DirectExecutor) Execute(ctx context.Context, sandboxPath, userDir, command string, timeoutSec int) (string, error) {
+func (d *DirectExecutor) Execute(ctx context.Context, sandboxPath, userDir, command string, timeoutSec int, env map[string]string) (string, error) {
 	homeDir := d.homeDir
 	if homeDir == "" {
 		// Infer from sandboxPath: {homeDir}/sandbox/{cardID}
 		homeDir = filepath.Dir(filepath.Dir(sandboxPath))
 	}
-	return executeInSandboxInternal(ctx, sandboxPath, homeDir, command, timeoutSec)
+	return executeInSandboxInternal(ctx, sandboxPath, homeDir, command, timeoutSec, env)
 }
 
 // Cleanup removes the task-level sandbox directory and all its contents.
@@ -93,7 +122,43 @@ func (d *DirectExecutor) Cleanup(sandboxPath string) {
 
 // ─── Shared internal implementation ─────────────────────────
 
-func executeInSandboxInternal(parentCtx context.Context, sandboxPath, homeDir, command string, timeoutSec int) (string, error) {
+// buildSafePATH constructs a whitelisted PATH instead of inheriting the full host PATH.
+// Includes shared packages, standard system paths, and version managers (pyenv/nvm).
+func buildSafePATH(pkgDir string) string {
+	paths := []string{
+		filepath.Join(pkgDir, ".local/bin"),
+		filepath.Join(pkgDir, "node_modules/.bin"),
+		"/opt/homebrew/bin",
+		"/opt/homebrew/sbin",
+		"/usr/local/bin",
+		"/usr/bin",
+		"/bin",
+		"/usr/sbin",
+		"/sbin",
+	}
+	// Preserve version manager paths (pyenv, nvm, volta) from host
+	for _, p := range strings.Split(os.Getenv("PATH"), ":") {
+		if strings.Contains(p, ".pyenv") ||
+			strings.Contains(p, ".nvm") ||
+			strings.Contains(p, ".volta") {
+			paths = append(paths, p)
+		}
+	}
+	return strings.Join(paths, ":")
+}
+
+// logCommandAudit writes a timestamped entry to the sandbox audit log.
+func logCommandAudit(sandboxPath, command string) {
+	auditPath := filepath.Join(sandboxPath, "audit.log")
+	f, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format(time.RFC3339), command)
+}
+
+func executeInSandboxInternal(parentCtx context.Context, sandboxPath, homeDir, command string, timeoutSec int, extraEnv map[string]string) (string, error) {
 	// Enforce timeout ceiling
 	if timeoutSec <= 0 {
 		timeoutSec = 60
@@ -102,24 +167,29 @@ func executeInSandboxInternal(parentCtx context.Context, sandboxPath, homeDir, c
 		timeoutSec = MaxTimeout
 	}
 
+	// Fix unbalanced quotes (common LLM generation artifact)
+	command = fixUnbalancedQuotes(command)
+
+	// Audit log
+	logCommandAudit(sandboxPath, command)
+
 	ctx, cancel := context.WithTimeout(parentCtx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	// Layer 3: Use macOS sandbox-exec if available
+	var cmd *exec.Cmd
+	if seatbeltAvailable {
+		profile := buildSeatbeltProfile(defaultSeatbeltConfig())
+		cmd = exec.CommandContext(ctx, "sandbox-exec", "-p", profile, "sh", "-c", command)
+		log.Printf("🔒 [sandbox] Executing with seatbelt: %.80s...", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
 	cmd.Dir = sandboxPath
 
-	// Build PATH: shared packages bins → full host PATH
-	hostPath := os.Getenv("PATH")
-	if hostPath == "" {
-		hostPath = "/usr/local/bin:/usr/bin:/bin"
-	}
-
+	// Layer 2: Build safe PATH (whitelist instead of full host PATH)
 	pkgDir := filepath.Join(homeDir, "packages")
-	sandboxBinPath := strings.Join([]string{
-		filepath.Join(pkgDir, ".local/bin"),
-		filepath.Join(pkgDir, "node_modules/.bin"),
-		hostPath,
-	}, ":")
+	sandboxBinPath := buildSafePATH(pkgDir)
 
 	// Build environment: inherit host capabilities, isolate file writes
 	env := []string{
@@ -134,6 +204,11 @@ func executeInSandboxInternal(parentCtx context.Context, sandboxPath, homeDir, c
 		"PYTHONPATH=" + filepath.Join(pkgDir, ".pip"),
 		"UV_CACHE_DIR=" + filepath.Join(pkgDir, ".cache", "uv"),
 		"NPM_CONFIG_PREFIX=" + pkgDir,
+	}
+
+	// Inject extra environment variables (e.g., skill secrets)
+	for k, v := range extraEnv {
+		env = append(env, k+"="+v)
 	}
 
 	cmd.Env = env
@@ -180,7 +255,7 @@ func CreateSandbox(homeDir, cardID string) (string, error) {
 func ExecuteInSandbox(parentCtx context.Context, sandboxPath, command string, timeoutSec int) (string, error) {
 	// Infer homeDir from sandboxPath
 	homeDir := filepath.Dir(filepath.Dir(sandboxPath))
-	return executeInSandboxInternal(parentCtx, sandboxPath, homeDir, command, timeoutSec)
+	return executeInSandboxInternal(parentCtx, sandboxPath, homeDir, command, timeoutSec, nil)
 }
 
 // CleanupSandbox removes the sandbox directory (legacy).
@@ -188,10 +263,23 @@ func CleanupSandbox(sandboxPath string) {
 	NewDirectExecutor("").Cleanup(sandboxPath)
 }
 
+// fixUnbalancedQuotes removes trailing unmatched double quotes from commands.
+// LLMs sometimes generate commands with an extra trailing " (e.g. `--flag value"`),
+// which causes sh to fail with "Unterminated quoted string".
+func fixUnbalancedQuotes(command string) string {
+	n := strings.Count(command, `"`)
+	if n%2 != 0 && strings.HasSuffix(strings.TrimSpace(command), `"`) {
+		command = strings.TrimSpace(command)
+		command = command[:len(command)-1]
+	}
+	return command
+}
+
 // ─── ValidateCommand ────────────────────────────────────────
 
-// ValidateCommand performs basic security checks on a command before execution.
-// Only blocks truly dangerous system commands. Returns nil if safe.
+// ValidateCommand performs security checks on a command before execution.
+// Layer 1: blocks dangerous prefixes and regex patterns.
+// This is best-effort — OS-level sandbox-exec (Layer 3) is the true defense.
 func ValidateCommand(command, sandboxPath string) error {
 	if strings.TrimSpace(command) == "" {
 		return fmt.Errorf("empty command")
@@ -209,6 +297,13 @@ func ValidateCommand(command, sandboxPath string) error {
 			if strings.Contains(lower, sep+prefix) {
 				return fmt.Errorf("blocked command: '%s' is not allowed (after '%s')", prefix, strings.TrimSpace(sep))
 			}
+		}
+	}
+
+	// Check blocked patterns (regex-based detection)
+	for _, pattern := range blockedPatterns {
+		if pattern.MatchString(command) {
+			return fmt.Errorf("blocked pattern: potentially dangerous command detected")
 		}
 	}
 

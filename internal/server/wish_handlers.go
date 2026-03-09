@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"tofi-core/internal/capability"
+	"tofi-core/internal/crypto"
 	"tofi-core/internal/executor"
 	"tofi-core/internal/mcp"
 	"tofi-core/internal/models"
@@ -307,7 +309,42 @@ func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkill
 	// 3. 构建额外内置工具 (search_skills, suggest_install)
 	extraTools := s.buildWishTools(userID, cardID)
 
-	// 3. System Prompt
+	// 3a. 注入 Agent Capabilities (MCP servers, web_search, notify)
+	var capMCPServers []mcp.MCPServerConfig
+	if card.AgentID != "" {
+		if agentRec, err := s.db.GetAgent(card.AgentID); err == nil {
+			caps, err := capability.Parse(agentRec.Capabilities)
+			if err != nil {
+				log.Printf("⚠️ [wish:%s] Invalid capabilities JSON: %v", cardID[:8], err)
+			}
+			if caps != nil {
+				// Resolve {{secret:KEY}} placeholders
+				secretGetter := func(name string) (string, error) {
+					rec, err := s.db.GetSecret(userID, name)
+					if err != nil {
+						return "", err
+					}
+					return crypto.Decrypt(rec.EncryptedValue)
+				}
+				if err := capability.ResolveSecrets(caps, secretGetter); err != nil {
+					log.Printf("⚠️ [wish:%s] Failed to resolve secrets: %v", cardID[:8], err)
+				}
+				// MCP servers
+				capMCPServers = capability.BuildMCPServers(caps)
+				// Extra tools (web_search, notify)
+				capTools := capability.BuildExtraTools(caps, secretGetter)
+				extraTools = append(extraTools, capTools...)
+				if len(capMCPServers) > 0 {
+					log.Printf("🔌 [wish:%s] Injecting %d MCP servers from capabilities", cardID[:8], len(capMCPServers))
+				}
+				if len(capTools) > 0 {
+					log.Printf("🧩 [wish:%s] Injecting %d capability tools", cardID[:8], len(capTools))
+				}
+			}
+		}
+	}
+
+	// 4. System Prompt
 	systemPrompt := `You are Tofi, an autonomous AI agent. The user has made a wish (request) and you need to fulfill it by TAKING ACTION, not just giving advice.
 
 ## Core Principle: ACT, Don't Advise
@@ -315,15 +352,25 @@ You are an EXECUTOR, not an advisor. When a task requires running commands, you 
 
 ## Tools Available
 - **run_skill_***: Invoke an installed skill. Skills return data or suggest commands. **If a skill returns commands, you MUST execute them with sandbox_exec — never just relay the skill's instructions back to the user.**
-- **sandbox_exec**: Run shell commands in a sandbox. Full system tools available (python3, node, curl, git, jq, pip, npm, etc.). This is your primary tool for getting things done.
+- **sandbox_exec**: Run shell commands in a sandbox. Full system tools available (python3, node, curl, git, jq, npm, etc.). This is your primary tool for getting things done.
 - **search_skills**: Find new skills on the skills.sh marketplace.
 - **suggest_install**: Suggest installing a skill — execution will PAUSE for user approval.
 - **update_kanban**: Report progress as you work.
 
 ## Sandbox Environment
-You have a sandbox shell with full system tools available. Package installs (pip/npm) persist across tasks.
-- If a command is not found, install it with pip or npm
-- Prefer inline code (python3 -c "..." or python3 <<'EOF') over CLI tools that may not exist
+You have a sandbox shell (macOS) with full system tools available. Package installs persist across tasks.
+- **Python packages**: ALWAYS use ` + "`python3 -m pip install <pkg>`" + ` (NEVER bare "pip" — it does not exist on macOS, only pip3)
+- **Node packages**: use npm install
+- **Multi-line Python**: For anything beyond a trivial one-liner, ALWAYS use heredoc syntax:
+  ` + "```" + `
+  python3 <<'PYEOF'
+  import yfinance as yf
+  data = yf.download("AAPL", period="5d")
+  print(data)
+  PYEOF
+  ` + "```" + `
+  NEVER cram complex Python into a single python3 -c "..." line — it causes shell quoting and syntax errors.
+- If a command is not found, install it with python3 -m pip or npm
 - If a skill suggests a CLI tool that doesn't exist, use the underlying library directly
 - ALWAYS execute commands and return real results — never tell the user to "run this command themselves"
 
@@ -338,8 +385,14 @@ When you find a useful skill via search_skills that isn't installed yet:
 2. Use skills and sandbox_exec to get things done
 3. **Execute commands ONE AT A TIME** — call sandbox_exec once, check the result, then decide the next command. Never batch multiple sandbox_exec calls in parallel.
 4. If a command fails, adapt and retry with a different approach (max 3 retries per command)
-5. **If a skill returns commands that fail, do NOT keep calling more skills hoping for better results.** Instead, write your own commands using sandbox_exec directly (curl + sed/grep for web, python3 -c for scripting).
+5. **If a skill returns commands that fail, do NOT keep calling more skills hoping for better results.** Instead, write your own commands using sandbox_exec directly (curl + sed/grep for web, python3 with heredoc for scripting).
 6. Provide actual results, not just suggestions
+
+## CRITICAL: Never Give Up
+- **NEVER respond with "go do it yourself" or "visit website X manually".** You are an executor — if one approach fails, try another.
+- **Always deliver SOMETHING useful.** If you got partial data (e.g. 1 out of 3 sources worked), present what you have and clearly state what failed.
+- **When a skill's commands fail, write your OWN code.** Don't just skip to the next task — debug, simplify, and retry.
+- **Fallback chain**: skill command → fix the command → write simpler code yourself → try alternative data source → present partial results. NEVER end with "I couldn't do it."
 
 ## Language
 Always respond in the same language as the user's wish. If the user writes in Chinese, respond in Chinese. If in English, respond in English.`
@@ -364,10 +417,11 @@ Always respond in the same language as the user's wish. If the user writes in Ch
 	defer s.executor.Cleanup(sandboxDir)
 	log.Printf("📦 [wish:%s] Sandbox created: %s", cardID[:8], sandboxDir)
 
-	// 5. 构建 Agent Config
+	// 6. 构建 Agent Config
 	agentCfg := mcp.AgentConfig{
 		System:        systemPrompt,
 		Prompt:        prompt,
+		MCPServers:    capMCPServers,
 		SkillTools:    skillTools,
 		ExtraTools:    extraTools,
 		KanbanCardID:  cardID,

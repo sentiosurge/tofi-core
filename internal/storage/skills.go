@@ -198,6 +198,20 @@ func (db *DB) ListSkills(userID string) ([]*SkillRecord, error) {
 	return scanSkillRecords(rows)
 }
 
+// ListSystemSkills 列出所有 scope="system" 的 Skills（内置技能）
+func (db *DB) ListSystemSkills() ([]*SkillRecord, error) {
+	query := `SELECT id, name, description, version, COALESCE(scope,'private'), source, COALESCE(source_url,''), manifest_json, instructions, COALESCE(input_schema,'{}'), COALESCE(output_schema,'{}'), has_scripts, COALESCE(required_secrets,'[]'), COALESCE(allowed_tools,'[]'), user_id, installed_at, updated_at
+	FROM skills WHERE scope = 'system' ORDER BY name`
+
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanSkillRecords(rows)
+}
+
 // ListAllSkills 列出所有用户的 Skills (管理员用)
 func (db *DB) ListAllSkills() ([]*SkillRecord, error) {
 	query := `SELECT id, name, description, version, COALESCE(scope,'private'), source, COALESCE(source_url,''), manifest_json, instructions, COALESCE(input_schema,'{}'), COALESCE(output_schema,'{}'), has_scripts, COALESCE(required_secrets,'[]'), COALESCE(allowed_tools,'[]'), user_id, installed_at, updated_at

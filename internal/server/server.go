@@ -51,6 +51,9 @@ type Server struct {
 	// Preview session cache for two-phase skill install
 	previewMu       sync.Mutex
 	previewSessions map[string]*PreviewSession // sessionID → session
+
+	// Agent scheduler (min-heap + timer for scheduled agent runs)
+	agentScheduler *AgentScheduler
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -196,6 +199,9 @@ func (s *Server) Start() error {
 	}
 	defer s.scheduler.Stop()
 
+	// 安装/更新 System Skills（内置技能）
+	skills.InstallSystemSkills(s.db, s.config.HomeDir)
+
 	// 启动前恢复僵尸任务（通过工作池提交）
 	if err := s.recoverZombiesWithPool(); err != nil {
 		log.Printf("⚠️  僵尸任务恢复失败: %v", err)
@@ -206,6 +212,13 @@ func (s *Server) Start() error {
 
 	// 启动 preview session 清理 goroutine
 	go s.cleanupPreviewSessions()
+
+	// 启动 Agent 调度器（Timer-based）
+	s.agentScheduler = NewAgentScheduler(s)
+	if err := s.agentScheduler.Start(); err != nil {
+		log.Printf("⚠️  Agent 调度器启动失败: %v", err)
+	}
+	defer s.agentScheduler.Stop()
 
 	mux := http.NewServeMux()
 
@@ -292,6 +305,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("DELETE /api/v1/secrets/{name}", s.AuthMiddleware(s.handleDeleteSecret))
 
 	// Skills 管理路由
+	mux.HandleFunc("GET /api/v1/skills/system", s.AuthMiddleware(s.handleListSystemSkills))
 	mux.HandleFunc("GET /api/v1/skills/collection", s.AuthMiddleware(s.handleGetCollection))
 	mux.HandleFunc("DELETE /api/v1/skills/collection", s.AuthMiddleware(s.handleDeleteCollection))
 	mux.HandleFunc("GET /api/v1/skills", s.AuthMiddleware(s.handleListSkills))
@@ -309,6 +323,9 @@ func (s *Server) Start() error {
 
 	// Skills Registry (搜索 skills.sh 生态)
 	mux.HandleFunc("GET /api/v1/registry/search", s.AuthMiddleware(s.handleRegistrySearch))
+
+	// Test Chat (capability 测试)
+	mux.HandleFunc("POST /api/v1/test/chat", s.AuthMiddleware(s.handleTestChat))
 
 	// Settings / AI Key 管理
 	mux.HandleFunc("GET /api/v1/settings/ai-keys", s.AuthMiddleware(s.handleListAIKeys))
@@ -329,6 +346,18 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/v1/kanban/{id}/abort", s.AuthMiddleware(s.handleAbortCard))
 	mux.HandleFunc("POST /api/v1/kanban/{id}/retry", s.AuthMiddleware(s.handleRetryCard))
 	mux.HandleFunc("GET /api/v1/kanban/{id}/stream", s.handleCardStream) // SSE, auth via query param
+
+	// Agent 管理路由
+	mux.HandleFunc("POST /api/v1/agents/parse-schedule", s.AuthMiddleware(s.handleParseSchedule))
+	mux.HandleFunc("GET /api/v1/agents", s.AuthMiddleware(s.handleListAgents))
+	mux.HandleFunc("POST /api/v1/agents", s.AuthMiddleware(s.handleCreateAgent))
+	mux.HandleFunc("GET /api/v1/agents/{id}", s.AuthMiddleware(s.handleGetAgent))
+	mux.HandleFunc("PUT /api/v1/agents/{id}", s.AuthMiddleware(s.handleUpdateAgent))
+	mux.HandleFunc("DELETE /api/v1/agents/{id}", s.AuthMiddleware(s.handleDeleteAgent))
+	mux.HandleFunc("POST /api/v1/agents/{id}/activate", s.AuthMiddleware(s.handleActivateAgent))
+	mux.HandleFunc("POST /api/v1/agents/{id}/deactivate", s.AuthMiddleware(s.handleDeactivateAgent))
+	mux.HandleFunc("POST /api/v1/agents/{id}/run", s.AuthMiddleware(s.handleRunAgentNow))
+	mux.HandleFunc("GET /api/v1/agents/{id}/runs", s.AuthMiddleware(s.handleListAgentRuns))
 
 	// Admin 管理路由 (需要 admin 权限)
 	mux.HandleFunc("GET /api/v1/admin/stats", s.AdminMiddleware(s.handleAdminGetStats))
