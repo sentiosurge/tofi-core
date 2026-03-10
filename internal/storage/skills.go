@@ -169,12 +169,20 @@ func (db *DB) GetSkill(id string) (*SkillRecord, error) {
 	return scanSkillRecord(row)
 }
 
-// GetSkillByName 根据名称获取 Skill（某用户的）
+// GetSkillByName 根据名称获取 Skill（跨 scope 查找）
+// 优先级：用户私有 → public → system
 func (db *DB) GetSkillByName(userID, name string) (*SkillRecord, error) {
 	query := `SELECT id, name, description, version, COALESCE(scope,'private'), source, COALESCE(source_url,''), manifest_json, instructions, COALESCE(input_schema,'{}'), COALESCE(output_schema,'{}'), has_scripts, COALESCE(required_secrets,'[]'), COALESCE(allowed_tools,'[]'), user_id, installed_at, updated_at
-	FROM skills WHERE user_id = ? AND name = ?`
+	FROM skills WHERE name = ? AND (user_id = ? OR scope IN ('public', 'system'))
+	ORDER BY CASE
+		WHEN user_id = ? THEN 0
+		WHEN scope = 'public' THEN 1
+		WHEN scope = 'system' THEN 2
+		ELSE 3
+	END
+	LIMIT 1`
 
-	row := db.conn.QueryRow(query, userID, name)
+	row := db.conn.QueryRow(query, name, userID, userID)
 	return scanSkillRecord(row)
 }
 

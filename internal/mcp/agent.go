@@ -571,13 +571,15 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 					ctx.Log("[Skill:%s] Executing with input: %s", matchedSkill.Name, truncate(input, 100))
 
 					// 如果 skill 有脚本目录，在沙箱中创建 symlink
+					var symlinkErr string
 					if matchedSkill.SkillDir != "" && cfg.SandboxDir != "" {
 						symlinkDir := filepath.Join(cfg.SandboxDir, "skills")
 						os.MkdirAll(symlinkDir, 0755)
 						link := filepath.Join(symlinkDir, matchedSkill.Name)
 						if _, err := os.Lstat(link); os.IsNotExist(err) {
 							if err := os.Symlink(matchedSkill.SkillDir, link); err != nil {
-								ctx.Log("[Skill:%s] Warning: failed to create symlink: %v", matchedSkill.Name, err)
+								symlinkErr = fmt.Sprintf("Failed to symlink skill scripts: %v", err)
+								ctx.Log("[Skill:%s] Warning: %s", matchedSkill.Name, symlinkErr)
 							} else {
 								ctx.Log("[Skill:%s] Symlinked scripts: skills/%s/ → %s", matchedSkill.Name, matchedSkill.Name, matchedSkill.SkillDir)
 							}
@@ -587,7 +589,26 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 					result, err := executeSkillSubCall(cfg, *matchedSkill, input)
 					resultMsg := ""
 					if err != nil {
-						resultMsg = fmt.Sprintf("Skill execution failed: %v", err)
+						// Build diagnostic info for the agent
+						var diag strings.Builder
+						diag.WriteString(fmt.Sprintf("Skill '%s' execution failed: %v\n", matchedSkill.Name, err))
+						diag.WriteString("\nDiagnostics:\n")
+						// Check scripts directory
+						if matchedSkill.SkillDir != "" {
+							scriptsDir := filepath.Join(matchedSkill.SkillDir, "scripts")
+							if _, statErr := os.Stat(scriptsDir); statErr != nil {
+								diag.WriteString(fmt.Sprintf("- Scripts directory: MISSING (%s)\n", scriptsDir))
+							} else {
+								diag.WriteString(fmt.Sprintf("- Scripts directory: exists (%s)\n", scriptsDir))
+							}
+						} else {
+							diag.WriteString("- Scripts directory: N/A (no bundled scripts)\n")
+						}
+						if symlinkErr != "" {
+							diag.WriteString(fmt.Sprintf("- Symlink: FAILED (%s)\n", symlinkErr))
+						}
+						diag.WriteString("\nSuggestion: Try installing missing dependencies with sandbox_exec, or write your own code to accomplish the goal.")
+						resultMsg = diag.String()
 					} else {
 						resultMsg = result
 					}
@@ -1235,7 +1256,7 @@ Rules:
 	}
 	resp, err := callLLM(cfg, messages, nil)
 	if err != nil {
-		return "", fmt.Errorf("skill sub-call failed: %v", err)
+		return "", fmt.Errorf("skill sub-call LLM failed for '%s': %v. The skill's sub-LLM call could not complete. Try accomplishing the goal with sandbox_exec directly", skill.Name, err)
 	}
 	content := gjson.Get(resp, "choices.0.message.content").String()
 	if content == "" {

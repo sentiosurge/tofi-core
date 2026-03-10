@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -66,46 +65,61 @@ func (s *Server) handleTestChat(w http.ResponseWriter, r *http.Request) {
 		extraTools = capability.BuildExtraTools(caps, secretGetter)
 	}
 
-	// 3. Load requested skills
+	// 3. Load requested skills + pre-flight secret validation
 	var skillInstructions []string
+	var skillTools []mcp.SkillTool
 	secretEnv := make(map[string]string)
+	var missingSecrets []string // "skill_name: SECRET_KEY" pairs
 	localStore := skills.NewLocalStore(s.config.HomeDir)
 
 	for _, skillName := range req.Skills {
-		// Load from database
-		skillID := "system/" + skillName
-		rec, err := s.db.GetSkill(skillID)
+		// Load from database — cross-scope lookup (user → public → system)
+		rec, err := s.db.GetSkillByName(userID, skillName)
 		if err != nil {
 			log.Printf("[test-chat] skill %q not found: %v", skillName, err)
 			continue
 		}
 
-		// Collect instructions
+		// Collect instructions (appended to system prompt)
 		if rec.Instructions != "" {
 			skillInstructions = append(skillInstructions, rec.Instructions)
 		}
 
-		// Resolve required secrets → env vars
+		// Build SkillTool for tool-calling support (like wish_handlers)
+		st := mcp.SkillTool{
+			ID:           rec.ID,
+			Name:         rec.Name,
+			Description:  rec.Description,
+			Instructions: rec.Instructions,
+		}
+		if rec.HasScripts {
+			skillDir := localStore.SkillDir(rec.Name)
+			if abs, err := filepath.Abs(skillDir); err == nil {
+				skillDir = abs
+			}
+			st.SkillDir = skillDir
+		}
+		skillTools = append(skillTools, st)
+
+		// Resolve required secrets → env vars (with missing tracking)
 		for _, secretName := range rec.RequiredSecretsList() {
 			if _, ok := secretEnv[secretName]; ok {
 				continue // already resolved
 			}
 			secretRec, err := s.db.GetSecret(userID, secretName)
 			if err != nil {
-				log.Printf("[test-chat] secret %q for skill %q not found", secretName, skillName)
+				log.Printf("[test-chat] secret %q for skill %q not found", secretName, rec.Name)
+				missingSecrets = append(missingSecrets, fmt.Sprintf("Skill '%s' requires secret '%s'", rec.Name, secretName))
 				continue
 			}
 			val, err := crypto.Decrypt(secretRec.EncryptedValue)
 			if err != nil {
 				log.Printf("[test-chat] decrypt secret %q failed: %v", secretName, err)
+				missingSecrets = append(missingSecrets, fmt.Sprintf("Skill '%s': failed to decrypt secret '%s'", rec.Name, secretName))
 				continue
 			}
 			secretEnv[secretName] = val
 		}
-
-		// Symlink scripts into sandbox (done after sandbox creation below)
-		_ = localStore // used below
-		_ = rec
 	}
 
 	// 4. Set up SSE
@@ -126,6 +140,17 @@ func (s *Server) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "event: connected\ndata: {}\n\n")
 	flusher.Flush()
 
+	// Pre-flight: check for missing secrets before wasting API credits
+	if len(missingSecrets) > 0 {
+		errMsg := "⚠️ Missing configuration:\n"
+		for _, ms := range missingSecrets {
+			errMsg += "• " + ms + "\n"
+		}
+		errMsg += "\nPlease configure the required secrets in Settings → Secrets, then try again."
+		sendSSEError(w, flusher, errMsg)
+		return
+	}
+
 	// 5. Create sandbox
 	sandboxDir, err := s.executor.CreateSandbox(executor.SandboxConfig{
 		HomeDir: s.config.HomeDir,
@@ -138,21 +163,34 @@ func (s *Server) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.executor.Cleanup(sandboxDir)
 
-	// 6. Symlink skill scripts into sandbox
-	for _, skillName := range req.Skills {
-		skillDir := localStore.SkillDir(skillName)
-		if _, err := os.Stat(filepath.Join(skillDir, "scripts")); err == nil {
-			// Create skills/{name} symlink in sandbox
-			sandboxSkillsDir := filepath.Join(sandboxDir, "skills", skillName)
-			os.MkdirAll(filepath.Dir(sandboxSkillsDir), 0755)
-			os.Symlink(skillDir, sandboxSkillsDir)
-		}
-	}
-
-	// 7. Build system prompt
+	// 6. Build system prompt
 	system := fmt.Sprintf(`You are a knowledgeable AI assistant with access to tools.
 Always respond in the same language as the user.
 Provide thorough, well-structured answers with sufficient detail.
+
+## Sandbox Environment
+You have a sandbox shell with full system tools available.
+- **Python packages**: ALWAYS use python3 -m pip install <pkg> (NEVER bare "pip")
+- **Node packages**: use npm install
+- **Multi-line Python**: For anything beyond a trivial one-liner, ALWAYS use heredoc:
+  python3 <<'PYEOF'
+  ...code...
+  PYEOF
+- If a command is not found, install it with python3 -m pip or npm
+- ALWAYS execute commands and return real results
+
+## CRITICAL: Never Give Up
+- **NEVER respond with "go do it yourself" or "visit website X manually".** You are an executor — if one approach fails, try another.
+- **Always deliver SOMETHING useful.** If you got partial data, present what you have.
+- **When a skill's commands fail, write your OWN code.** Don't just relay errors to the user.
+- **Fallback chain**: skill command → fix the command → write simpler code yourself → try alternative approach → present partial results.
+
+## Skill Error Handling
+When a skill's commands fail:
+1. Read the error carefully — install missing dependencies (python3 -m pip install, npm install)
+2. If a secret/API key is missing, tell the user which secret to configure in Settings → Secrets
+3. Write your OWN code as fallback — never just explain the error
+4. If one skill doesn't work, try to accomplish the goal with sandbox_exec directly
 
 Current time: %s`, time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
 
@@ -161,12 +199,13 @@ Current time: %s`, time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
 		system += "\n\n---\n\n" + instructions
 	}
 
-	// 8. Build AgentConfig
+	// 7. Build AgentConfig
 	agentCfg := mcp.AgentConfig{
 		System:     system,
 		Prompt:     req.Message,
 		Messages:   req.Messages,
 		MCPServers: capMCPServers,
+		SkillTools: skillTools,
 		ExtraTools: append(extraTools, s.buildMemoryTools(userID, "")...),
 		SandboxDir: sandboxDir,
 		UserDir:    userID,

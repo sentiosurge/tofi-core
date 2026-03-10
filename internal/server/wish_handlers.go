@@ -306,6 +306,41 @@ func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkill
 		skillTools = append(skillTools, st)
 	}
 
+	// 2b. Resolve skill secrets → env vars + pre-flight validation
+	secretEnv := make(map[string]string)
+	var missingSecrets []string
+	for _, skill := range selectedSkills {
+		for _, secretName := range skill.RequiredSecretsList() {
+			if _, ok := secretEnv[secretName]; ok {
+				continue // already resolved
+			}
+			secretRec, err := s.db.GetSecret(userID, secretName)
+			if err != nil {
+				log.Printf("[wish:%s] secret %q for skill %q not found", cardID[:8], secretName, skill.Name)
+				missingSecrets = append(missingSecrets, fmt.Sprintf("Skill '%s' requires secret '%s'", skill.Name, secretName))
+				continue
+			}
+			val, err := crypto.Decrypt(secretRec.EncryptedValue)
+			if err != nil {
+				log.Printf("[wish:%s] decrypt secret %q failed: %v", cardID[:8], secretName, err)
+				missingSecrets = append(missingSecrets, fmt.Sprintf("Skill '%s': failed to decrypt secret '%s'", skill.Name, secretName))
+				continue
+			}
+			secretEnv[secretName] = val
+		}
+	}
+
+	// Pre-flight: if critical secrets are missing, fail early with clear message
+	if len(missingSecrets) > 0 {
+		errMsg := "Missing required secrets:\n"
+		for _, ms := range missingSecrets {
+			errMsg += "• " + ms + "\n"
+		}
+		errMsg += "\nPlease configure them in Settings → Secrets."
+		log.Printf("⚠️ [wish:%s] %s", cardID[:8], errMsg)
+		return "", fmt.Errorf("%s", errMsg)
+	}
+
 	// 3. 构建额外内置工具 (search_skills, suggest_install)
 	extraTools := s.buildWishTools(userID, cardID)
 
@@ -431,6 +466,7 @@ Current time: ` + time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
 		SandboxDir:    sandboxDir,
 		UserDir:       userID, // Docker mode uses this to identify container
 		Executor:      s.executor,
+		SecretEnv:     secretEnv,
 		OnStreamChunk: func(cardID, delta string) {
 			s.sseHub.Publish(CardEvent{
 				Type:   "result_chunk",
