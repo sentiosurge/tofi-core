@@ -135,3 +135,18 @@ func BuildExtraTools(caps *ParsedCapabilities, getter SecretGetter) []mcp.ExtraB
 
 	return tools
 }
+
+// BuildNonSearchTools collects capability tools excluding web_search (for when web-search skill is used instead).
+func BuildNonSearchTools(caps *ParsedCapabilities, getter SecretGetter) []mcp.ExtraBuiltinTool {
+	if caps == nil {
+		return nil
+	}
+	var tools []mcp.ExtraBuiltinTool
+
+	// Notify
+	if caps.Notify != nil && len(caps.Notify.Channels) > 0 && getter != nil {
+		tools = append(tools, BuildNotifyTool(caps.Notify.Channels, getter))
+	}
+
+	return tools
+}

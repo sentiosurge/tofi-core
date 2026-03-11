@@ -388,7 +388,6 @@ func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkill
 				log.Printf("⚠️ [wish:%s] Invalid capabilities JSON: %v", cardID[:8], err)
 			}
 			if caps != nil {
-				// Resolve {{secret:KEY}} placeholders
 				secretGetter := func(name string) (string, error) {
 					rec, err := s.db.GetSecret(userID, name)
 					if err != nil {
@@ -399,16 +398,58 @@ func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkill
 				if err := capability.ResolveSecrets(caps, secretGetter); err != nil {
 					log.Printf("⚠️ [wish:%s] Failed to resolve secrets: %v", cardID[:8], err)
 				}
-				// MCP servers
 				capMCPServers = capability.BuildMCPServers(caps)
-				// Extra tools (web_search, notify)
-				capTools := capability.BuildExtraTools(caps, secretGetter)
+
+				// Web Search: inject the full web-search skill (not the bare API tool)
+				if caps.WebSearch != nil && caps.WebSearch.Enabled {
+					if wsSkill, err := s.db.GetSkillByName(userID, "web-search"); err == nil {
+						// Check not already in skillTools
+						alreadyHas := false
+						for _, st := range skillTools {
+							if st.Name == "web-search" {
+								alreadyHas = true
+								break
+							}
+						}
+						if !alreadyHas {
+							st := mcp.SkillTool{
+								ID: wsSkill.ID, Name: wsSkill.Name,
+								Description: wsSkill.Description, Instructions: wsSkill.Instructions,
+							}
+							if wsSkill.HasScripts {
+								skillDir := localStore.SkillDir(wsSkill.Name)
+								if abs, err := filepath.Abs(skillDir); err == nil {
+									skillDir = abs
+								}
+								st.SkillDir = skillDir
+							}
+							skillTools = append(skillTools, st)
+							// Resolve BRAVE_API_KEY for the skill
+							for _, sn := range wsSkill.RequiredSecretsList() {
+								if _, ok := secretEnv[sn]; !ok {
+									if rec, err := s.db.GetSecret(userID, sn); err == nil {
+										if val, err := crypto.Decrypt(rec.EncryptedValue); err == nil {
+											secretEnv[sn] = val
+										}
+									}
+								}
+							}
+							log.Printf("🌐 [wish:%s] Web Search: injected web-search skill", cardID[:8])
+						}
+					} else {
+						log.Printf("⚠️ [wish:%s] Web Search enabled but web-search skill not found, falling back to API tool", cardID[:8])
+						if apiKey, err := secretGetter("BRAVE_API_KEY"); err == nil && apiKey != "" {
+							extraTools = append(extraTools, capability.BuildWebSearchTool(apiKey))
+						}
+					}
+				}
+
+				// Other capability tools (notify, etc.) — skip web_search since handled above
+				capTools := capability.BuildNonSearchTools(caps, secretGetter)
 				extraTools = append(extraTools, capTools...)
+
 				if len(capMCPServers) > 0 {
 					log.Printf("🔌 [wish:%s] Injecting %d MCP servers from capabilities", cardID[:8], len(capMCPServers))
-				}
-				if len(capTools) > 0 {
-					log.Printf("🧩 [wish:%s] Injecting %d capability tools", cardID[:8], len(capTools))
 				}
 			}
 		}
