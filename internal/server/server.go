@@ -15,11 +15,17 @@ import (
 	"tofi-core/internal/storage"
 )
 
+// DeployMode constants
+const (
+	ModeSelfHosted = "self-hosted" // Single-user local deployment
+	ModeSaaS       = "saas"        // Multi-user cloud deployment
+)
+
 type Config struct {
 	Port                   int
 	HomeDir                string
 	MaxConcurrentWorkflows int    // 最大并发工作流数（默认 10）
-	SandboxMode            string // "direct" (default) or "docker" (future)
+	Mode                   string // "self-hosted" (default) or "saas"
 }
 
 // HoldSignal is sent through a hold channel to resume a paused agent
@@ -56,6 +62,12 @@ type Server struct {
 	appScheduler *AppScheduler
 }
 
+// IsSaaS returns true if running in SaaS (multi-user cloud) mode.
+func (s *Server) IsSaaS() bool { return s.config.Mode == ModeSaaS }
+
+// IsSelfHosted returns true if running in self-hosted (local) mode.
+func (s *Server) IsSelfHosted() bool { return s.config.Mode == ModeSelfHosted }
+
 func NewServer(config Config) (*Server, error) {
 	// 初始化 JWT Auth
 	InitAuth()
@@ -76,6 +88,15 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 
+	// Normalize deploy mode
+	if config.Mode == "" {
+		config.Mode = ModeSelfHosted
+	}
+	if config.Mode != ModeSelfHosted && config.Mode != ModeSaaS {
+		return nil, fmt.Errorf("invalid TOFI_MODE: %q (must be 'self-hosted' or 'saas')", config.Mode)
+	}
+	log.Printf("🏷️  Deploy mode: %s", config.Mode)
+
 	// 设置默认并发数
 	if config.MaxConcurrentWorkflows <= 0 {
 		config.MaxConcurrentWorkflows = 10
@@ -84,19 +105,19 @@ func NewServer(config Config) (*Server, error) {
 	registry := NewExecutionRegistry()
 	workerPool := NewWorkerPool(config.MaxConcurrentWorkflows, registry)
 
-	// Initialize sandbox executor based on config
+	// Initialize sandbox executor based on deploy mode
+	// SaaS → Docker sandbox (isolated); self-hosted → direct (trust the user)
 	var exec executor.Executor
-	switch config.SandboxMode {
-	case "docker":
+	if config.Mode == ModeSaaS {
 		dockerExec, err := executor.NewDockerExecutor(config.HomeDir, "tofi-sandbox:latest")
 		if err != nil {
 			log.Printf("⚠️  Docker executor failed: %v, falling back to direct mode", err)
 			exec = executor.NewDirectExecutor(config.HomeDir)
 		} else {
 			exec = dockerExec
-			log.Println("🐳 Docker sandbox mode enabled")
+			log.Println("🐳 SaaS mode: Docker sandbox enabled")
 		}
-	default:
+	} else {
 		exec = executor.NewDirectExecutor(config.HomeDir)
 	}
 
@@ -390,8 +411,11 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+		"mode":   s.config.Mode,
+	})
 }
 
 // handleStats 返回工作池的统计信息

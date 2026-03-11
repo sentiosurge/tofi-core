@@ -170,15 +170,21 @@ func serverCommand(args []string) {
 	port := serverCmd.Int("port", 8080, "HTTP server port")
 	homeDir := serverCmd.String("home", ".tofi", "Tofi runtime directory")
 	maxWorkers := serverCmd.Int("workers", 10, "Maximum concurrent workflows (default: 10)")
-	sandboxMode := serverCmd.String("sandbox", "direct", "Sandbox mode: 'direct' or 'docker'")
 
 	serverCmd.Parse(args)
+
+	// TOFI_MODE: env var is the single source of truth
+	mode := os.Getenv("TOFI_MODE")
+	if mode == "" {
+		mode = "self-hosted"
+	}
 
 	cfg := server.Config{
 		Port:                   *port,
 		HomeDir:                *homeDir,
 		MaxConcurrentWorkflows: *maxWorkers,
-		SandboxMode:            *sandboxMode,
+		
+		Mode:                   mode,
 	}
 
 	srv, err := server.NewServer(cfg)
