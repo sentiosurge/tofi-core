@@ -205,10 +205,17 @@ func InitDB(homeDir string) (*DB, error) {
 		log.Printf("⚠️  kanban_cards table creation (may already exist): %v", err)
 	}
 
-	// 创建 agents + agent_runs 表
+	// 创建 agents + agent_runs 表 (legacy, kept for migration)
 	if err := db.initAgentsTable(); err != nil {
 		log.Printf("⚠️  agents table creation (may already exist): %v", err)
 	}
+
+	// 创建 apps + app_runs 表 (new)
+	if err := db.initAppsTable(); err != nil {
+		log.Printf("⚠️  apps table creation (may already exist): %v", err)
+	}
+	db.migrateAgentsToApps()
+	db.migrateKanbanAppID()
 
 	// 创建 telegram_receivers 表
 	if err := db.initTelegramReceiversTable(); err != nil {

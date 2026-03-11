@@ -13,7 +13,8 @@ type KanbanCardRecord struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Status      string `json:"status"` // todo, working, hold, done, failed
-	AgentID     string `json:"agent_id,omitempty"`
+	AppID       string `json:"app_id,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"` // legacy, kept for DB compat
 	ExecutionID string `json:"execution_id,omitempty"`
 	Progress    int    `json:"progress"` // 0-100
 	Result      string `json:"result,omitempty"`
@@ -84,12 +85,12 @@ func (db *DB) CreateKanbanCard(card *KanbanCardRecord) error {
 	if card.Actions == "" {
 		card.Actions = "[]"
 	}
-	query := `INSERT INTO kanban_cards (id, title, description, status, agent_id, execution_id, progress, result, steps, actions, user_id, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO kanban_cards (id, title, description, status, app_id, agent_id, execution_id, progress, result, steps, actions, user_id, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := db.conn.Exec(query,
 		card.ID, card.Title, card.Description, card.Status,
-		card.AgentID, card.ExecutionID, card.Progress, card.Result, card.Steps, card.Actions,
+		card.AppID, card.AgentID, card.ExecutionID, card.Progress, card.Result, card.Steps, card.Actions,
 		card.UserID, card.CreatedAt, card.UpdatedAt,
 	)
 	return err
@@ -97,13 +98,13 @@ func (db *DB) CreateKanbanCard(card *KanbanCardRecord) error {
 
 // GetKanbanCard 获取单张卡片
 func (db *DB) GetKanbanCard(id string) (*KanbanCardRecord, error) {
-	query := `SELECT id, title, COALESCE(description,''), status, COALESCE(agent_id,''), COALESCE(execution_id,''), progress, COALESCE(result,''), COALESCE(steps,'[]'), COALESCE(actions,'[]'), user_id, created_at, updated_at
+	query := `SELECT id, title, COALESCE(description,''), status, COALESCE(app_id,''), COALESCE(agent_id,''), COALESCE(execution_id,''), progress, COALESCE(result,''), COALESCE(steps,'[]'), COALESCE(actions,'[]'), user_id, created_at, updated_at
 	FROM kanban_cards WHERE id = ?`
 
 	row := db.conn.QueryRow(query, id)
 	var c KanbanCardRecord
 	err := row.Scan(&c.ID, &c.Title, &c.Description, &c.Status,
-		&c.AgentID, &c.ExecutionID, &c.Progress, &c.Result, &c.Steps, &c.Actions,
+		&c.AppID, &c.AgentID, &c.ExecutionID, &c.Progress, &c.Result, &c.Steps, &c.Actions,
 		&c.UserID, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -113,7 +114,7 @@ func (db *DB) GetKanbanCard(id string) (*KanbanCardRecord, error) {
 
 // ListKanbanCards 列出用户的所有卡片，按 updated_at DESC 排序
 func (db *DB) ListKanbanCards(userID string) ([]*KanbanCardRecord, error) {
-	query := `SELECT id, title, COALESCE(description,''), status, COALESCE(agent_id,''), COALESCE(execution_id,''), progress, COALESCE(result,''), COALESCE(steps,'[]'), COALESCE(actions,'[]'), user_id, created_at, updated_at
+	query := `SELECT id, title, COALESCE(description,''), status, COALESCE(app_id,''), COALESCE(agent_id,''), COALESCE(execution_id,''), progress, COALESCE(result,''), COALESCE(steps,'[]'), COALESCE(actions,'[]'), user_id, created_at, updated_at
 	FROM kanban_cards WHERE user_id = ? ORDER BY updated_at DESC`
 
 	rows, err := db.conn.Query(query, userID)
@@ -126,7 +127,7 @@ func (db *DB) ListKanbanCards(userID string) ([]*KanbanCardRecord, error) {
 	for rows.Next() {
 		var c KanbanCardRecord
 		if err := rows.Scan(&c.ID, &c.Title, &c.Description, &c.Status,
-			&c.AgentID, &c.ExecutionID, &c.Progress, &c.Result, &c.Steps, &c.Actions,
+			&c.AppID, &c.AgentID, &c.ExecutionID, &c.Progress, &c.Result, &c.Steps, &c.Actions,
 			&c.UserID, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			continue
 		}
@@ -140,13 +141,13 @@ func (db *DB) UpdateKanbanCard(card *KanbanCardRecord) error {
 	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 	query := `UPDATE kanban_cards SET
 		title = ?, description = ?, status = ?,
-		agent_id = ?, execution_id = ?, progress = ?,
+		app_id = ?, agent_id = ?, execution_id = ?, progress = ?,
 		result = ?, updated_at = ?
 	WHERE id = ? AND user_id = ?`
 
 	result, err := db.conn.Exec(query,
 		card.Title, card.Description, card.Status,
-		card.AgentID, card.ExecutionID, card.Progress,
+		card.AppID, card.AgentID, card.ExecutionID, card.Progress,
 		card.Result, now,
 		card.ID, card.UserID,
 	)

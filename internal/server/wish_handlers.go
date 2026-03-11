@@ -150,12 +150,36 @@ func (s *Server) executeWish(card *storage.KanbanCardRecord, userID, requestedMo
 	updater.UpdateKanbanCardBySystem(cardID, "working", 10, "")
 	updater.AppendKanbanStep(cardID, map[string]any{"name": "Initializing", "status": "done"})
 
-	// 1. 获取已安装的 Skills
-	installedSkills, err := s.db.ListSkills(userID)
-	if err != nil {
-		log.Printf("❌ [wish:%s] Failed to list skills: %v", cardID[:8], err)
-		updater.UpdateKanbanCardBySystem(cardID, "failed", 0, fmt.Sprintf("Failed to list skills: %v", err))
-		return
+	// 1. 获取 Skills
+	// App 运行时仅加载 App 配置的 skills，不加载全部
+	appID := card.AppID
+	if appID == "" {
+		appID = card.AgentID
+	}
+	var installedSkills []*storage.SkillRecord
+	if appID != "" {
+		// App run: load only configured skills
+		if appRec, err := s.db.GetApp(appID); err == nil {
+			var skillNames []string
+			json.Unmarshal([]byte(appRec.Skills), &skillNames)
+			for _, name := range skillNames {
+				if rec, err := s.db.GetSkillByName(userID, name); err == nil {
+					installedSkills = append(installedSkills, rec)
+				} else {
+					log.Printf("⚠️ [wish:%s] App skill %q not found: %v", cardID[:8], name, err)
+				}
+			}
+			log.Printf("📦 [wish:%s] App run: loaded %d/%d configured skills", cardID[:8], len(installedSkills), len(skillNames))
+		}
+	} else {
+		// Ad-hoc wish: load all installed skills
+		var err error
+		installedSkills, err = s.db.ListSkills(userID)
+		if err != nil {
+			log.Printf("❌ [wish:%s] Failed to list skills: %v", cardID[:8], err)
+			updater.UpdateKanbanCardBySystem(cardID, "failed", 0, fmt.Sprintf("Failed to list skills: %v", err))
+			return
+		}
 	}
 
 	// 2. 智能检测 API Key 和模型
@@ -341,14 +365,25 @@ func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkill
 		return "", fmt.Errorf("%s", errMsg)
 	}
 
-	// 3. 构建额外内置工具 (search_skills, suggest_install)
-	extraTools := s.buildWishTools(userID, cardID)
+	// 3. 构建额外内置工具
+	// App 运行时不添加 search_skills/suggest_install（只用已配置的 skills）
+	appID := card.AppID
+	if appID == "" {
+		appID = card.AgentID // legacy fallback
+	}
+	isAppRun := appID != ""
+	var extraTools []mcp.ExtraBuiltinTool
+	if !isAppRun {
+		extraTools = s.buildWishTools(userID, cardID)
+	}
 
-	// 3a. 注入 Agent Capabilities (MCP servers, web_search, notify)
+	// 3a. 注入 App Capabilities (MCP servers, web_search, notify) + custom system prompt
 	var capMCPServers []mcp.MCPServerConfig
-	if card.AgentID != "" {
-		if agentRec, err := s.db.GetAgent(card.AgentID); err == nil {
-			caps, err := capability.Parse(agentRec.Capabilities)
+	var appSystemPrompt string
+	if appID != "" {
+		if appRec, err := s.db.GetApp(appID); err == nil {
+			appSystemPrompt = appRec.SystemPrompt
+			caps, err := capability.Parse(appRec.Capabilities)
 			if err != nil {
 				log.Printf("⚠️ [wish:%s] Invalid capabilities JSON: %v", cardID[:8], err)
 			}
@@ -379,8 +414,54 @@ func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkill
 		}
 	}
 
-	// 4. System Prompt
-	systemPrompt := `You are Tofi, an autonomous AI agent. The user has made a wish (request) and you need to fulfill it by TAKING ACTION, not just giving advice.
+	// 4. System Prompt — App runs get a focused prompt (no skill discovery)
+	var systemPrompt string
+	if isAppRun {
+		systemPrompt = `You are Tofi, an autonomous AI agent executing a scheduled App task. Fulfill the task by TAKING ACTION, not just giving advice.
+
+## Core Principle: ACT, Don't Advise
+You are an EXECUTOR, not an advisor. When a task requires running commands, you MUST run them using sandbox_exec. Never just describe what commands to run — execute them yourself and report the results.
+
+## Tools Available
+- **run_skill_***: Invoke a configured skill. Skills return data or suggest commands. **If a skill returns commands, you MUST execute them with sandbox_exec.**
+- **sandbox_exec**: Run shell commands in a sandbox (python3, node, curl, git, jq, npm, etc.).
+- **update_kanban**: Report progress as you work.
+
+You can ONLY use the tools listed above. Do NOT attempt to search for or install new skills.
+
+## Sandbox Environment
+You have a sandbox shell (macOS) with full system tools available. Package installs persist across tasks.
+- **Python packages**: ALWAYS use ` + "`python3 -m pip install <pkg>`" + ` (NEVER bare "pip")
+- **Multi-line Python**: ALWAYS use heredoc syntax:
+  ` + "```" + `
+  python3 <<'PYEOF'
+  import yfinance as yf
+  data = yf.download("AAPL", period="5d")
+  print(data)
+  PYEOF
+  ` + "```" + `
+  NEVER cram complex Python into a single python3 -c "..." line.
+- If a command is not found, install it with python3 -m pip or npm
+- ALWAYS execute commands and return real results
+
+## Workflow
+1. Analyze the task
+2. Use configured skills and sandbox_exec to get things done
+3. **Execute commands ONE AT A TIME** — call sandbox_exec once, check the result, then decide next.
+4. If a command fails, adapt and retry with a different approach (max 3 retries per command)
+5. Provide actual results, not just suggestions
+
+## CRITICAL: Never Give Up
+- **NEVER respond with "go do it yourself".** You are an executor — if one approach fails, try another.
+- **Always deliver SOMETHING useful.** Present partial results if needed.
+- **Fallback chain**: skill → fix command → write own code → alternative data source → partial results.
+
+## Language
+Always respond in the same language as the task description. If in Chinese, respond in Chinese.
+
+Current time: ` + time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
+	} else {
+		systemPrompt = `You are Tofi, an autonomous AI agent. The user has made a wish (request) and you need to fulfill it by TAKING ACTION, not just giving advice.
 
 ## Core Principle: ACT, Don't Advise
 You are an EXECUTOR, not an advisor. When a task requires running commands, you MUST run them using sandbox_exec. Never just describe what commands to run — execute them yourself and report the results.
@@ -433,6 +514,12 @@ When you find a useful skill via search_skills that isn't installed yet:
 Always respond in the same language as the user's wish. If the user writes in Chinese, respond in Chinese. If in English, respond in English.
 
 Current time: ` + time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
+	}
+
+	// Inject app's custom system prompt if present
+	if appSystemPrompt != "" {
+		systemPrompt = systemPrompt + "\n\n## App Instructions\n" + appSystemPrompt
+	}
 
 	prompt := card.Title
 	if card.Description != "" {

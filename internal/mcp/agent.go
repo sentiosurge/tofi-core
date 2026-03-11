@@ -265,13 +265,13 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 	}
 	systemPrompt := cfg.System + "\n" + `
 ### PROTOCOL:
-0. **RECALL MEMORY FIRST (MANDATORY)**: Your VERY FIRST action in every task MUST be calling memory_recall with keywords extracted from the user's request. Do this BEFORE thinking or responding. This retrieves user preferences, past solutions, and context that directly affects your approach. Never skip this step.
-1. **THINK FIRST**: Analyze the situation incorporating any recalled memories into your plan.
+0. **CONSIDER MEMORY**: Before starting, decide whether this task could benefit from user preferences, past context, or personalization. If so, call memory_recall with relevant keywords. Examples where memory helps: tasks involving user-specific preferences (formatting, language, style), recurring topics, or building on past work. Skip recall for purely mechanical, self-contained tasks (e.g. "what time is it", simple calculations, or when the prompt already provides all needed context).
+1. **THINK FIRST**: Analyze the situation and plan your approach.
    - **INTERNAL MONOLOGUE ONLY**: The content inside <think> is for your internal reasoning. Do NOT address the user or use conversational filler. Keep it analytical and objective.
 2. **ADAPTABILITY**: If a tool fails, analyze the error and try a different strategy. Do not repeat failed actions.
 3. **VERIFICATION**: Verify the outcome of every action.
 4. **COMPLETION**: Continue until the goal is fully achieved and the system is stable.
-5. **SAVE MEMORY**: After completing a task, use memory_save to record key learnings, user preferences discovered, error solutions, or useful patterns. Keep entries concise and tagged.
+5. **SAVE MEMORY**: After completing a task, if you discovered user preferences, useful patterns, or error solutions worth remembering, use memory_save. Skip if nothing noteworthy was learned.
 
 ### DOMAIN KNOWLEDGE:
 - **WEB AUTOMATION**: Modern websites often use complex, non-standard input fields that confuse standard 'fill' tools. If 'fill' fails (especially with "option not found"), assume the tool is incompatible. Immediately switch to 'evaluate_script' (to set .value) or 'click' + 'press_key'.

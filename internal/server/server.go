@@ -52,8 +52,8 @@ type Server struct {
 	previewMu       sync.Mutex
 	previewSessions map[string]*PreviewSession // sessionID → session
 
-	// Agent scheduler (min-heap + timer for scheduled agent runs)
-	agentScheduler *AgentScheduler
+	// App scheduler (min-heap + timer for scheduled app runs)
+	appScheduler *AppScheduler
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -213,12 +213,12 @@ func (s *Server) Start() error {
 	// 启动 preview session 清理 goroutine
 	go s.cleanupPreviewSessions()
 
-	// 启动 Agent 调度器（Timer-based）
-	s.agentScheduler = NewAgentScheduler(s)
-	if err := s.agentScheduler.Start(); err != nil {
-		log.Printf("⚠️  Agent 调度器启动失败: %v", err)
+	// 启动 App 调度器（Timer-based）
+	s.appScheduler = NewAppScheduler(s)
+	if err := s.appScheduler.Start(); err != nil {
+		log.Printf("App Scheduler start failed: %v", err)
 	}
-	defer s.agentScheduler.Stop()
+	defer s.appScheduler.Stop()
 
 	mux := http.NewServeMux()
 
@@ -355,17 +355,17 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/v1/kanban/{id}/retry", s.AuthMiddleware(s.handleRetryCard))
 	mux.HandleFunc("GET /api/v1/kanban/{id}/stream", s.handleCardStream) // SSE, auth via query param
 
-	// Agent 管理路由
-	mux.HandleFunc("POST /api/v1/agents/parse-schedule", s.AuthMiddleware(s.handleParseSchedule))
-	mux.HandleFunc("GET /api/v1/agents", s.AuthMiddleware(s.handleListAgents))
-	mux.HandleFunc("POST /api/v1/agents", s.AuthMiddleware(s.handleCreateAgent))
-	mux.HandleFunc("GET /api/v1/agents/{id}", s.AuthMiddleware(s.handleGetAgent))
-	mux.HandleFunc("PUT /api/v1/agents/{id}", s.AuthMiddleware(s.handleUpdateAgent))
-	mux.HandleFunc("DELETE /api/v1/agents/{id}", s.AuthMiddleware(s.handleDeleteAgent))
-	mux.HandleFunc("POST /api/v1/agents/{id}/activate", s.AuthMiddleware(s.handleActivateAgent))
-	mux.HandleFunc("POST /api/v1/agents/{id}/deactivate", s.AuthMiddleware(s.handleDeactivateAgent))
-	mux.HandleFunc("POST /api/v1/agents/{id}/run", s.AuthMiddleware(s.handleRunAgentNow))
-	mux.HandleFunc("GET /api/v1/agents/{id}/runs", s.AuthMiddleware(s.handleListAgentRuns))
+	// App 管理路由
+	mux.HandleFunc("POST /api/v1/apps/parse-schedule", s.AuthMiddleware(s.handleParseSchedule))
+	mux.HandleFunc("GET /api/v1/apps", s.AuthMiddleware(s.handleListApps))
+	mux.HandleFunc("POST /api/v1/apps", s.AuthMiddleware(s.handleCreateApp))
+	mux.HandleFunc("GET /api/v1/apps/{id}", s.AuthMiddleware(s.handleGetApp))
+	mux.HandleFunc("PUT /api/v1/apps/{id}", s.AuthMiddleware(s.handleUpdateApp))
+	mux.HandleFunc("DELETE /api/v1/apps/{id}", s.AuthMiddleware(s.handleDeleteApp))
+	mux.HandleFunc("POST /api/v1/apps/{id}/activate", s.AuthMiddleware(s.handleActivateApp))
+	mux.HandleFunc("POST /api/v1/apps/{id}/deactivate", s.AuthMiddleware(s.handleDeactivateApp))
+	mux.HandleFunc("POST /api/v1/apps/{id}/run", s.AuthMiddleware(s.handleRunAppNow))
+	mux.HandleFunc("GET /api/v1/apps/{id}/runs", s.AuthMiddleware(s.handleListAppRuns))
 
 	// Admin 管理路由 (需要 admin 权限)
 	mux.HandleFunc("GET /api/v1/admin/stats", s.AdminMiddleware(s.handleAdminGetStats))
