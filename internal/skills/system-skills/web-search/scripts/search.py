@@ -8,7 +8,7 @@ Usage:
 Options:
     --count N             Max number of URLs to fetch content from (default: 5, max: 20)
     --tokens N            Max total tokens in response (default: 8192, max: 32768)
-    --freshness RANGE     Time filter for fallback web search: pd/pw/pm/py or YYYY-MM-DDtoYYYY-MM-DD
+    --freshness RANGE     Time filter: pd/pw/pm/py or YYYY-MM-DDtoYYYY-MM-DD (bypasses LLM Context, uses web search)
     --search-lang LANG    Content language code (default: en)
     --result-filter TYPES Result types for fallback: discussions, faq, infobox, news, web, locations
 
@@ -68,6 +68,11 @@ def main():
             i += 2
         else:
             i += 1
+
+    # When freshness is specified, skip LLM Context (it doesn't support time filtering)
+    # and go directly to web search which properly supports freshness.
+    if freshness:
+        return fallback_web_search(api_key, query, count, freshness, search_lang, result_filter)
 
     # Use LLM Context endpoint — optimized for AI, returns actual page content
     params = {

@@ -16,9 +16,9 @@ You have 5 search tools. Use them **together** — most good answers need 2-4 to
 python3 skills/web-search/scripts/search.py "query" [--count N] [--tokens N] [--freshness RANGE] [--search-lang LANG] [--result-filter TYPES]
 ```
 - `--count N`: Sources (default: 5, max: 20) | `--tokens N`: Max tokens (default: 8192, max: 32768)
-- `--freshness RANGE`: `pd`/`pw`/`pm`/`py` or `YYYY-MM-DDtoYYYY-MM-DD` (fallback web search only)
+- `--freshness RANGE`: `pd`/`pw`/`pm`/`py` or `YYYY-MM-DDtoYYYY-MM-DD` (when set, bypasses LLM Context and uses web search)
 - `--search-lang LANG`: Content language (default: en) | `--result-filter TYPES`: `discussions`, `faq`, `infobox`, `news`, `web`, `locations`
-- Returns actual page content. **Your default first choice for almost any query.**
+- Returns actual page content. **Your default first choice for general queries.** Do NOT use for news or time-sensitive queries — use `news.py` instead.
 
 ### `news.py` — News Search
 ```bash
@@ -78,10 +78,12 @@ Identify all **distinct information needs**. Each one gets its own search call. 
 
 Pick the tool that matches the **nature** of each information need. Combine tools freely:
 - General knowledge, analysis, documentation → `search.py`
-- Breaking/recent events, press coverage → `news.py`
+- **News, breaking events, press coverage, anything time-sensitive** → **`news.py`** (NEVER use `search.py` for news — it cannot guarantee freshness)
 - Tutorials, demos, reviews in video form → `videos.py`
 - Visual references, photos, diagrams → `images.py`
 - Quick factual overview → `summarize.py`
+
+> ⚠️ **Critical**: If the task involves news, current events, stock market, or any "latest/recent" information, you **MUST** use `news.py`, not `search.py`. The `search.py` tool uses LLM Context which may return stale cached content.
 
 ### 3. Use `site:` when the user mentions a specific website
 

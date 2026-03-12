@@ -765,7 +765,7 @@ The --prompt is the ONLY instruction the App Agent receives when it runs. The Ap
 **The prompt must be self-contained** — include everything needed. The agent has zero context beyond this prompt.
 
 ## Workflow
-1. Understand the user's request — ask clarifying questions if truly needed
+1. Understand the user's request — if you need the user to choose between specific options, use the **ask_question** tool
 2. If user is vague, make reasonable choices yourself
 3. Research if needed (web search, skill search)
 4. Call the **present_plan** tool with a structured plan — only include fields relevant to this action
@@ -774,6 +774,7 @@ The --prompt is the ONLY instruction the App Agent receives when it runs. The Ap
 7. Verify with list or get
 
 IMPORTANT:
+- Use ask_question when you need the user to choose from specific options (e.g. notification channels, language, timezone). After asking, WAIT for their answer.
 - ALWAYS call present_plan before create/update/delete — never execute without user approval
 - Only include fields in present_plan that are relevant. For example: updating only the prompt? Don't include schedule or capabilities.
 - For simple queries (list, get, activate/deactivate/run), you can execute directly
@@ -984,6 +985,38 @@ func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
 					sb.WriteString(fmt.Sprintf("- **%s**: %s\n", sk.Name, sk.Description))
 				}
 				return sb.String(), nil
+			},
+		},
+		// ask_question: structured question with options for user input
+		{
+			Schema: mcp.OpenAITool{
+				Type: "function",
+				Function: mcp.OpenAIFunctionDef{
+					Name:        "ask_question",
+					Description: "Ask the user a structured question with selectable options. Use this when you need the user to choose between specific options (e.g. notification channels, language, timezone). The user will see clickable options and can select one or multiple, or type a custom answer.",
+					Parameters: map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"question": map[string]interface{}{
+								"type":        "string",
+								"description": "The question to ask the user",
+							},
+							"options": map[string]interface{}{
+								"type":        "array",
+								"items":       map[string]interface{}{"type": "string"},
+								"description": "List of options for the user to choose from",
+							},
+							"multi_select": map[string]interface{}{
+								"type":        "boolean",
+								"description": "If true, user can select multiple options. Default: false",
+							},
+						},
+						"required": []string{"question", "options"},
+					},
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				return "Question presented to user. Wait for their answer before proceeding.", nil
 			},
 		},
 	}
