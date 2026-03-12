@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -739,6 +740,21 @@ func (s *Server) handleManagerChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.executor.Cleanup(sandboxDir)
+
+	// 5b. Pre-symlink default skill scripts into sandbox so sandbox_exec can find them immediately
+	for _, st := range skillTools {
+		if st.SkillDir == "" {
+			continue
+		}
+		symlinkDir := filepath.Join(sandboxDir, "skills")
+		os.MkdirAll(symlinkDir, 0755)
+		link := filepath.Join(symlinkDir, st.Name)
+		if _, err := os.Lstat(link); os.IsNotExist(err) {
+			if err := os.Symlink(st.SkillDir, link); err != nil {
+				log.Printf("[manager] failed to symlink skill %q: %v", st.Name, err)
+			}
+		}
+	}
 
 	// 6. Build system prompt
 	system := fmt.Sprintf(`You are the App Manager for Tofi — a platform where users create AI Apps that run on schedules.
