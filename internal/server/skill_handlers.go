@@ -1193,6 +1193,12 @@ func (s *Server) handleInstallSkillZip(w http.ResponseWriter, r *http.Request) {
 		// Single skill → install directly
 		defer cleanup()
 		sf := discovered[0]
+
+		// Check if this skill already exists (duplicate detection)
+		skillID := fmt.Sprintf("%s/%s", userID, sf.Manifest.Name)
+		existing, _ := s.db.GetSkill(skillID)
+		isUpdate := existing != nil
+
 		if err := installer.InstallOne(sf); err != nil {
 			http.Error(w, fmt.Sprintf("install failed: %v", err), http.StatusInternalServerError)
 			return
@@ -1206,7 +1212,10 @@ func (s *Server) handleInstallSkillZip(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(record)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"skill":   record,
+			"updated": isUpdate,
+		})
 		return
 	}
 
@@ -1223,12 +1232,16 @@ func (s *Server) handleInstallSkillZip(w http.ResponseWriter, r *http.Request) {
 	type skillPreview struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		Exists      bool   `json:"exists"`
 	}
 	previews := make([]skillPreview, len(discovered))
 	for i, sf := range discovered {
+		skillID := fmt.Sprintf("%s/%s", userID, sf.Manifest.Name)
+		existing, _ := s.db.GetSkill(skillID)
 		previews[i] = skillPreview{
 			Name:        sf.Manifest.Name,
 			Description: sf.Manifest.Description,
+			Exists:      existing != nil,
 		}
 	}
 
