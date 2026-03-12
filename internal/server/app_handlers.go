@@ -766,15 +766,16 @@ The --prompt is the ONLY instruction the App Agent receives when it runs. The Ap
 
 ## Workflow
 1. Understand the user's request — ask clarifying questions if truly needed
-2. If user is vague, make reasonable choices yourself and present them in the plan
+2. If user is vague, make reasonable choices yourself
 3. Research if needed (web search, skill search)
-4. Draft the full plan: app name, description, detailed prompt, schedule, capabilities, skills
-5. Show the plan to user and ask to confirm
-6. After confirmation, execute using the scripts
+4. Call the **present_plan** tool with a structured plan — only include fields relevant to this action
+5. Wait for the user's response (Approve or Deny)
+6. After approval, execute using the app-manager scripts
 7. Verify with list or get
 
 IMPORTANT:
-- Always describe your plan and wait for confirmation BEFORE executing create/update/delete
+- ALWAYS call present_plan before create/update/delete — never execute without user approval
+- Only include fields in present_plan that are relevant. For example: updating only the prompt? Don't include schedule or capabilities.
 - For simple queries (list, get, activate/deactivate/run), you can execute directly
 - Schedule JSON format: {"entries": [{"time":"09:00","repeat":{"type":"daily"},"enabled":true}], "timezone":"Asia/Shanghai"}
 - Capabilities JSON: {"web_search":{"enabled":true}}
@@ -862,6 +863,60 @@ Current time: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST 
 // buildManagerTools creates extra tools for the Manager agent
 func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
 	return []mcp.ExtraBuiltinTool{
+		// present_plan: structured plan for user approval
+		{
+			Schema: mcp.OpenAITool{
+				Type: "function",
+				Function: mcp.OpenAIFunctionDef{
+					Name:        "present_plan",
+					Description: "Present an app plan to the user for approval. ALWAYS call this before executing any create/update/delete operation. Only include fields relevant to the action — e.g. if only updating the prompt, omit schedule and capabilities.",
+					Parameters: map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"action": map[string]interface{}{
+								"type":        "string",
+								"enum":        []string{"create", "update", "delete"},
+								"description": "Plan action type",
+							},
+							"app_id": map[string]interface{}{
+								"type":        "string",
+								"description": "App ID (required for update/delete)",
+							},
+							"name": map[string]interface{}{
+								"type":        "string",
+								"description": "App name",
+							},
+							"description": map[string]interface{}{
+								"type":        "string",
+								"description": "Short app description",
+							},
+							"prompt": map[string]interface{}{
+								"type":        "string",
+								"description": "The complete, self-contained prompt the App Agent receives each run",
+							},
+							"capabilities": map[string]interface{}{
+								"type":        "array",
+								"items":       map[string]interface{}{"type": "string"},
+								"description": "Capability list, e.g. [\"web_search\", \"web_fetch\"]",
+							},
+							"schedule": map[string]interface{}{
+								"type":        "string",
+								"description": "Human-readable schedule, e.g. '每天早上 8:00'",
+							},
+							"skills": map[string]interface{}{
+								"type":        "array",
+								"items":       map[string]interface{}{"type": "string"},
+								"description": "Skill IDs to attach",
+							},
+						},
+						"required": []string{"action"},
+					},
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				return "Plan presented to user. Wait for their response (Approve or Deny) before proceeding.", nil
+			},
+		},
 		// search_skills: find skills on the marketplace
 		{
 			Schema: mcp.OpenAITool{
