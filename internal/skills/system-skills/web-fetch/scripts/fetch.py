@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Web page content fetcher — reads a URL and extracts clean text content.
+"""Web page content fetcher — uses headless Chrome to render JS and extract text.
 
 Usage:
     python3 fetch.py "https://example.com/article" [--max-chars N]
@@ -7,136 +7,137 @@ Usage:
 Options:
     --max-chars N  Maximum characters to return (default: 12000)
 
-No API key required — uses direct HTTP fetch + HTML text extraction.
+Requires Google Chrome or Chromium installed on the system.
+Uses trafilatura for content extraction if available (pip install trafilatura).
 """
-import html.parser
-import json
 import os
+import platform
 import re
+import subprocess
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
+
+try:
+    import trafilatura
+    USE_TRAFILATURA = True
+except ImportError:
+    USE_TRAFILATURA = False
+
+CHROME_PATHS = {
+    "Darwin": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "Linux": "/usr/bin/google-chrome",
+    "Windows": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+}
 
 
-class HTMLTextExtractor(html.parser.HTMLParser):
-    """Extract readable text from HTML, skipping scripts/styles/nav."""
+def find_chrome():
+    """Find Chrome/Chromium binary. Returns path or None."""
+    system = platform.system()
 
-    SKIP_TAGS = {"script", "style", "noscript", "svg", "nav", "footer", "header", "aside"}
-    BLOCK_TAGS = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
-                  "li", "tr", "br", "blockquote", "pre", "section", "article"}
+    # Check default path first
+    default_path = CHROME_PATHS.get(system)
+    if default_path and os.path.isfile(default_path):
+        return default_path
 
-    def __init__(self):
-        super().__init__()
-        self._text = []
-        self._skip_depth = 0
-        self._title = ""
-        self._in_title = False
+    # Search common names
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        try:
+            result = subprocess.run(
+                ["which", name] if system != "Windows" else ["where", name],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip().split("\n")[0]
+        except Exception:
+            pass
 
-    def handle_starttag(self, tag, attrs):
-        tag = tag.lower()
-        if tag in self.SKIP_TAGS:
-            self._skip_depth += 1
-        if tag == "title":
-            self._in_title = True
-        if tag in self.BLOCK_TAGS and self._text and self._text[-1] != "\n":
-            self._text.append("\n")
-
-    def handle_endtag(self, tag):
-        tag = tag.lower()
-        if tag in self.SKIP_TAGS:
-            self._skip_depth = max(0, self._skip_depth - 1)
-        if tag == "title":
-            self._in_title = False
-        if tag in self.BLOCK_TAGS:
-            self._text.append("\n")
-
-    def handle_data(self, data):
-        if self._in_title:
-            self._title = data.strip()
-        if self._skip_depth == 0:
-            self._text.append(data)
-
-    def get_text(self):
-        raw = "".join(self._text)
-        # Collapse whitespace within lines, preserve paragraph breaks
-        lines = raw.split("\n")
-        cleaned = []
-        for line in lines:
-            line = " ".join(line.split())
-            if line:
-                cleaned.append(line)
-        return "\n\n".join(cleaned)
-
-    def get_title(self):
-        return self._title
+    return None
 
 
-def fetch_url(url, max_chars=12000):
-    """Fetch URL and extract text content."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; TofiBot/1.0; +https://tofi.dev)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-    }
-
-    req = urllib.request.Request(url, headers=headers)
-
+def fetch_with_chrome(url, chrome_path, max_chars=12000):
+    """Fetch a URL using headless Chrome --dump-dom, then extract text."""
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            content_type = resp.headers.get("Content-Type", "")
-
-            # Handle JSON responses directly
-            if "application/json" in content_type:
-                raw = resp.read().decode("utf-8", errors="replace")
-                try:
-                    data = json.loads(raw)
-                    text = json.dumps(data, indent=2, ensure_ascii=False)
-                    return url, "JSON Document", text[:max_chars]
-                except json.JSONDecodeError:
-                    return url, "JSON Document", raw[:max_chars]
-
-            # Handle plain text
-            if "text/plain" in content_type:
-                raw = resp.read().decode("utf-8", errors="replace")
-                return url, "Text Document", raw[:max_chars]
-
-            # Handle HTML
-            raw_bytes = resp.read()
-
-            # Try to detect encoding
-            encoding = "utf-8"
-            if "charset=" in content_type:
-                charset = content_type.split("charset=")[-1].strip().split(";")[0]
-                encoding = charset
-
-            try:
-                raw_html = raw_bytes.decode(encoding, errors="replace")
-            except (LookupError, UnicodeDecodeError):
-                raw_html = raw_bytes.decode("utf-8", errors="replace")
-
-            # Extract text
-            extractor = HTMLTextExtractor()
-            try:
-                extractor.feed(raw_html)
-            except Exception:
-                pass
-
-            title = extractor.get_title() or "Untitled"
-            text = extractor.get_text()
-
-            # Truncate to max_chars
-            if len(text) > max_chars:
-                text = text[:max_chars] + "\n\n[... content truncated ...]"
-
-            return url, title, text
-
-    except urllib.error.HTTPError as e:
-        return url, "Error", f"HTTP {e.code}: {e.reason}"
-    except urllib.error.URLError as e:
-        return url, "Error", f"URL Error: {e.reason}"
+        result = subprocess.run(
+            [
+                chrome_path,
+                "--headless=new",
+                "--dump-dom",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--timeout=15000",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        html = result.stdout
+    except subprocess.TimeoutExpired:
+        return url, "Error", f"Timeout fetching {url} (30s)"
     except Exception as e:
-        return url, "Error", f"Fetch failed: {str(e)}"
+        return url, "Error", f"Chrome failed: {e}"
+
+    if not html.strip():
+        stderr_hint = result.stderr[:200] if result.stderr else "no output"
+        return url, "Error", f"Empty response from Chrome. stderr: {stderr_hint}"
+
+    # Extract title from HTML
+    title = "Untitled"
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    if title_match:
+        title = title_match.group(1).strip()
+        # Decode HTML entities
+        title = re.sub(r"&amp;", "&", title)
+        title = re.sub(r"&lt;", "<", title)
+        title = re.sub(r"&gt;", ">", title)
+        title = re.sub(r"&#(\d+);", lambda m: chr(int(m.group(1))), title)
+
+    # Extract text content
+    text = extract_text(html)
+
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n\n[... content truncated ...]"
+
+    return url, title, text
+
+
+def extract_text(html):
+    """Extract clean text from HTML. Uses trafilatura if available, else regex fallback."""
+    if USE_TRAFILATURA:
+        text = trafilatura.extract(html, include_comments=False, include_tables=True)
+        if text and len(text) > 100:
+            return text
+
+    # Fallback: regex-based extraction
+    # Remove scripts, styles, and hidden elements
+    text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<noscript[^>]*>.*?</noscript>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+
+    # Convert block elements to newlines
+    text = re.sub(r"<(?:p|div|h[1-6]|li|tr|br|blockquote|pre|section|article)[^>]*>", "\n", text, flags=re.IGNORECASE)
+
+    # Strip remaining tags
+    text = re.sub(r"<[^>]+>", " ", text)
+
+    # Decode common HTML entities
+    text = re.sub(r"&nbsp;", " ", text)
+    text = re.sub(r"&amp;", "&", text)
+    text = re.sub(r"&lt;", "<", text)
+    text = re.sub(r"&gt;", ">", text)
+    text = re.sub(r"&quot;", '"', text)
+    text = re.sub(r"&#(\d+);", lambda m: chr(int(m.group(1))), text)
+
+    # Clean up whitespace
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        line = " ".join(line.split())
+        if line:
+            cleaned.append(line)
+    return "\n\n".join(cleaned)
 
 
 def main():
@@ -159,19 +160,28 @@ def main():
         else:
             i += 1
 
-    # Validate URL
-    parsed = urllib.parse.urlparse(url)
-    if not parsed.scheme:
+    # Auto-add https:// if no scheme
+    if not url.startswith("http://") and not url.startswith("https://"):
         url = "https://" + url
-    elif parsed.scheme not in ("http", "https"):
-        print(f"Error: Only http/https URLs are supported, got: {parsed.scheme}")
+
+    # Find Chrome
+    chrome_path = find_chrome()
+    if not chrome_path:
+        print("ERROR: Google Chrome or Chromium not found.", file=sys.stderr)
+        print("Install Chrome/Chromium to use web-fetch:", file=sys.stderr)
+        print("  macOS:  brew install --cask google-chrome", file=sys.stderr)
+        print("  Ubuntu: sudo apt install chromium-browser", file=sys.stderr)
         sys.exit(1)
 
-    fetched_url, title, content = fetch_url(url, max_chars)
+    fetched_url, title, content = fetch_with_chrome(url, chrome_path, max_chars)
 
     print(f"=== {title} ===")
     print(f"URL: {fetched_url}")
     print(f"Length: {len(content)} chars")
+    if USE_TRAFILATURA:
+        print("Extractor: trafilatura")
+    else:
+        print("Extractor: regex (install trafilatura for better results)")
     print("---")
     print(content)
 
