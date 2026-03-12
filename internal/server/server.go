@@ -39,6 +39,8 @@ type PreviewSession struct {
 	Source    *skills.ParsedSource
 	Cleanup   func()
 	CreatedAt time.Time
+	Scope     string // "public" (git) or "private" (zip upload)
+	UserID    string // installer user ID (used when Scope="private")
 }
 
 type Server struct {
@@ -329,6 +331,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/v1/skills/create", s.AuthMiddleware(s.handleCreateSkill))
 	mux.HandleFunc("PUT /api/v1/skills/{id}", s.AuthMiddleware(s.handleUpdateSkill))
 	mux.HandleFunc("POST /api/v1/skills/install", s.AuthMiddleware(s.handleInstallSkill))
+	mux.HandleFunc("POST /api/v1/skills/install-zip", s.AuthMiddleware(s.handleInstallSkillZip))
 	mux.HandleFunc("POST /api/v1/skills/{id}/run", s.AuthMiddleware(s.handleRunSkill))
 	mux.HandleFunc("POST /api/v1/skills/{id}/test", s.AuthMiddleware(s.handleTestSkill))
 	mux.HandleFunc("POST /api/v1/skills/{id}/export", s.AuthMiddleware(s.handleExportSkill))

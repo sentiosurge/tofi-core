@@ -1,7 +1,9 @@
 package skills
 
 import (
+	"archive/zip"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -11,6 +13,94 @@ import (
 
 	"tofi-core/internal/models"
 )
+
+// Zip extraction limits
+const (
+	maxFilesInZip   = 500
+	maxSingleFile   = 10 * 1024 * 1024  // 10MB per file
+	maxUnzippedSize = 100 * 1024 * 1024 // 100MB total
+)
+
+// ExtractZip safely extracts a zip file to destDir with security checks.
+// Prevents Zip Slip path traversal, zip bombs, and oversized files.
+func ExtractZip(zipPath string, destDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("open zip: %w", err)
+	}
+	defer r.Close()
+
+	if len(r.File) > maxFilesInZip {
+		return fmt.Errorf("zip contains too many files (%d, max %d)", len(r.File), maxFilesInZip)
+	}
+
+	var totalSize uint64
+	for _, f := range r.File {
+		// Skip macOS metadata
+		if strings.HasPrefix(f.Name, "__MACOSX") || strings.HasPrefix(filepath.Base(f.Name), "._") {
+			continue
+		}
+
+		// Zip Slip protection
+		destPath := filepath.Join(destDir, f.Name)
+		if !strings.HasPrefix(filepath.Clean(destPath)+string(os.PathSeparator), filepath.Clean(destDir)+string(os.PathSeparator)) &&
+			filepath.Clean(destPath) != filepath.Clean(destDir) {
+			return fmt.Errorf("illegal file path in zip: %s", f.Name)
+		}
+		if strings.Contains(f.Name, "..") {
+			return fmt.Errorf("illegal file path in zip: %s", f.Name)
+		}
+
+		// Size checks
+		if f.UncompressedSize64 > maxSingleFile {
+			return fmt.Errorf("file too large in zip: %s (%d bytes, max %d)", f.Name, f.UncompressedSize64, maxSingleFile)
+		}
+		totalSize += f.UncompressedSize64
+		if totalSize > maxUnzippedSize {
+			return fmt.Errorf("zip total uncompressed size exceeds limit (%d bytes)", maxUnzippedSize)
+		}
+
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(destPath, 0755); err != nil {
+				return fmt.Errorf("create dir %s: %w", f.Name, err)
+			}
+			continue
+		}
+
+		// Ensure parent directory exists
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return fmt.Errorf("create parent dir for %s: %w", f.Name, err)
+		}
+
+		// Extract file
+		if err := extractZipFile(f, destPath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func extractZipFile(f *zip.File, destPath string) error {
+	rc, err := f.Open()
+	if err != nil {
+		return fmt.Errorf("open zip entry %s: %w", f.Name, err)
+	}
+	defer rc.Close()
+
+	out, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+	if err != nil {
+		return fmt.Errorf("create file %s: %w", f.Name, err)
+	}
+	defer out.Close()
+
+	// Use LimitReader as extra safety against decompression bombs
+	if _, err := io.Copy(out, io.LimitReader(rc, maxSingleFile+1)); err != nil {
+		return fmt.Errorf("extract file %s: %w", f.Name, err)
+	}
+
+	return nil
+}
 
 // agentsSkillRegex 从 AGENTS.md 中提取 <skill name="xxx" .../> 的 name 属性
 var agentsSkillRegex = regexp.MustCompile(`<skill\s+[^>]*name="([^"]+)"`)

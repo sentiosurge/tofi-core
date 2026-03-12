@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -1077,7 +1078,21 @@ func (s *Server) installConfirm(w http.ResponseWriter, userID, sessionID string,
 			log.Printf("[skills] warning: failed to install %s to local: %v", sf.Manifest.Name, err)
 		}
 
-		record := s.buildSkillRecord("system", sf, string(session.Source.Type), session.Source.DisplayURL(), "public")
+		// Use session scope/userID if set (zip upload = private), else default to public/system (git)
+		scope := "public"
+		recordUserID := "system"
+		sourceType := ""
+		sourceURL := ""
+		if session.Scope != "" {
+			scope = session.Scope
+			recordUserID = session.UserID
+			sourceType = "local"
+			sourceURL = "zip-upload"
+		} else if session.Source != nil {
+			sourceType = string(session.Source.Type)
+			sourceURL = session.Source.DisplayURL()
+		}
+		record := s.buildSkillRecord(recordUserID, sf, sourceType, sourceURL, scope)
 		if err := s.db.SaveSkill(record); err != nil {
 			log.Printf("[skills] warning: failed to save skill %s: %v", sf.Manifest.Name, err)
 			continue
@@ -1095,6 +1110,135 @@ func (s *Server) installConfirm(w http.ResponseWriter, userID, sessionID string,
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"installed": len(records),
 		"skills":    records,
+	})
+}
+
+// handleInstallSkillZip POST /api/v1/skills/install-zip — 上传 zip 包安装 Skill
+//
+// 接收 multipart/form-data，字段 "file" 为 .zip 文件。
+// Zip 解压后通过 DiscoverSkills 发现 SKILL.md，然后走 InstallOne 流程。
+// 单 skill → 直接安装返回 SkillRecord
+// 多 skill → 返回 preview (复用 confirm 流程)
+func (s *Server) handleInstallSkillZip(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+
+	// 50MB limit
+	if err := r.ParseMultipartForm(50 << 20); err != nil {
+		http.Error(w, "file too large or invalid multipart form", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "missing 'file' field in form data", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".zip") {
+		http.Error(w, "only .zip files are accepted", http.StatusBadRequest)
+		return
+	}
+
+	if header.Size > 50*1024*1024 {
+		http.Error(w, "file too large (max 50MB)", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	// Write to temp file (zip.OpenReader needs a file path)
+	tmpFile, err := os.CreateTemp("", "tofi-skill-*.zip")
+	if err != nil {
+		http.Error(w, "failed to create temp file", http.StatusInternalServerError)
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		tmpFile.Close()
+		http.Error(w, "failed to save uploaded file", http.StatusInternalServerError)
+		return
+	}
+	tmpFile.Close()
+
+	// Extract to temp dir
+	tempDir, err := os.MkdirTemp("", "tofi-skill-zip-")
+	if err != nil {
+		http.Error(w, "failed to create temp directory", http.StatusInternalServerError)
+		return
+	}
+	cleanup := func() { os.RemoveAll(tempDir) }
+
+	if err := skills.ExtractZip(tmpFile.Name(), tempDir); err != nil {
+		cleanup()
+		http.Error(w, fmt.Sprintf("failed to extract zip: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Discover skills in extracted directory
+	discovered, err := skills.DiscoverSkills(tempDir)
+	if err != nil || len(discovered) == 0 {
+		cleanup()
+		errMsg := "no SKILL.md found in zip"
+		if err != nil {
+			errMsg = fmt.Sprintf("skill discovery failed: %v", err)
+		}
+		http.Error(w, errMsg, http.StatusBadRequest)
+		return
+	}
+
+	localStore := skills.NewLocalStore(s.config.HomeDir)
+	installer := skills.NewSkillInstaller(localStore)
+
+	if len(discovered) == 1 {
+		// Single skill → install directly
+		defer cleanup()
+		sf := discovered[0]
+		if err := installer.InstallOne(sf); err != nil {
+			http.Error(w, fmt.Sprintf("install failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		record := s.buildSkillRecord(userID, sf, "local", "zip-upload", "private")
+		if err := s.db.SaveSkill(record); err != nil {
+			http.Error(w, fmt.Sprintf("failed to save skill: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(record)
+		return
+	}
+
+	// Multiple skills → preview mode (reuse confirm flow)
+	sessionID := uuid.New().String()[:8]
+	s.createPreviewSession(sessionID, &PreviewSession{
+		Skills:    discovered,
+		Cleanup:   cleanup,
+		CreatedAt: time.Now(),
+		Scope:     "private",
+		UserID:    userID,
+	})
+
+	type skillPreview struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	previews := make([]skillPreview, len(discovered))
+	for i, sf := range discovered {
+		previews[i] = skillPreview{
+			Name:        sf.Manifest.Name,
+			Description: sf.Manifest.Description,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"preview":    true,
+		"session_id": sessionID,
+		"source_url": "zip-upload",
+		"skills":     previews,
+		"total":      len(previews),
 	})
 }
 
