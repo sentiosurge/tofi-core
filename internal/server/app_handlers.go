@@ -5,10 +5,17 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"tofi-core/internal/apps"
+	"tofi-core/internal/crypto"
+	"tofi-core/internal/executor"
+	"tofi-core/internal/mcp"
+	"tofi-core/internal/models"
+	"tofi-core/internal/skills"
 	"tofi-core/internal/storage"
 
 	"github.com/google/uuid"
@@ -590,33 +597,38 @@ func (s *Server) handleSkipRun(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "skipped"})
 }
 
-// ── Manager Chat ──
+// ── Manager Chat (SSE + AgentLoop) ──
 
-// handleManagerChat POST /api/v1/apps/manager/chat
+// handleManagerChat POST /api/v1/apps/manager/chat — SSE streaming manager with full agent capabilities
 func (s *Server) handleManagerChat(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
 
 	var req struct {
-		Message string                   `json:"message"`
-		History []map[string]interface{} `json:"history,omitempty"`
+		Message  string                   `json:"message"`
+		Messages []map[string]interface{} `json:"messages"` // conversation history [{role, content}, ...]
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Message == "" {
-		http.Error(w, "message is required", http.StatusBadRequest)
+	if req.Message == "" && len(req.Messages) == 0 {
+		http.Error(w, "message or messages required", http.StatusBadRequest)
 		return
 	}
 
-	// Load current apps for context
+	// 1. Resolve model and API key
+	model, apiKey, provider, err := s.resolveModelAndKey(userID, "")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("no API key: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// 2. Load current apps for context
 	userApps, err := s.db.ListApps(userID)
 	if err != nil {
 		http.Error(w, "failed to load apps", http.StatusInternalServerError)
 		return
 	}
-
-	// Build apps context
 	var appsCtx []map[string]interface{}
 	for _, a := range userApps {
 		appsCtx = append(appsCtx, map[string]interface{}{
@@ -630,85 +642,345 @@ func (s *Server) handleManagerChat(w http.ResponseWriter, r *http.Request) {
 			"is_active":   a.IsActive,
 		})
 	}
-
 	appsJSON, _ := json.Marshal(appsCtx)
 
-	systemPrompt := fmt.Sprintf(`You are the App Manager for Tofi. You help users manage their AI Apps.
+	// 3. Load default skills (web-search)
+	defaultSkills := []string{"web-search"}
+	var skillInstructions []string
+	var skillTools []mcp.SkillTool
+	secretEnv := make(map[string]string)
+	var missingSecrets []string
+	localStore := skills.NewLocalStore(s.config.HomeDir)
 
-CURRENT APPS:
+	for _, skillName := range defaultSkills {
+		rec, err := s.db.GetSkillByName(userID, skillName)
+		if err != nil {
+			log.Printf("[manager] skill %q not found: %v", skillName, err)
+			continue
+		}
+		if rec.Instructions != "" {
+			skillInstructions = append(skillInstructions, rec.Instructions)
+		}
+		st := mcp.SkillTool{
+			ID:           rec.ID,
+			Name:         rec.Name,
+			Description:  rec.Description,
+			Instructions: rec.Instructions,
+		}
+		if rec.HasScripts {
+			skillDir := localStore.SkillDir(rec.Name)
+			if abs, err := filepath.Abs(skillDir); err == nil {
+				skillDir = abs
+			}
+			st.SkillDir = skillDir
+		}
+		skillTools = append(skillTools, st)
+
+		for _, secretName := range rec.RequiredSecretsList() {
+			if _, ok := secretEnv[secretName]; ok {
+				continue
+			}
+			secretRec, err := s.db.GetSecret(userID, secretName)
+			if err != nil {
+				missingSecrets = append(missingSecrets, fmt.Sprintf("Skill '%s' requires secret '%s'", rec.Name, secretName))
+				continue
+			}
+			val, err := crypto.Decrypt(secretRec.EncryptedValue)
+			if err != nil {
+				missingSecrets = append(missingSecrets, fmt.Sprintf("Skill '%s': failed to decrypt secret '%s'", rec.Name, secretName))
+				continue
+			}
+			secretEnv[secretName] = val
+		}
+	}
+
+	// 4. Set up SSE
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	rc := http.NewResponseController(w)
+	rc.SetWriteDeadline(time.Time{})
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", 500)
+		return
+	}
+
+	fmt.Fprintf(w, "event: connected\ndata: {}\n\n")
+	flusher.Flush()
+
+	// Pre-flight: check missing secrets
+	if len(missingSecrets) > 0 {
+		errMsg := "⚠️ Missing configuration:\n"
+		for _, ms := range missingSecrets {
+			errMsg += "• " + ms + "\n"
+		}
+		errMsg += "\nPlease configure the required secrets in Settings → Secrets."
+		sendSSEError(w, flusher, errMsg)
+		return
+	}
+
+	// 5. Create sandbox
+	sandboxDir, err := s.executor.CreateSandbox(executor.SandboxConfig{
+		HomeDir: s.config.HomeDir,
+		UserID:  userID,
+		CardID:  "manager-chat",
+	})
+	if err != nil {
+		sendSSEError(w, flusher, "Failed to create sandbox: "+err.Error())
+		return
+	}
+	defer s.executor.Cleanup(sandboxDir)
+
+	// 6. Build system prompt
+	system := fmt.Sprintf(`You are the App Manager for Tofi — a platform where users create AI Apps that run on schedules.
+
+## First Principles
+Before making any changes, make sure you UNDERSTAND what the user wants:
+- If the goal is unclear, ASK clarifying questions first
+- If you see a better approach, SUGGEST it before acting
+- Confirm your understanding before proposing changes
+- Think step by step — plan before you act
+
+## Your Capabilities
+You can research (web search, fetch pages), search for skills on the marketplace, and propose changes to the user's apps.
+When you want to make changes to apps, use the propose_action tool. The user will see your proposals and confirm before they take effect.
+
+## Current Apps
 %s
 
-You can suggest these actions:
-- create_app: Create a new app
-- update_app: Update an existing app (schedule, prompt, skills, name, model, etc.)
+## Available Actions (via propose_action tool)
+- create_app: Create a new app with name, description, prompt, skills, schedule
+- update_app: Update an existing app's configuration
 - delete_app: Delete an app
-- activate_app: Enable scheduling for an app
-- deactivate_app: Disable scheduling for an app
+- activate_app: Enable an app's schedule
+- deactivate_app: Disable an app's schedule
 - run_app: Run an app immediately
 
-RESPONSE FORMAT - Output ONLY valid JSON:
-{
-  "message": "Your response to the user in their language",
-  "actions": [
-    {
-      "type": "create_app|update_app|delete_app|activate_app|deactivate_app|run_app",
-      "app_id": "existing app id (for update/delete/activate/deactivate/run)",
-      "app_name": "name of the app being modified (for display)",
-      "data": {
-        "name": "App Name",
-        "description": "what it does",
-        "prompt": "the task prompt",
-        "model": "model name",
-        "skills": ["skill1", "skill2"],
-        "schedule_rules": { "entries": [...], "timezone": "..." }
-      }
-    }
-  ]
+## Schedule Format
+schedule_rules uses entry-based format:
+{"entries": [{"type": "interval", "interval": "4h"}, {"type": "cron", "cron": "0 9 * * 1-5"}], "timezone": "America/Los_Angeles"}
+
+## Sandbox Environment
+You have a sandbox shell for research tasks (curl, python3, etc.).
+- Python packages: ALWAYS use python3 -m pip install <pkg>
+- Multi-line Python: use heredoc python3 <<'PYEOF' ... PYEOF
+
+## Rules
+- Always respond in the same language as the user
+- Be concise and helpful
+- Use tools to research before proposing changes
+- For update_app, only include fields being changed in data
+
+Current time: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
+
+	for _, instructions := range skillInstructions {
+		system += "\n\n---\n\n" + instructions
+	}
+
+	// 7. Build extra tools: propose_action, search_skills
+	extraTools := s.buildManagerTools(userID)
+	extraTools = append(extraTools, s.buildMemoryTools(userID, "")...)
+
+	// 8. Build AgentConfig
+	agentCfg := mcp.AgentConfig{
+		System:     system,
+		Prompt:     req.Message,
+		Messages:   req.Messages,
+		SkillTools: skillTools,
+		ExtraTools: extraTools,
+		SandboxDir: sandboxDir,
+		UserDir:    userID,
+		Executor:   s.executor,
+		SecretEnv:  secretEnv,
+		OnStreamChunk: func(cardID, delta string) {
+			chunk, _ := json.Marshal(map[string]string{"delta": delta})
+			fmt.Fprintf(w, "event: chunk\ndata: %s\n\n", chunk)
+			flusher.Flush()
+		},
+		OnToolCall: func(toolName, input, output string, durationMs int64) {
+			tc, _ := json.Marshal(map[string]interface{}{
+				"tool":        toolName,
+				"input":       input,
+				"output":      output,
+				"duration_ms": durationMs,
+			})
+			fmt.Fprintf(w, "event: tool_call\ndata: %s\n\n", tc)
+			flusher.Flush()
+		},
+		OnContextCompact: func(summary string, originalTokens, compactedTokens int) {
+			data, _ := json.Marshal(map[string]interface{}{
+				"summary":          summary,
+				"original_tokens":  originalTokens,
+				"compacted_tokens": compactedTokens,
+			})
+			fmt.Fprintf(w, "event: context_compact\ndata: %s\n\n", data)
+			flusher.Flush()
+		},
+	}
+	agentCfg.AI.Model = model
+	agentCfg.AI.APIKey = apiKey
+	agentCfg.AI.Provider = provider
+	agentCfg.AI.Endpoint = "https://api.openai.com/v1/chat/completions"
+
+	// 9. Run agent loop
+	ctx := models.NewExecutionContext("manager", userID, s.config.HomeDir)
+	ctx.DB = s.db
+	defer ctx.Close()
+
+	log.Printf("🤖 [manager] user=%s model=%s skills=%v", userID, model, defaultSkills)
+
+	result, err := mcp.RunAgentLoop(agentCfg, ctx)
+	if err != nil {
+		sendSSEError(w, flusher, "Agent error: "+err.Error())
+		return
+	}
+
+	// 10. Send final result
+	done, _ := json.Marshal(map[string]string{"result": result})
+	fmt.Fprintf(w, "event: done\ndata: %s\n\n", done)
+	flusher.Flush()
 }
 
-RULES:
-- If the user just chats or asks questions, respond with message only (no actions)
-- If the user wants changes, include actions array with proposed changes
-- For schedule_rules, use the entry-based format with entries array
-- Always respond in the same language as the user
-- Keep messages concise and helpful
-- For update_app, only include fields that are being changed in data`, string(appsJSON))
+// buildManagerTools creates extra tools for the Manager agent
+func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
+	return []mcp.ExtraBuiltinTool{
+		// propose_action: propose an app management action for user confirmation
+		{
+			Schema: mcp.OpenAITool{
+				Type: "function",
+				Function: mcp.OpenAIFunctionDef{
+					Name:        "propose_action",
+					Description: "Propose an app management action. The user will see the proposal and must confirm before it takes effect. Use this whenever you want to create, update, delete, activate, deactivate, or run an app.",
+					Parameters: map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"action_type": map[string]interface{}{
+								"type":        "string",
+								"enum":        []string{"create_app", "update_app", "delete_app", "activate_app", "deactivate_app", "run_app"},
+								"description": "The type of action to propose",
+							},
+							"app_id": map[string]interface{}{
+								"type":        "string",
+								"description": "The app ID (required for update/delete/activate/deactivate/run)",
+							},
+							"app_name": map[string]interface{}{
+								"type":        "string",
+								"description": "Display name of the app being modified",
+							},
+							"data": map[string]interface{}{
+								"type":        "object",
+								"description": "Action data. For create/update: {name, description, prompt, model, skills[], schedule_rules{}}. For delete/activate/deactivate/run: not needed.",
+							},
+						},
+						"required": []string{"action_type"},
+					},
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				actionType, _ := args["action_type"].(string)
+				appID, _ := args["app_id"].(string)
+				appName, _ := args["app_name"].(string)
+				data, _ := args["data"].(map[string]interface{})
 
-	// Build conversation prompt
-	var prompt string
-	if len(req.History) > 0 {
-		historyJSON, _ := json.Marshal(req.History)
-		prompt = fmt.Sprintf("Previous conversation:\n%s\n\nUser: %s", string(historyJSON), req.Message)
-	} else {
-		prompt = req.Message
+				if actionType == "" {
+					return "Error: action_type is required", nil
+				}
+
+				// Validate: update/delete/activate/deactivate/run need app_id
+				switch actionType {
+				case "update_app", "delete_app", "activate_app", "deactivate_app", "run_app":
+					if appID == "" {
+						return "Error: app_id is required for " + actionType, nil
+					}
+				case "create_app":
+					if data == nil {
+						return "Error: data is required for create_app (at minimum: name and prompt)", nil
+					}
+				}
+
+				// Build display for user
+				summary := fmt.Sprintf("Action proposed: %s", actionType)
+				if appName != "" {
+					summary += " — " + appName
+				}
+				if appID != "" {
+					summary += " (id: " + appID[:8] + "...)"
+				}
+
+				return summary + "\n\nAwaiting user confirmation.", nil
+			},
+		},
+		// search_skills: find skills on the marketplace
+		{
+			Schema: mcp.OpenAITool{
+				Type: "function",
+				Function: mcp.OpenAIFunctionDef{
+					Name:        "search_skills",
+					Description: "Search for skills on the skills.sh marketplace. Use this to find capabilities that could be added to an app.",
+					Parameters: map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"query": map[string]interface{}{
+								"type":        "string",
+								"description": "Search query (e.g., 'web search', 'email', 'summarize')",
+							},
+						},
+						"required": []string{"query"},
+					},
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				query, _ := args["query"].(string)
+				if query == "" {
+					return "Error: query is required", nil
+				}
+				client := skills.NewRegistryClient("")
+				result, err := client.Search(query, 5)
+				if err != nil {
+					return fmt.Sprintf("Search failed: %v", err), nil
+				}
+				if len(result.Skills) == 0 {
+					return "No skills found for: " + query, nil
+				}
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("Found %d skills:\n\n", len(result.Skills)))
+				for _, sk := range result.Skills {
+					sb.WriteString(fmt.Sprintf("- **%s** (%s): %s\n", sk.Name, sk.Source, sk.Description))
+				}
+				return sb.String(), nil
+			},
+		},
+		// list_installed_skills: see what skills are already available
+		{
+			Schema: mcp.OpenAITool{
+				Type: "function",
+				Function: mcp.OpenAIFunctionDef{
+					Name:        "list_installed_skills",
+					Description: "List all skills currently installed for this user.",
+					Parameters: map[string]interface{}{
+						"type":       "object",
+						"properties": map[string]interface{}{},
+					},
+				},
+			},
+			Handler: func(args map[string]interface{}) (string, error) {
+				records, err := s.db.ListSkills(userID)
+				if err != nil {
+					return fmt.Sprintf("Failed to list skills: %v", err), nil
+				}
+				if len(records) == 0 {
+					return "No skills installed.", nil
+				}
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("%d installed skills:\n\n", len(records)))
+				for _, sk := range records {
+					sb.WriteString(fmt.Sprintf("- **%s**: %s\n", sk.Name, sk.Description))
+				}
+				return sb.String(), nil
+			},
+		},
 	}
-
-	model, apiKey, provider, err := s.resolveModelAndKey(userID, "")
-	if err != nil {
-		http.Error(w, fmt.Sprintf("no API key available: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	result, err := callLLM(systemPrompt, prompt, apiKey, model, provider)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("LLM call failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	cleaned := cleanJSONResponse(result)
-
-	var parsed json.RawMessage
-	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
-		// If not valid JSON, wrap in message-only response
-		resp := map[string]interface{}{
-			"message": result,
-			"actions": []interface{}{},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(parsed)
 }
