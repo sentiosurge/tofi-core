@@ -746,18 +746,22 @@ Before making any changes, make sure you UNDERSTAND what the user wants:
 
 ## Your Capabilities
 You can research (web search, fetch pages), search for skills on the marketplace, and propose changes to the user's apps.
-When you want to make changes to apps, use the propose_action tool. The user will see your proposals and confirm before they take effect.
 
 ## Current Apps
 %s
 
-## Available Actions (via propose_action tool)
-- create_app: Create a new app with name, description, prompt, skills, schedule
-- update_app: Update an existing app's configuration
-- delete_app: Delete an app
-- activate_app: Enable an app's schedule
-- deactivate_app: Disable an app's schedule
-- run_app: Run an app immediately
+## How to Propose Changes
+When you're ready to make changes, call submit_plan ONCE with ALL proposed actions in a single call.
+- CRITICAL: Call submit_plan exactly ONCE. Never call it multiple times.
+- After calling submit_plan, STOP using tools. Just write a brief summary of what you proposed.
+- The user will see your plan and can Approve or suggest modifications.
+
+Available action types:
+- create_app: Create a new app (data: name, description, prompt, model, skills[], schedule_rules{})
+- update_app: Update an existing app (needs app_id, data: only changed fields)
+- delete_app: Delete an app (needs app_id)
+- activate_app / deactivate_app: Toggle scheduling (needs app_id)
+- run_app: Run immediately (needs app_id)
 
 ## Schedule Format
 schedule_rules uses entry-based format:
@@ -773,6 +777,7 @@ You have a sandbox shell for research tasks (curl, python3, etc.).
 - Be concise and helpful
 - Use tools to research before proposing changes
 - For update_app, only include fields being changed in data
+- NEVER call submit_plan more than once per response
 
 Current time: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
 
@@ -847,70 +852,76 @@ Current time: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST 
 // buildManagerTools creates extra tools for the Manager agent
 func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
 	return []mcp.ExtraBuiltinTool{
-		// propose_action: propose an app management action for user confirmation
+		// submit_plan: submit ALL proposed actions at once
 		{
 			Schema: mcp.OpenAITool{
 				Type: "function",
 				Function: mcp.OpenAIFunctionDef{
-					Name:        "propose_action",
-					Description: "Propose an app management action. The user will see the proposal and must confirm before it takes effect. Use this whenever you want to create, update, delete, activate, deactivate, or run an app.",
+					Name:        "submit_plan",
+					Description: "Submit a plan of proposed app management actions for user approval. Call this ONCE with ALL actions. After calling, stop using tools and briefly summarize the plan.",
 					Parameters: map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
-							"action_type": map[string]interface{}{
-								"type":        "string",
-								"enum":        []string{"create_app", "update_app", "delete_app", "activate_app", "deactivate_app", "run_app"},
-								"description": "The type of action to propose",
-							},
-							"app_id": map[string]interface{}{
-								"type":        "string",
-								"description": "The app ID (required for update/delete/activate/deactivate/run)",
-							},
-							"app_name": map[string]interface{}{
-								"type":        "string",
-								"description": "Display name of the app being modified",
-							},
-							"data": map[string]interface{}{
-								"type":        "object",
-								"description": "Action data. For create/update: {name, description, prompt, model, skills[], schedule_rules{}}. For delete/activate/deactivate/run: not needed.",
+							"actions": map[string]interface{}{
+								"type":        "array",
+								"description": "Array of proposed actions",
+								"items": map[string]interface{}{
+									"type": "object",
+									"properties": map[string]interface{}{
+										"action_type": map[string]interface{}{
+											"type":        "string",
+											"enum":        []string{"create_app", "update_app", "delete_app", "activate_app", "deactivate_app", "run_app"},
+											"description": "The type of action",
+										},
+										"app_id": map[string]interface{}{
+											"type":        "string",
+											"description": "Existing app ID (for update/delete/activate/deactivate/run)",
+										},
+										"app_name": map[string]interface{}{
+											"type":        "string",
+											"description": "Display name of the app",
+										},
+										"data": map[string]interface{}{
+											"type":        "object",
+											"description": "Action data: {name, description, prompt, model, skills[], schedule_rules{}}",
+										},
+									},
+									"required": []string{"action_type"},
+								},
 							},
 						},
-						"required": []string{"action_type"},
+						"required": []string{"actions"},
 					},
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {
-				actionType, _ := args["action_type"].(string)
-				appID, _ := args["app_id"].(string)
-				appName, _ := args["app_name"].(string)
-				data, _ := args["data"].(map[string]interface{})
-
-				if actionType == "" {
-					return "Error: action_type is required", nil
+				actionsRaw, _ := args["actions"].([]interface{})
+				if len(actionsRaw) == 0 {
+					return "Error: at least one action is required", nil
 				}
 
-				// Validate: update/delete/activate/deactivate/run need app_id
-				switch actionType {
-				case "update_app", "delete_app", "activate_app", "deactivate_app", "run_app":
-					if appID == "" {
-						return "Error: app_id is required for " + actionType, nil
+				var summaries []string
+				for i, raw := range actionsRaw {
+					a, ok := raw.(map[string]interface{})
+					if !ok {
+						continue
 					}
-				case "create_app":
-					if data == nil {
-						return "Error: data is required for create_app (at minimum: name and prompt)", nil
+					actionType, _ := a["action_type"].(string)
+					appName, _ := a["app_name"].(string)
+					if appName == "" {
+						if data, ok := a["data"].(map[string]interface{}); ok {
+							appName, _ = data["name"].(string)
+						}
 					}
+					label := actionType
+					if appName != "" {
+						label += ": " + appName
+					}
+					summaries = append(summaries, fmt.Sprintf("%d. %s", i+1, label))
 				}
 
-				// Build display for user
-				summary := fmt.Sprintf("Action proposed: %s", actionType)
-				if appName != "" {
-					summary += " — " + appName
-				}
-				if appID != "" {
-					summary += " (id: " + appID[:8] + "...)"
-				}
-
-				return summary + "\n\nAwaiting user confirmation.", nil
+				return fmt.Sprintf("✅ Plan submitted with %d action(s):\n%s\n\nThe user will now review and approve. Do NOT call submit_plan again.",
+					len(actionsRaw), strings.Join(summaries, "\n")), nil
 			},
 		},
 		// search_skills: find skills on the marketplace
