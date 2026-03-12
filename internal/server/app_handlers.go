@@ -45,9 +45,12 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 	result := make([]AppWithMeta, len(apps))
 	for i, a := range apps {
 		result[i] = AppWithMeta{AppRecord: a}
-		runs, err := s.db.ListAppRuns(a.ID, "pending", 1)
-		if err == nil && len(runs) > 0 {
-			result[i].NextRunAt = runs[0].ScheduledAt
+		// Compute next run time dynamically from schedule rules
+		if a.IsActive && a.ScheduleRules != "" {
+			nextTimes := ExpandSchedule(a.ScheduleRules, time.Now(), 1)
+			if len(nextTimes) > 0 {
+				result[i].NextRunAt = nextTimes[0].UTC().Format("2006-01-02T15:04:05Z")
+			}
 		}
 		count, err := s.db.CountPendingAppRuns(a.ID)
 		if err == nil {
