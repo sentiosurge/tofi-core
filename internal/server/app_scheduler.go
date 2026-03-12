@@ -115,6 +115,14 @@ func NewAppScheduler(server *Server) *AppScheduler {
 }
 
 func (as *AppScheduler) Start() error {
+	// Recover zombie runs: reset "running" app_runs to "pending" (server restart killed goroutines)
+	recovered, err := as.server.db.RecoverRunningAppRuns()
+	if err != nil {
+		log.Printf("⚠️ Failed to recover running app_runs: %v", err)
+	} else if recovered > 0 {
+		log.Printf("♻️ Recovered %d zombie app_runs (running → pending)", recovered)
+	}
+
 	// Load all pending runs from DB into heap
 	runs, err := as.server.db.GetAllPendingAppRuns()
 	if err != nil {
@@ -141,6 +149,7 @@ func (as *AppScheduler) Start() error {
 
 	as.timer = time.NewTimer(as.nextDelay())
 	go as.mainLoop()
+	go as.overdueSweep()
 
 	log.Printf("App Scheduler started with %d pending runs", len(runs))
 	return nil
@@ -191,6 +200,40 @@ func (as *AppScheduler) mainLoop() {
 		case appID := <-as.renewalCh:
 			as.doRenewal(appID)
 
+		case <-as.stopCh:
+			return
+		}
+	}
+}
+
+// overdueSweep periodically checks for overdue pending runs that the heap missed.
+// This is a safety net against heap/DB desync (e.g., from activate/deactivate races).
+func (as *AppScheduler) overdueSweep() {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			runs, err := as.server.db.GetOverdueAppRuns(time.Now().UTC())
+			if err != nil || len(runs) == 0 {
+				continue
+			}
+			log.Printf("🔍 Overdue sweep: found %d missed runs, re-adding to heap", len(runs))
+			as.mu.Lock()
+			for _, r := range runs {
+				t, err := time.Parse("2006-01-02 15:04:05", r.ScheduledAt)
+				if err != nil {
+					t, _ = time.Parse(time.RFC3339, r.ScheduledAt)
+				}
+				heap.Push(&as.h, RunEntry{
+					RunID:       r.ID,
+					AppID:       r.AppID,
+					UserID:      r.UserID,
+					ScheduledAt: t,
+				})
+			}
+			as.resetTimer()
+			as.mu.Unlock()
 		case <-as.stopCh:
 			return
 		}

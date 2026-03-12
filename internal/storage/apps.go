@@ -429,6 +429,43 @@ func (db *DB) GetLastAppScheduledTime(appID string) (time.Time, error) {
 	return t, nil
 }
 
+// RecoverRunningAppRuns resets zombie "running" app_runs to "pending" (server restart recovery).
+func (db *DB) RecoverRunningAppRuns() (int, error) {
+	result, err := db.conn.Exec(`UPDATE app_runs SET status = 'pending', started_at = NULL WHERE status = 'running'`)
+	if err != nil {
+		return 0, err
+	}
+	rows, _ := result.RowsAffected()
+	return int(rows), nil
+}
+
+// GetOverdueAppRuns finds pending runs with scheduled_at in the past (overdue).
+// Only returns runs for active apps to avoid dispatching deactivated apps.
+func (db *DB) GetOverdueAppRuns(now time.Time) ([]*AppRunRecord, error) {
+	nowStr := now.Format("2006-01-02 15:04:05")
+	query := `SELECT r.id, r.app_id, r.scheduled_at, r.status, COALESCE(r.kanban_card_id,''), COALESCE(r.result,''),
+		r.user_id, r.created_at, COALESCE(r.started_at,''), COALESCE(r.completed_at,'')
+		FROM app_runs r JOIN apps a ON r.app_id = a.id
+		WHERE r.status = 'pending' AND r.scheduled_at <= ? AND a.is_active = 1
+		ORDER BY r.scheduled_at ASC LIMIT 50`
+	rows, err := db.conn.Query(query, nowStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var runs []*AppRunRecord
+	for rows.Next() {
+		var r AppRunRecord
+		if err := rows.Scan(&r.ID, &r.AppID, &r.ScheduledAt, &r.Status, &r.KanbanCardID, &r.Result,
+			&r.UserID, &r.CreatedAt, &r.StartedAt, &r.CompletedAt); err != nil {
+			return nil, err
+		}
+		runs = append(runs, &r)
+	}
+	return runs, nil
+}
+
 func (db *DB) DeleteAppRuns(appID string) error {
 	_, err := db.conn.Exec(`DELETE FROM app_runs WHERE app_id = ?`, appID)
 	return err
