@@ -644,13 +644,19 @@ func (s *Server) handleManagerChat(w http.ResponseWriter, r *http.Request) {
 	}
 	appsJSON, _ := json.Marshal(appsCtx)
 
-	// 3. Load default skills (web-search)
-	defaultSkills := []string{"web-search"}
+	// 3. Load default skills (app-manager + web-search)
+	defaultSkills := []string{"app-manager", "web-search"}
 	var skillInstructions []string
 	var skillTools []mcp.SkillTool
 	secretEnv := make(map[string]string)
 	var missingSecrets []string
 	localStore := skills.NewLocalStore(s.config.HomeDir)
+
+	// Inject API credentials for app-manager scripts
+	secretEnv["TOFI_API_URL"] = fmt.Sprintf("http://localhost:%d/api/v1", s.config.Port)
+	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		secretEnv["TOFI_TOKEN"] = strings.TrimPrefix(authHeader, "Bearer ")
+	}
 
 	for _, skillName := range defaultSkills {
 		rec, err := s.db.GetSkillByName(userID, skillName)
@@ -745,39 +751,44 @@ Before making any changes, make sure you UNDERSTAND what the user wants:
 - Think step by step — plan before you act
 
 ## Your Capabilities
-You can research (web search, fetch pages), search for skills on the marketplace, and propose changes to the user's apps.
+- Research: web search, fetch pages
+- Skills: search the marketplace for skills to add to apps
+- App Management: create, update, delete, activate, deactivate, run apps using the app-manager scripts
 
 ## Current Apps
 %s
 
-## How to Propose Changes
-When you're ready to make changes, call submit_plan ONCE with ALL proposed actions in a single call.
-- CRITICAL: Call submit_plan exactly ONCE. Never call it multiple times.
-- After calling submit_plan, STOP using tools. Just write a brief summary of what you proposed.
-- The user will see your plan and can Approve or suggest modifications.
+## How to Make Changes
+Use the app-manager scripts (via sandbox_exec) to manage apps:
+- python3 skills/app-manager/scripts/manage.py list
+- python3 skills/app-manager/scripts/manage.py get <app_id>
+- python3 skills/app-manager/scripts/manage.py create --name "..." --prompt "..." [--description ...] [--model ...] [--schedule '...'] [--capabilities '...'] [--skills s1,s2]
+- python3 skills/app-manager/scripts/manage.py update <app_id> [--name ...] [--prompt ...]
+- python3 skills/app-manager/scripts/manage.py delete <app_id>
+- python3 skills/app-manager/scripts/manage.py activate/deactivate/run <app_id>
 
-Available action types:
-- create_app: Create a new app (data: name, description, prompt, model, skills[], schedule_rules{})
-- update_app: Update an existing app (needs app_id, data: only changed fields)
-- delete_app: Delete an app (needs app_id)
-- activate_app / deactivate_app: Toggle scheduling (needs app_id)
-- run_app: Run immediately (needs app_id)
+## Workflow
+1. Understand the user's request
+2. Research if needed (web search, skill search)
+3. Describe your plan in text and ask the user to confirm
+4. After user confirms, execute using the scripts above
+5. Verify the result with list or get
 
-## Schedule Format
-schedule_rules uses entry-based format:
-{"entries": [{"type": "interval", "interval": "4h"}, {"type": "cron", "cron": "0 9 * * 1-5"}], "timezone": "America/Los_Angeles"}
+IMPORTANT:
+- Always describe your plan and wait for confirmation BEFORE executing create/update/delete
+- For simple queries (list, get, activate/deactivate/run), you can execute directly
+- Schedule JSON format: {"entries": [{"time":"09:00","repeat":{"type":"daily"},"enabled":true}], "timezone":"Asia/Shanghai"}
+- Capabilities JSON: {"web_search":{"enabled":true}}
 
 ## Sandbox Environment
-You have a sandbox shell for research tasks (curl, python3, etc.).
-- Python packages: ALWAYS use python3 -m pip install <pkg>
-- Multi-line Python: use heredoc python3 <<'PYEOF' ... PYEOF
+You have a sandbox shell (curl, python3, etc.).
+- Python packages: python3 -m pip install <pkg>
+- Multi-line Python: heredoc python3 <<'PYEOF' ... PYEOF
 
 ## Rules
 - Always respond in the same language as the user
 - Be concise and helpful
 - Use tools to research before proposing changes
-- For update_app, only include fields being changed in data
-- NEVER call submit_plan more than once per response
 
 Current time: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
 
@@ -852,78 +863,6 @@ Current time: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST 
 // buildManagerTools creates extra tools for the Manager agent
 func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
 	return []mcp.ExtraBuiltinTool{
-		// submit_plan: submit ALL proposed actions at once
-		{
-			Schema: mcp.OpenAITool{
-				Type: "function",
-				Function: mcp.OpenAIFunctionDef{
-					Name:        "submit_plan",
-					Description: "Submit a plan of proposed app management actions for user approval. Call this ONCE with ALL actions. After calling, stop using tools and briefly summarize the plan.",
-					Parameters: map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"actions": map[string]interface{}{
-								"type":        "array",
-								"description": "Array of proposed actions",
-								"items": map[string]interface{}{
-									"type": "object",
-									"properties": map[string]interface{}{
-										"action_type": map[string]interface{}{
-											"type":        "string",
-											"enum":        []string{"create_app", "update_app", "delete_app", "activate_app", "deactivate_app", "run_app"},
-											"description": "The type of action",
-										},
-										"app_id": map[string]interface{}{
-											"type":        "string",
-											"description": "Existing app ID (for update/delete/activate/deactivate/run)",
-										},
-										"app_name": map[string]interface{}{
-											"type":        "string",
-											"description": "Display name of the app",
-										},
-										"data": map[string]interface{}{
-											"type":        "object",
-											"description": "Action data: {name, description, prompt, model, skills[], schedule_rules{}}",
-										},
-									},
-									"required": []string{"action_type"},
-								},
-							},
-						},
-						"required": []string{"actions"},
-					},
-				},
-			},
-			Handler: func(args map[string]interface{}) (string, error) {
-				actionsRaw, _ := args["actions"].([]interface{})
-				if len(actionsRaw) == 0 {
-					return "Error: at least one action is required", nil
-				}
-
-				var summaries []string
-				for i, raw := range actionsRaw {
-					a, ok := raw.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					actionType, _ := a["action_type"].(string)
-					appName, _ := a["app_name"].(string)
-					if appName == "" {
-						if data, ok := a["data"].(map[string]interface{}); ok {
-							appName, _ = data["name"].(string)
-						}
-					}
-					label := actionType
-					if appName != "" {
-						label += ": " + appName
-					}
-					summaries = append(summaries, fmt.Sprintf("%d. %s", i+1, label))
-				}
-
-				return fmt.Sprintf("✅ Plan submitted with %d action(s):\n%s\n\nThe user will now review and approve. Do NOT call submit_plan again.",
-					len(actionsRaw), strings.Join(summaries, "\n")), nil
-			},
-		},
 		// search_skills: find skills on the marketplace
 		{
 			Schema: mcp.OpenAITool{
