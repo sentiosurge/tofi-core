@@ -289,7 +289,7 @@ func (s *Server) handleTestSkill(w http.ResponseWriter, r *http.Request) {
 
 	model := req.Model
 	if model == "" {
-		model = "gpt-4o"
+		model = "gpt-5-mini"
 	}
 
 	wf := buildSkillWorkflow(skill, prompt, model, true) // test 默认使用系统 key
@@ -834,7 +834,7 @@ func (s *Server) handleRunSkill(w http.ResponseWriter, r *http.Request) {
 // buildSkillWorkflow 构建用于执行 Skill 的临时工作流对象
 func buildSkillWorkflow(skill *storage.SkillRecord, prompt, model string, useSystemKey bool) *models.Workflow {
 	if model == "" {
-		model = "gpt-4o"
+		model = "gpt-5-mini"
 	}
 
 	wfName := "skill-" + skill.Name

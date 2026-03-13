@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tofi-core/internal/mcp"
+	"tofi-core/internal/provider"
 )
 
 // BuildNotifyTool creates an ExtraBuiltinTool for push notifications.
@@ -16,26 +17,23 @@ import (
 func BuildNotifyTool(channels []string, getter SecretGetter) mcp.ExtraBuiltinTool {
 	channelList := strings.Join(channels, ", ")
 	return mcp.ExtraBuiltinTool{
-		Schema: mcp.OpenAITool{
-			Type: "function",
-			Function: mcp.OpenAIFunctionDef{
-				Name:        "send_notification",
-				Description: fmt.Sprintf("Send a push notification to the user. Available channels: %s. Use this to notify the user of important results, completions, or alerts.", channelList),
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"channel": map[string]any{
-							"type":        "string",
-							"description": fmt.Sprintf("Notification channel to use: %s", channelList),
-							"enum":        channels,
-						},
-						"message": map[string]any{
-							"type":        "string",
-							"description": "The notification message to send",
-						},
+		Schema: provider.Tool{
+			Name:        "send_notification",
+			Description: fmt.Sprintf("Send a push notification to the user. Available channels: %s. Use this to notify the user of important results, completions, or alerts.", channelList),
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"channel": map[string]any{
+						"type":        "string",
+						"description": fmt.Sprintf("Notification channel to use: %s", channelList),
+						"enum":        channels,
 					},
-					"required": []string{"channel", "message"},
+					"message": map[string]any{
+						"type":        "string",
+						"description": "The notification message to send",
+					},
 				},
+				"required": []string{"channel", "message"},
 			},
 		},
 		Handler: func(args map[string]any) (string, error) {

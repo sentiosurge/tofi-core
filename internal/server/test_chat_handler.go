@@ -13,6 +13,7 @@ import (
 	"tofi-core/internal/executor"
 	"tofi-core/internal/mcp"
 	"tofi-core/internal/models"
+	"tofi-core/internal/provider"
 	"tofi-core/internal/skills"
 )
 
@@ -38,7 +39,7 @@ func (s *Server) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Resolve model and API key
-	model, apiKey, provider, err := s.resolveModelAndKey(userID, req.Model)
+	model, apiKey, _, err := s.resolveModelAndKey(userID, req.Model)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -199,11 +200,23 @@ Current time: %s`, time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
 		system += "\n\n---\n\n" + instructions
 	}
 
-	// 7. Build AgentConfig
+	// 7. Convert messages to provider.Message format
+	var providerMessages []provider.Message
+	for _, m := range req.Messages {
+		msg := provider.Message{
+			Role: fmt.Sprint(m["role"]),
+		}
+		if c, ok := m["content"].(string); ok {
+			msg.Content = c
+		}
+		providerMessages = append(providerMessages, msg)
+	}
+
+	// 8. Build AgentConfig
 	agentCfg := mcp.AgentConfig{
 		System:     system,
 		Prompt:     req.Message,
-		Messages:   req.Messages,
+		Messages:   providerMessages,
 		MCPServers: capMCPServers,
 		SkillTools: skillTools,
 		ExtraTools: append(extraTools, s.buildMemoryTools(userID, "")...),
@@ -236,10 +249,15 @@ Current time: %s`, time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
 			flusher.Flush()
 		},
 	}
-	agentCfg.AI.Model = model
-	agentCfg.AI.APIKey = apiKey
-	agentCfg.AI.Provider = provider
-	agentCfg.AI.Endpoint = "https://api.openai.com/v1/chat/completions"
+
+	// Create Provider instance
+	p, err := provider.NewForModel(model, apiKey)
+	if err != nil {
+		sendSSEError(w, flusher, "Failed to create provider: "+err.Error())
+		return
+	}
+	agentCfg.Provider = p
+	agentCfg.Model = model
 
 	// 9. Run agent loop
 	ctx := models.NewExecutionContext("test", userID, s.config.HomeDir)
@@ -248,14 +266,14 @@ Current time: %s`, time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
 
 	log.Printf("🧪 [test-chat] user=%s model=%s skills=%v caps=%s", userID, model, req.Skills, capsJSON)
 
-	result, err := mcp.RunAgentLoop(agentCfg, ctx)
+	agentResult, err := mcp.RunAgentLoop(agentCfg, ctx)
 	if err != nil {
 		sendSSEError(w, flusher, "Agent error: "+err.Error())
 		return
 	}
 
 	// 10. Send final result
-	done, _ := json.Marshal(map[string]string{"result": result})
+	done, _ := json.Marshal(map[string]string{"result": agentResult.Content})
 	fmt.Fprintf(w, "event: done\ndata: %s\n\n", done)
 	flusher.Flush()
 }

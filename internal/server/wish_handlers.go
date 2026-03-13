@@ -16,11 +16,11 @@ import (
 	"tofi-core/internal/executor"
 	"tofi-core/internal/mcp"
 	"tofi-core/internal/models"
+	"tofi-core/internal/provider"
 	"tofi-core/internal/skills"
 	"tofi-core/internal/storage"
 
 	"github.com/google/uuid"
-	"github.com/tidwall/gjson"
 )
 
 // handleWish POST /api/v1/wish — 许愿：创建 Kanban 卡片 + 异步执行 Agent
@@ -91,7 +91,7 @@ func (s *Server) resolveModelAndKey(userID, requestedModel string) (model, apiKe
 		envKey       string
 	}{
 		{"anthropic", "claude-sonnet-4-20250514", "TOFI_ANTHROPIC_API_KEY"},
-		{"openai", "gpt-4o", "TOFI_OPENAI_API_KEY"},
+		{"openai", "gpt-5-mini", "TOFI_OPENAI_API_KEY"},
 		{"gemini", "gemini-2.0-flash", "TOFI_GEMINI_API_KEY"},
 	}
 
@@ -183,33 +183,21 @@ func (s *Server) executeWish(card *storage.KanbanCardRecord, userID, requestedMo
 	}
 
 	// 2. 智能检测 API Key 和模型
-	model, apiKey, provider, err := s.resolveModelAndKey(userID, requestedModel)
+	model, apiKey, providerName, err := s.resolveModelAndKey(userID, requestedModel)
 	if err != nil {
 		log.Printf("❌ [wish:%s] %v", cardID[:8], err)
 		updater.UpdateKanbanCardBySystem(cardID, "failed", 0, err.Error())
 		return
 	}
-	log.Printf("🔑 [wish:%s] Using model=%s, provider=%s", cardID[:8], model, provider)
+	log.Printf("🔑 [wish:%s] Using model=%s, provider=%s", cardID[:8], model, providerName)
 
 	updater.UpdateKanbanCardBySystem(cardID, "working", 20, "")
 	updater.AppendKanbanStep(cardID, map[string]any{"name": "Preparing Agent", "status": "running", "model": model})
 
-	// 3. 选择执行策略
+	// 3. 执行 — 所有 Provider 都走 Agent Loop (tool calling)
+	log.Printf("🤖 [wish:%s] Using Agent Loop (provider=%s, model=%s)", cardID[:8], providerName, model)
 	var result string
-	if provider == "openai" {
-		// OpenAI 支持 tool calling → 使用 Agent Loop，Skills 作为可调用工具
-		log.Printf("🤖 [wish:%s] Using Agent Loop (tool calling enabled)", cardID[:8])
-		result, err = s.executeWithAgent(card, installedSkills, apiKey, model, provider, userID, updater)
-	} else {
-		// Claude/Gemini → 回退到 prompt 增强模式
-		log.Printf("📝 [wish:%s] Using direct mode (no tool calling)", cardID[:8])
-		skillDescriptions := buildSkillDescriptions(installedSkills)
-		if len(installedSkills) > 0 {
-			result, err = s.executeWithSkillAwareness(card, installedSkills, skillDescriptions, apiKey, model, provider, userID, updater)
-		} else {
-			result, err = s.executeDirectly(card, apiKey, model, provider, updater)
-		}
-	}
+	result, err = s.executeWithAgent(card, installedSkills, apiKey, model, providerName, userID, updater)
 
 	if err != nil {
 		log.Printf("❌ [wish:%s] Execution failed: %v", cardID[:8], err)
@@ -222,68 +210,9 @@ func (s *Server) executeWish(card *storage.KanbanCardRecord, userID, requestedMo
 	updater.UpdateKanbanCardBySystem(cardID, "done", 100, result)
 }
 
-// executeWithSkillAwareness 有 Skills 时的执行策略
-func (s *Server) executeWithSkillAwareness(card *storage.KanbanCardRecord, skills []*storage.SkillRecord, skillDescriptions, apiKey, model, provider, userID string, updater mcp.KanbanUpdater) (string, error) {
-	cardID := card.ID
-
-	// 构建 system prompt
-	systemPrompt := fmt.Sprintf(`You are a helpful AI agent. The user has made a wish (request) and you need to fulfill it.
-
-## Available Skills
-The following skills are installed and available to help:
-
-%s
-
-## Instructions
-1. Analyze the user's wish carefully
-2. If any installed skills can help, describe how you would use them
-3. Then fulfill the wish to the best of your ability
-4. Provide a clear, actionable result
-
-Be concise and practical. Focus on delivering value.
-
-Current time: %s`, skillDescriptions, time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
-
-	prompt := card.Title
-	if card.Description != "" {
-		prompt += "\n\n" + card.Description
-	}
-
-	updater.UpdateKanbanCardBySystem(cardID, "working", 50, "")
-
-	// 调用 LLM
-	result, err := callLLM(systemPrompt, prompt, apiKey, model, provider)
-	if err != nil {
-		return "", err
-	}
-
-	updater.UpdateKanbanCardBySystem(cardID, "working", 90, "")
-	return result, nil
-}
-
-// executeDirectly 没有 Skills 时直接执行
-func (s *Server) executeDirectly(card *storage.KanbanCardRecord, apiKey, model, provider string, updater mcp.KanbanUpdater) (string, error) {
-	systemPrompt := "You are a helpful AI agent. The user has made a wish (request) and you need to fulfill it.\n\nProvide a clear, actionable result. Be concise and practical.\n\nCurrent time: " + time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
-
-	prompt := card.Title
-	if card.Description != "" {
-		prompt += "\n\n" + card.Description
-	}
-
-	updater.UpdateKanbanCardBySystem(card.ID, "working", 50, "")
-
-	result, err := callLLM(systemPrompt, prompt, apiKey, model, provider)
-	if err != nil {
-		return "", err
-	}
-
-	updater.UpdateKanbanCardBySystem(card.ID, "working", 90, "")
-	return result, nil
-}
-
 // executeWithAgent 使用 Agent Loop (ReAct tool calling) 执行 Wish
 // Skills 被注册为可调用的工具，LLM 可以决定是否调用
-func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkills []*storage.SkillRecord, apiKey, model, provider, userID string, updater mcp.KanbanUpdater) (string, error) {
+func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkills []*storage.SkillRecord, apiKey, model, providerName, userID string, updater mcp.KanbanUpdater) (string, error) {
 	cardID := card.ID
 
 	// 1. Tool Selection: if too many skills, use LLM to pick relevant ones
@@ -293,7 +222,7 @@ func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkill
 		log.Printf("🔍 [wish:%s] %d skills installed, running tool selection...", cardID[:8], len(installedSkills))
 		updater.AppendKanbanStep(cardID, map[string]any{"name": "Selecting Tools", "status": "running"})
 
-		selected, err := selectRelevantSkills(card.Title, installedSkills, apiKey, model, provider)
+		selected, err := selectRelevantSkills(card.Title, installedSkills, apiKey, model, providerName)
 		if err != nil {
 			log.Printf("⚠️ [wish:%s] Tool selection failed: %v, using first %d skills", cardID[:8], err, maxDirectSkills)
 			selectedSkills = installedSkills[:maxDirectSkills]
@@ -614,10 +543,13 @@ Current time: ` + time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
 			}
 		},
 	}
-	agentCfg.AI.Model = model
-	agentCfg.AI.APIKey = apiKey
-	agentCfg.AI.Provider = provider
-	agentCfg.AI.Endpoint = "https://api.openai.com/v1/chat/completions"
+	// Create Provider instance
+	p, err := provider.NewForModel(model, apiKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to create provider: %v", err)
+	}
+	agentCfg.Provider = p
+	agentCfg.Model = model
 
 	// 6. 创建执行上下文
 	ctx := models.NewExecutionContext(cardID[:8], userID, s.config.HomeDir)
@@ -625,34 +557,31 @@ Current time: ` + time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
 	defer ctx.Close()
 
 	// 7. 运行 Agent Loop
-	result, err := mcp.RunAgentLoop(agentCfg, ctx)
+	agentResult, err := mcp.RunAgentLoop(agentCfg, ctx)
 	if err != nil {
 		return "", err
 	}
 
 	updater.UpdateKanbanCardBySystem(cardID, "working", 90, "")
-	return result, nil
+	return agentResult.Content, nil
 }
 
 // buildWishTools 构建 Wish 执行时的额外内置工具
 func (s *Server) buildWishTools(userID, cardID string) []mcp.ExtraBuiltinTool {
 	return []mcp.ExtraBuiltinTool{
 		{
-			Schema: mcp.OpenAITool{
-				Type: "function",
-				Function: mcp.OpenAIFunctionDef{
-					Name:        "search_skills",
-					Description: "Search for skills on the skills.sh marketplace. Use this when you need a capability that isn't already installed.",
-					Parameters: map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"query": map[string]interface{}{
-								"type":        "string",
-								"description": "Search query (e.g., 'react testing', 'code review', 'summarize')",
-							},
+			Schema: provider.Tool{
+				Name:        "search_skills",
+				Description: "Search for skills on the skills.sh marketplace. Use this when you need a capability that isn't already installed.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "Search query (e.g., 'react testing', 'code review', 'summarize')",
 						},
-						"required": []string{"query"},
 					},
+					"required": []string{"query"},
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {
@@ -678,30 +607,27 @@ func (s *Server) buildWishTools(userID, cardID string) []mcp.ExtraBuiltinTool {
 			},
 		},
 		{
-			Schema: mcp.OpenAITool{
-				Type: "function",
-				Function: mcp.OpenAIFunctionDef{
-					Name: "suggest_install",
-					Description: "Suggest installing a skill. Execution will PAUSE until the user installs and clicks Continue, or skips. " +
-						"Use this after search_skills finds a useful skill that isn't installed yet.",
-					Parameters: map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"skill_id": map[string]interface{}{
-								"type":        "string",
-								"description": "Full skill ID from search results (e.g., 'owner/repo@skill-name')",
-							},
-							"skill_name": map[string]interface{}{
-								"type":        "string",
-								"description": "Human-readable skill name",
-							},
-							"reason": map[string]interface{}{
-								"type":        "string",
-								"description": "Why this skill would be useful for the current task",
-							},
+			Schema: provider.Tool{
+				Name: "suggest_install",
+				Description: "Suggest installing a skill. Execution will PAUSE until the user installs and clicks Continue, or skips. " +
+					"Use this after search_skills finds a useful skill that isn't installed yet.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"skill_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Full skill ID from search results (e.g., 'owner/repo@skill-name')",
 						},
-						"required": []string{"skill_id", "skill_name"},
+						"skill_name": map[string]interface{}{
+							"type":        "string",
+							"description": "Human-readable skill name",
+						},
+						"reason": map[string]interface{}{
+							"type":        "string",
+							"description": "Why this skill would be useful for the current task",
+						},
 					},
+					"required": []string{"skill_id", "skill_name"},
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {
@@ -764,73 +690,8 @@ func (s *Server) buildWishTools(userID, cardID string) []mcp.ExtraBuiltinTool {
 	}
 }
 
-// callLLM 统一调用 LLM API (用于非 OpenAI 的 fallback 模式)
-func callLLM(system, prompt, apiKey, model, provider string) (string, error) {
-	headers := make(map[string]string)
-	var payload map[string]interface{}
-	var endpoint string
-
-	switch provider {
-	case "claude", "anthropic":
-		endpoint = "https://api.anthropic.com/v1/messages"
-		headers["x-api-key"] = apiKey
-		headers["anthropic-version"] = "2023-06-01"
-		payload = map[string]interface{}{
-			"model":      model,
-			"system":     system,
-			"messages":   []map[string]string{{"role": "user", "content": prompt}},
-			"max_tokens": 4096,
-		}
-	case "gemini":
-		endpoint = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", model)
-		headers["x-goog-api-key"] = apiKey
-		payload = map[string]interface{}{
-			"contents": []interface{}{
-				map[string]interface{}{
-					"parts": []map[string]string{{"text": system + "\n\n" + prompt}},
-				},
-			},
-		}
-	default: // OpenAI
-		endpoint = "https://api.openai.com/v1/chat/completions"
-		headers["Authorization"] = "Bearer " + apiKey
-		payload = map[string]interface{}{
-			"model": model,
-			"messages": []map[string]string{
-				{"role": "system", "content": system},
-				{"role": "user", "content": prompt},
-			},
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	_ = ctx // executor.PostJSON uses its own timeout
-
-	resp, err := executor.PostJSON(endpoint, headers, payload, 120)
-	if err != nil {
-		return "", fmt.Errorf("LLM API call failed: %v", err)
-	}
-
-	// Parse response
-	paths := []string{
-		"content.0.text",                                    // Claude
-		"output.#(type==\"message\").content.0.text",        // OpenAI Responses API
-		"choices.0.message.content",                         // OpenAI Chat
-		"candidates.0.content.parts.0.text",                 // Gemini
-	}
-	for _, path := range paths {
-		if res := gjson.Get(resp, path); res.Exists() {
-			return res.String(), nil
-		}
-	}
-
-	return "", fmt.Errorf("failed to parse LLM response")
-}
-
 // selectRelevantSkills uses a lightweight LLM call to pick the most relevant skills for a wish.
-// Sends all skill names+descriptions, asks LLM to return relevant skill names.
-func selectRelevantSkills(wish string, allSkills []*storage.SkillRecord, apiKey, model, provider string) ([]*storage.SkillRecord, error) {
+func selectRelevantSkills(wish string, allSkills []*storage.SkillRecord, apiKey, model, providerName string) ([]*storage.SkillRecord, error) {
 	// Build compact skill catalog: "name: description" per line
 	var catalog strings.Builder
 	nameIndex := make(map[string]*storage.SkillRecord)
@@ -847,21 +708,31 @@ func selectRelevantSkills(wish string, allSkills []*storage.SkillRecord, apiKey,
 
 	prompt := fmt.Sprintf("User request: %s\n\nAvailable skills (%d total):\n%s", wish, len(allSkills), catalog.String())
 
-	resp, err := callLLM(system, prompt, apiKey, model, provider)
+	// Create provider for lightweight LLM call
+	p, err := provider.NewForModel(model, apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("create provider: %v", err)
+	}
+	resp, err := p.Chat(context.Background(), &provider.ChatRequest{
+		Model:  model,
+		System: system,
+		Messages: []provider.Message{
+			{Role: "user", Content: prompt},
+		},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("selection LLM call failed: %v", err)
 	}
 
 	// Parse response: each line is a skill name
 	var selected []*storage.SkillRecord
-	for _, line := range strings.Split(resp, "\n") {
+	for _, line := range strings.Split(resp.Content, "\n") {
 		name := strings.TrimSpace(line)
 		name = strings.TrimPrefix(name, "- ")
 		name = strings.TrimPrefix(name, "* ")
 		if name == "" || strings.EqualFold(name, "NONE") {
 			continue
 		}
-		// Fuzzy match: try exact, then lowercase
 		if s, ok := nameIndex[strings.ToLower(name)]; ok {
 			selected = append(selected, s)
 		}
@@ -890,14 +761,7 @@ func buildSkillDescriptions(skills []*storage.SkillRecord) string {
 	return strings.Join(parts, "\n")
 }
 
-// detectProvider 从模型名推断 provider
+// detectProvider 从模型名推断 provider (delegates to provider.DetectProvider)
 func detectProvider(model string) string {
-	m := strings.ToLower(model)
-	if strings.HasPrefix(m, "claude") {
-		return "claude"
-	}
-	if strings.HasPrefix(m, "gemini") {
-		return "gemini"
-	}
-	return "openai"
+	return provider.DetectProvider(model)
 }

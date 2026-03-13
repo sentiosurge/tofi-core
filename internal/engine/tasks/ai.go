@@ -8,6 +8,7 @@ import (
 	"tofi-core/internal/mcp"
 	"tofi-core/internal/models"
 	"tofi-core/internal/pkg/logger"
+	"tofi-core/internal/provider"
 
 	"github.com/tidwall/gjson"
 )
@@ -357,97 +358,37 @@ func (a *AI) executeAgent(config map[string]interface{}, serverIDs []interface{}
 	}
 
 	model := fmt.Sprint(config["model"])
-	agentCfg.AI.Model = model
 
 	// Auto-detect provider from model if not explicitly set
-	provider := strings.ToLower(fmt.Sprint(config["provider"]))
-	if provider == "" || provider == "<nil>" {
-		provider = detectProviderFromModel(model)
+	providerName := strings.ToLower(fmt.Sprint(config["provider"]))
+	if providerName == "" || providerName == "<nil>" {
+		providerName = detectProviderFromModel(model)
 	}
-	agentCfg.AI.Provider = provider
 
 	// 解析 API Key（支持系统 key 模式）
-	apiKey, err := resolveAPIKey(config, provider, ctx)
+	apiKey, err := resolveAPIKey(config, providerName, ctx)
 	if err != nil {
 		return "", err
 	}
-	agentCfg.AI.APIKey = apiKey
 
-
-
-	// Handle BaseURL/Endpoint
-
-	var endpoint string
-
-	if ep, ok := config["endpoint"].(string); ok {
-
-		endpoint = ep
-
+	// Create Provider instance
+	var opts []provider.Option
+	if ep, ok := config["endpoint"].(string); ok && ep != "" {
+		opts = append(opts, provider.WithBaseURL(ep))
 	}
-
-
-
-	if endpoint == "" {
-
-		switch provider {
-
-		case "openai":
-
-			endpoint = "https://api.openai.com/v1"
-
-		case "anthropic":
-
-			endpoint = "https://api.anthropic.com/v1"
-
-		case "gemini":
-
-			endpoint = "https://generativelanguage.googleapis.com/v1beta"
-
-		}
-
+	p, err := provider.NewForModel(model, apiKey, opts...)
+	if err != nil {
+		return "", fmt.Errorf("failed to create provider: %w", err)
 	}
-
-
-
-	// Path Construction
-
-	switch provider {
-
-	case "gemini":
-
-		if !strings.Contains(endpoint, ":generateContent") {
-
-			endpoint = fmt.Sprintf("%s/models/%s:generateContent", strings.TrimRight(endpoint, "/"), model)
-
-		}
-
-	case "claude":
-
-		if !strings.Contains(endpoint, "/messages") {
-
-			endpoint = strings.TrimRight(endpoint, "/") + "/messages"
-
-		}
-
-	default: // OpenAI
-
-		if !strings.Contains(endpoint, "/chat/completions") && !strings.Contains(endpoint, "/responses") {
-
-			endpoint = strings.TrimRight(endpoint, "/") + "/chat/completions"
-
-		}
-
-	}
-
-	
-
-	agentCfg.AI.Endpoint = endpoint
-
-
+	agentCfg.Provider = p
+	agentCfg.Model = model
 
 	// Run Loop
-
-	return mcp.RunAgentLoop(agentCfg, ctx)
+	agentResult, err := mcp.RunAgentLoop(agentCfg, ctx)
+	if err != nil {
+		return "", err
+	}
+	return agentResult.Content, nil
 
 }
 

@@ -10,30 +10,28 @@ import (
 	"time"
 
 	"tofi-core/internal/mcp"
+	"tofi-core/internal/provider"
 )
 
 // BuildWebSearchTool creates an ExtraBuiltinTool for web search via Brave Search API.
 func BuildWebSearchTool(apiKey string) mcp.ExtraBuiltinTool {
 	return mcp.ExtraBuiltinTool{
-		Schema: mcp.OpenAITool{
-			Type: "function",
-			Function: mcp.OpenAIFunctionDef{
-				Name:        "web_search",
-				Description: "Search the web for real-time information using Brave Search API. Use this when you need current data, news, prices, or any information that may have changed recently.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"query": map[string]any{
-							"type":        "string",
-							"description": "The search query",
-						},
-						"count": map[string]any{
-							"type":        "integer",
-							"description": "Number of results to return (1-10, default 5)",
-						},
+		Schema: provider.Tool{
+			Name:        "web_search",
+			Description: "Search the web for real-time information using Brave Search API. Use this when you need current data, news, prices, or any information that may have changed recently.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "The search query",
 					},
-					"required": []string{"query"},
+					"count": map[string]any{
+						"type":        "integer",
+						"description": "Number of results to return (1-10, default 5)",
+					},
 				},
+				"required": []string{"query"},
 			},
 		},
 		Handler: func(args map[string]any) (string, error) {

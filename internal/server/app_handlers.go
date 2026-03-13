@@ -15,6 +15,7 @@ import (
 	"tofi-core/internal/executor"
 	"tofi-core/internal/mcp"
 	"tofi-core/internal/models"
+	"tofi-core/internal/provider"
 	"tofi-core/internal/skills"
 	"tofi-core/internal/storage"
 
@@ -477,13 +478,29 @@ Examples:
 	promptParts = append(promptParts, fmt.Sprintf("\nUser request: %s", req.Text))
 	prompt := strings.Join(promptParts, "\n")
 
-	model, apiKey, provider, err := s.resolveModelAndKey(userID, "")
+	model, apiKey, _, err := s.resolveModelAndKey(userID, "")
 	if err != nil {
 		http.Error(w, fmt.Sprintf("no API key available: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	result, err := callLLM(systemPrompt, prompt, apiKey, model, provider)
+	p, err := provider.NewForModel(model, apiKey)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to create provider: %v", err), http.StatusInternalServerError)
+		return
+	}
+	llmResp, err := p.Chat(r.Context(), &provider.ChatRequest{
+		Model:  model,
+		System: systemPrompt,
+		Messages: []provider.Message{
+			{Role: "user", Content: prompt},
+		},
+	})
+	if err != nil {
+		http.Error(w, fmt.Sprintf("LLM call failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	result := llmResp.Content
 	if err != nil {
 		http.Error(w, fmt.Sprintf("LLM call failed: %v", err), http.StatusInternalServerError)
 		return
@@ -586,7 +603,7 @@ func (s *Server) handleManagerChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Resolve model and API key
-	model, apiKey, provider, err := s.resolveModelAndKey(userID, "")
+	model, apiKey, _, err := s.resolveModelAndKey(userID, "")
 	if err != nil {
 		http.Error(w, fmt.Sprintf("no API key: %v", err), http.StatusBadRequest)
 		return
@@ -805,11 +822,21 @@ Current time: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST 
 	extraTools := s.buildManagerTools(userID)
 	extraTools = append(extraTools, s.buildMemoryTools(userID, "")...)
 
-	// 8. Build AgentConfig
+	// 8. Convert messages to provider.Message format
+	var providerMessages []provider.Message
+	for _, m := range req.Messages {
+		msg := provider.Message{
+			Role:    fmt.Sprint(m["role"]),
+			Content: fmt.Sprint(m["content"]),
+		}
+		providerMessages = append(providerMessages, msg)
+	}
+
+	// Build AgentConfig
 	agentCfg := mcp.AgentConfig{
 		System:     system,
 		Prompt:     req.Message,
-		Messages:   req.Messages,
+		Messages:   providerMessages,
 		SkillTools: skillTools,
 		ExtraTools: extraTools,
 		SandboxDir: sandboxDir,
@@ -841,10 +868,15 @@ Current time: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST 
 			flusher.Flush()
 		},
 	}
-	agentCfg.AI.Model = model
-	agentCfg.AI.APIKey = apiKey
-	agentCfg.AI.Provider = provider
-	agentCfg.AI.Endpoint = "https://api.openai.com/v1/chat/completions"
+
+	// Create Provider instance
+	p, err := provider.NewForModel(model, apiKey)
+	if err != nil {
+		sendSSEError(w, flusher, "Failed to create provider: "+err.Error())
+		return
+	}
+	agentCfg.Provider = p
+	agentCfg.Model = model
 
 	// 9. Run agent loop
 	ctx := models.NewExecutionContext("manager", userID, s.config.HomeDir)
@@ -853,14 +885,14 @@ Current time: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST 
 
 	log.Printf("🤖 [manager] user=%s model=%s skills=%v", userID, model, defaultSkills)
 
-	result, err := mcp.RunAgentLoop(agentCfg, ctx)
+	agentResult, err := mcp.RunAgentLoop(agentCfg, ctx)
 	if err != nil {
 		sendSSEError(w, flusher, "Agent error: "+err.Error())
 		return
 	}
 
 	// 10. Send final result
-	done, _ := json.Marshal(map[string]string{"result": result})
+	done, _ := json.Marshal(map[string]string{"result": agentResult.Content})
 	fmt.Fprintf(w, "event: done\ndata: %s\n\n", done)
 	flusher.Flush()
 }
@@ -870,52 +902,49 @@ func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
 	return []mcp.ExtraBuiltinTool{
 		// present_plan: structured plan for user approval
 		{
-			Schema: mcp.OpenAITool{
-				Type: "function",
-				Function: mcp.OpenAIFunctionDef{
-					Name:        "present_plan",
-					Description: "Present an app plan to the user for approval. ALWAYS call this before executing any create/update/delete operation. Only include fields relevant to the action — e.g. if only updating the prompt, omit schedule and capabilities.",
-					Parameters: map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"action": map[string]interface{}{
-								"type":        "string",
-								"enum":        []string{"create", "update", "delete"},
-								"description": "Plan action type",
-							},
-							"app_id": map[string]interface{}{
-								"type":        "string",
-								"description": "App ID (required for update/delete)",
-							},
-							"name": map[string]interface{}{
-								"type":        "string",
-								"description": "App name",
-							},
-							"description": map[string]interface{}{
-								"type":        "string",
-								"description": "Short app description",
-							},
-							"prompt": map[string]interface{}{
-								"type":        "string",
-								"description": "The complete, self-contained prompt the App Agent receives each run",
-							},
-							"capabilities": map[string]interface{}{
-								"type":        "array",
-								"items":       map[string]interface{}{"type": "string"},
-								"description": "Capability list, e.g. [\"web_search\", \"web_fetch\"]",
-							},
-							"schedule": map[string]interface{}{
-								"type":        "string",
-								"description": "Human-readable schedule, e.g. '每天早上 8:00'",
-							},
-							"skills": map[string]interface{}{
-								"type":        "array",
-								"items":       map[string]interface{}{"type": "string"},
-								"description": "Skill IDs to attach",
-							},
+			Schema: provider.Tool{
+				Name:        "present_plan",
+				Description: "Present an app plan to the user for approval. ALWAYS call this before executing any create/update/delete operation. Only include fields relevant to the action — e.g. if only updating the prompt, omit schedule and capabilities.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"action": map[string]interface{}{
+							"type":        "string",
+							"enum":        []string{"create", "update", "delete"},
+							"description": "Plan action type",
 						},
-						"required": []string{"action"},
+						"app_id": map[string]interface{}{
+							"type":        "string",
+							"description": "App ID (required for update/delete)",
+						},
+						"name": map[string]interface{}{
+							"type":        "string",
+							"description": "App name",
+						},
+						"description": map[string]interface{}{
+							"type":        "string",
+							"description": "Short app description",
+						},
+						"prompt": map[string]interface{}{
+							"type":        "string",
+							"description": "The complete, self-contained prompt the App Agent receives each run",
+						},
+						"capabilities": map[string]interface{}{
+							"type":        "array",
+							"items":       map[string]interface{}{"type": "string"},
+							"description": "Capability list, e.g. [\"web_search\", \"web_fetch\"]",
+						},
+						"schedule": map[string]interface{}{
+							"type":        "string",
+							"description": "Human-readable schedule, e.g. '每天早上 8:00'",
+						},
+						"skills": map[string]interface{}{
+							"type":        "array",
+							"items":       map[string]interface{}{"type": "string"},
+							"description": "Skill IDs to attach",
+						},
 					},
+					"required": []string{"action"},
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {
@@ -924,21 +953,18 @@ func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
 		},
 		// search_skills: find skills on the marketplace
 		{
-			Schema: mcp.OpenAITool{
-				Type: "function",
-				Function: mcp.OpenAIFunctionDef{
-					Name:        "search_skills",
-					Description: "Search for skills on the skills.sh marketplace. Use this to find capabilities that could be added to an app.",
-					Parameters: map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"query": map[string]interface{}{
-								"type":        "string",
-								"description": "Search query (e.g., 'web search', 'email', 'summarize')",
-							},
+			Schema: provider.Tool{
+				Name:        "search_skills",
+				Description: "Search for skills on the skills.sh marketplace. Use this to find capabilities that could be added to an app.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "Search query (e.g., 'web search', 'email', 'summarize')",
 						},
-						"required": []string{"query"},
 					},
+					"required": []string{"query"},
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {
@@ -964,15 +990,12 @@ func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
 		},
 		// list_installed_skills: see what skills are already available
 		{
-			Schema: mcp.OpenAITool{
-				Type: "function",
-				Function: mcp.OpenAIFunctionDef{
-					Name:        "list_installed_skills",
-					Description: "List all skills currently installed for this user.",
-					Parameters: map[string]interface{}{
-						"type":       "object",
-						"properties": map[string]interface{}{},
-					},
+			Schema: provider.Tool{
+				Name:        "list_installed_skills",
+				Description: "List all skills currently installed for this user.",
+				Parameters: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {
@@ -993,30 +1016,27 @@ func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
 		},
 		// ask_question: structured question with options for user input
 		{
-			Schema: mcp.OpenAITool{
-				Type: "function",
-				Function: mcp.OpenAIFunctionDef{
-					Name:        "ask_question",
-					Description: "Ask the user a structured question with selectable options. Use this when you need the user to choose between specific options (e.g. notification channels, language, timezone). The user will see clickable options and can select one or multiple, or type a custom answer.",
-					Parameters: map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"question": map[string]interface{}{
-								"type":        "string",
-								"description": "The question to ask the user",
-							},
-							"options": map[string]interface{}{
-								"type":        "array",
-								"items":       map[string]interface{}{"type": "string"},
-								"description": "List of options for the user to choose from",
-							},
-							"multi_select": map[string]interface{}{
-								"type":        "boolean",
-								"description": "If true, user can select multiple options. Default: false",
-							},
+			Schema: provider.Tool{
+				Name:        "ask_question",
+				Description: "Ask the user a structured question with selectable options. Use this when you need the user to choose between specific options (e.g. notification channels, language, timezone). The user will see clickable options and can select one or multiple, or type a custom answer.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"question": map[string]interface{}{
+							"type":        "string",
+							"description": "The question to ask the user",
 						},
-						"required": []string{"question", "options"},
+						"options": map[string]interface{}{
+							"type":        "array",
+							"items":       map[string]interface{}{"type": "string"},
+							"description": "List of options for the user to choose from",
+						},
+						"multi_select": map[string]interface{}{
+							"type":        "boolean",
+							"description": "If true, user can select multiple options. Default: false",
+						},
 					},
+					"required": []string{"question", "options"},
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {

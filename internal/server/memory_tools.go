@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"tofi-core/internal/mcp"
+	"tofi-core/internal/provider"
 	"tofi-core/internal/storage"
 )
 
@@ -13,25 +14,22 @@ import (
 func (s *Server) buildMemoryTools(userID, cardID string) []mcp.ExtraBuiltinTool {
 	return []mcp.ExtraBuiltinTool{
 		{
-			Schema: mcp.OpenAITool{
-				Type: "function",
-				Function: mcp.OpenAIFunctionDef{
-					Name:        "memory_save",
-					Description: "Save information to long-term memory for future reference. Use this to remember user preferences, task outcomes, learned patterns, error solutions, or any knowledge worth retaining across tasks.",
-					Parameters: map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"content": map[string]interface{}{
-								"type":        "string",
-								"description": "What to remember. Be descriptive and use searchable keywords.",
-							},
-							"tags": map[string]interface{}{
-								"type":        "string",
-								"description": "Comma-separated tags for categorization (e.g. 'user-preference,python,scripting').",
-							},
+			Schema: provider.Tool{
+				Name:        "memory_save",
+				Description: "Save information to long-term memory for future reference. Use this to remember user preferences, task outcomes, learned patterns, error solutions, or any knowledge worth retaining across tasks.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"content": map[string]interface{}{
+							"type":        "string",
+							"description": "What to remember. Be descriptive and use searchable keywords.",
 						},
-						"required": []string{"content"},
+						"tags": map[string]interface{}{
+							"type":        "string",
+							"description": "Comma-separated tags for categorization (e.g. 'user-preference,python,scripting').",
+						},
 					},
+					"required": []string{"content"},
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {
@@ -51,25 +49,22 @@ func (s *Server) buildMemoryTools(userID, cardID string) []mcp.ExtraBuiltinTool 
 			},
 		},
 		{
-			Schema: mcp.OpenAITool{
-				Type: "function",
-				Function: mcp.OpenAIFunctionDef{
-					Name:        "memory_recall",
-					Description: "Search long-term memory for relevant information. Use this at the start of a task to recall user preferences, past learnings, or relevant context.",
-					Parameters: map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"query": map[string]interface{}{
-								"type":        "string",
-								"description": "Search keywords to find relevant memories (e.g. 'python preference', 'email setup').",
-							},
-							"limit": map[string]interface{}{
-								"type":        "integer",
-								"description": "Maximum number of results to return (default: 5, max: 20).",
-							},
+			Schema: provider.Tool{
+				Name:        "memory_recall",
+				Description: "Search long-term memory for relevant information. Use this at the start of a task to recall user preferences, past learnings, or relevant context.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "Search keywords to find relevant memories (e.g. 'python preference', 'email setup').",
 						},
-						"required": []string{"query"},
+						"limit": map[string]interface{}{
+							"type":        "integer",
+							"description": "Maximum number of results to return (default: 5, max: 20).",
+						},
 					},
+					"required": []string{"query"},
 				},
 			},
 			Handler: func(args map[string]interface{}) (string, error) {

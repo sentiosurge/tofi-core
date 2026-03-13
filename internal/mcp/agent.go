@@ -15,11 +15,11 @@ import (
 
 	"tofi-core/internal/executor"
 	"tofi-core/internal/models"
+	"tofi-core/internal/provider"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/tidwall/gjson"
 )
 
 // KanbanUpdater 定义更新看板卡片的接口（避免循环引用 storage 包）
@@ -40,30 +40,26 @@ type SkillTool struct {
 
 // ExtraBuiltinTool allows registering additional built-in tools with custom handlers
 type ExtraBuiltinTool struct {
-	Schema  OpenAITool
+	Schema  provider.Tool
 	Handler func(args map[string]interface{}) (string, error)
 }
 
 // AgentConfig holds the configuration required to run an autonomous agent
 type AgentConfig struct {
-	AI struct {
-		Provider string
-		Model    string
-		Endpoint string
-		APIKey   string
-	}
+	Provider      provider.Provider  // LLM provider (handles all API format differences)
+	Model         string             // Model name (for context window, cost calculation)
 	System        string
 	Prompt        string
-	Messages      []map[string]interface{} // Optional: full conversation history (overrides Prompt if non-empty)
+	Messages      []provider.Message // Optional: full conversation history (overrides Prompt if non-empty)
 	MCPServers    []MCPServerConfig  // Active MCP server connections
-	KanbanCardID  string             // 关联的看板卡片 ID（可选）
+	KanbanCardID  string             // Kanban card ID for progress tracking
 	KanbanUpdater KanbanUpdater      // 看板更新器（可选）
 	SkillTools    []SkillTool        // Installed skills as callable tools
 	ExtraTools    []ExtraBuiltinTool // Additional built-in tools (search_skills, etc.)
-	SandboxDir    string               // Sandbox directory for shell command execution (optional)
-	UserDir       string               // User persistent directory for installed tools (optional)
-	Executor      executor.Executor    // Sandbox executor (nil = use legacy functions)
-	SecretEnv     map[string]string    // Extra env vars injected into sandbox commands (skill secrets)
+	SandboxDir    string             // Sandbox directory for shell command execution (optional)
+	UserDir       string             // User persistent directory for installed tools (optional)
+	Executor      executor.Executor  // Sandbox executor (nil = use legacy functions)
+	SecretEnv     map[string]string  // Extra env vars injected into sandbox commands (skill secrets)
 	OnStreamChunk    func(cardID, delta string) // Optional: called with each content delta during streaming
 	OnToolCall       func(toolName, input, output string, durationMs int64) // Optional: called after each tool execution
 	MaxContextTokens int                                                    // 0 = auto-detect from model name
@@ -77,21 +73,22 @@ type MCPServerConfig struct {
 	Env     map[string]string
 }
 
-// OpenAI Tool Schema Definitions
-type OpenAITool struct {
-	Type     string            `json:"type"`
-	Function OpenAIFunctionDef `json:"function"`
-}
-
-type OpenAIFunctionDef struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Parameters  interface{} `json:"parameters"` // JSON Schema
+// AgentResult holds the result of an agent loop execution.
+type AgentResult struct {
+	Content    string
+	TotalUsage provider.Usage
+	TotalCost  float64
+	Model      string
+	LLMCalls   int
 }
 
 // RunAgentLoop executes the autonomous agent loop (ReAct)
 // It manages MCP clients, tools, and the LLM interaction loop.
-func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error) {
+func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, error) {
+	if cfg.Provider == nil {
+		return nil, fmt.Errorf("provider is required")
+	}
+
 	// 1. Initialize MCP Clients
 	var activeClients []*client.Client
 	var cleanups []func()
@@ -107,14 +104,14 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 		ctx.Log("[Agent] Connecting to MCP server: %s", serverCfg.Name)
 		cli, cleanup, err := setupClient(serverCfg, ctx)
 		if err != nil {
-			return "", fmt.Errorf("failed to connect to MCP server '%s': %v", serverCfg.Name, err)
+			return nil, fmt.Errorf("failed to connect to MCP server '%s': %v", serverCfg.Name, err)
 		}
 		activeClients = append(activeClients, cli)
 		cleanups = append(cleanups, cleanup)
 	}
 
 	// 2. Handshake & List Tools from ALL clients
-	var allTools []OpenAITool
+	var allTools []provider.Tool
 	clientMap := make(map[string]*client.Client) // Map tool name to client
 
 	for i, cli := range activeClients {
@@ -126,70 +123,62 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 
 		_, err := cli.Initialize(context.Background(), initRequest)
 		if err != nil {
-			return "", fmt.Errorf("MCP handshake failed for server %d: %v", i, err)
+			return nil, fmt.Errorf("MCP handshake failed for server %d: %v", i, err)
 		}
 
 		// List Tools
 		toolList, err := cli.ListTools(context.Background(), mcp.ListToolsRequest{})
 		if err != nil {
-			return "", fmt.Errorf("failed to list tools for server %d: %v", i, err)
+			return nil, fmt.Errorf("failed to list tools for server %d: %v", i, err)
 		}
 
 		// Convert and Register
 		converted := convertTools(toolList.Tools)
 		for _, t := range converted {
-			// Check for name collisions? For now, assume unique names or last-win.
-			// TODO: Add namespace prefixes if needed (e.g. "chrome__click")
-			clientMap[t.Function.Name] = cli
+			clientMap[t.Name] = cli
 			allTools = append(allTools, t)
 		}
 	}
 
 	// Add built-in 'wait' tool
-	allTools = append(allTools, OpenAITool{
-		Type: "function",
-		Function: OpenAIFunctionDef{
-			Name:        "wait",
-			Description: "Wait for a specified number of seconds. Use this when waiting for page loads, animations, or dynamic content rendering.",
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"seconds": map[string]interface{}{
-						"type":        "number",
-						"description": "Number of seconds to wait (e.g., 2.5)",
-					},
+	allTools = append(allTools, provider.Tool{
+		Name:        "wait",
+		Description: "Wait for a specified number of seconds. Use this when waiting for page loads, animations, or dynamic content rendering.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"seconds": map[string]interface{}{
+					"type":        "number",
+					"description": "Number of seconds to wait (e.g., 2.5)",
 				},
-				"required": []string{"seconds"},
 			},
+			"required": []string{"seconds"},
 		},
 	})
 
 	// Add built-in 'update_kanban' tool (if kanban card is associated)
 	if cfg.KanbanCardID != "" && cfg.KanbanUpdater != nil {
-		allTools = append(allTools, OpenAITool{
-			Type: "function",
-			Function: OpenAIFunctionDef{
-				Name:        "update_kanban",
-				Description: "Update the progress of the current task on the Kanban board. Use this to report your progress as you work through the task.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"progress": map[string]interface{}{
-							"type":        "number",
-							"description": "Progress percentage (0-100)",
-						},
-						"status": map[string]interface{}{
-							"type":        "string",
-							"description": "Task status: 'working', 'done', or 'failed'",
-							"enum":        []string{"working", "done", "failed"},
-						},
-						"message": map[string]interface{}{
-							"type":        "string",
-							"description": "Brief status message or result summary",
-						},
+		allTools = append(allTools, provider.Tool{
+			Name:        "update_kanban",
+			Description: "Update the progress of the current task on the Kanban board. Use this to report your progress as you work through the task.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"progress": map[string]interface{}{
+						"type":        "number",
+						"description": "Progress percentage (0-100)",
 					},
-					"required": []string{"progress"},
+					"status": map[string]interface{}{
+						"type":        "string",
+						"description": "Task status: 'working', 'done', or 'failed'",
+						"enum":        []string{"working", "done", "failed"},
+					},
+					"message": map[string]interface{}{
+						"type":        "string",
+						"description": "Brief status message or result summary",
+					},
 				},
+				"required": []string{"progress"},
 			},
 		})
 	}
@@ -197,21 +186,18 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 	// Register skill tools (installed skills as callable functions)
 	for _, skill := range cfg.SkillTools {
 		toolName := "run_skill__" + sanitizeToolName(skill.Name)
-		allTools = append(allTools, OpenAITool{
-			Type: "function",
-			Function: OpenAIFunctionDef{
-				Name:        toolName,
-				Description: fmt.Sprintf("Execute the '%s' skill: %s", skill.Name, skill.Description),
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"input": map[string]interface{}{
-							"type":        "string",
-							"description": "The input/request to send to this skill",
-						},
+		allTools = append(allTools, provider.Tool{
+			Name:        toolName,
+			Description: fmt.Sprintf("Execute the '%s' skill: %s", skill.Name, skill.Description),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"input": map[string]interface{}{
+						"type":        "string",
+						"description": "The input/request to send to this skill",
 					},
-					"required": []string{"input"},
 				},
+				"required": []string{"input"},
 			},
 		})
 	}
@@ -220,36 +206,39 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 	extraHandlers := make(map[string]func(args map[string]interface{}) (string, error))
 	for _, et := range cfg.ExtraTools {
 		allTools = append(allTools, et.Schema)
-		extraHandlers[et.Schema.Function.Name] = et.Handler
+		extraHandlers[et.Schema.Name] = et.Handler
 	}
 
-	// Register sandbox_exec tool (if sandbox is configured)
+	// Register sandbox_exec + file tools (if sandbox is configured)
 	if cfg.SandboxDir != "" {
-		allTools = append(allTools, OpenAITool{
-			Type: "function",
-			Function: OpenAIFunctionDef{
-				Name: "sandbox_exec",
-				Description: "Execute a shell command in an isolated sandbox directory (macOS). " +
-					"Use this to run python3, node, npx, curl, git clone, etc. " +
-					"Install packages with 'python3 -m pip install <pkg>' (NEVER bare 'pip'). " +
-					"For multi-line Python use heredoc: python3 <<'PYEOF'\\n...\\nPYEOF. " +
-					"The sandbox is isolated — packages persist across tasks.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"command": map[string]interface{}{
-							"type":        "string",
-							"description": "Shell command to execute (e.g., 'npx create-react-app myapp', 'uv run script.py')",
-						},
-						"timeout": map[string]interface{}{
-							"type":        "number",
-							"description": "Timeout in seconds (default: 60, max: 120)",
-						},
+		allTools = append(allTools, provider.Tool{
+			Name: "sandbox_exec",
+			Description: "Execute a shell command in an isolated sandbox directory (macOS). " +
+				"Use this to run python3, node, npx, curl, git clone, etc. " +
+				"Install packages with 'python3 -m pip install <pkg>' (NEVER bare 'pip'). " +
+				"For multi-line Python use heredoc: python3 <<'PYEOF'\\n...\\nPYEOF. " +
+				"The sandbox is isolated — packages persist across tasks.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"command": map[string]interface{}{
+						"type":        "string",
+						"description": "Shell command to execute (e.g., 'npx create-react-app myapp', 'uv run script.py')",
 					},
-					"required": []string{"command"},
+					"timeout": map[string]interface{}{
+						"type":        "number",
+						"description": "Timeout in seconds (default: 60, max: 120)",
+					},
 				},
+				"required": []string{"command"},
 			},
 		})
+
+		// Register file_read and file_write tools
+		for _, ft := range buildFileTools(cfg.SandboxDir) {
+			allTools = append(allTools, ft.Schema)
+			extraHandlers[ft.Schema.Name] = ft.Handler
+		}
 	}
 
 	// Validate all tools before use
@@ -277,90 +266,75 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 - **WEB AUTOMATION**: Modern websites often use complex, non-standard input fields that confuse standard 'fill' tools. If 'fill' fails (especially with "option not found"), assume the tool is incompatible. Immediately switch to 'evaluate_script' (to set .value) or 'click' + 'press_key'.
 `
 
-	var messages []map[string]interface{}
+	// Build messages
+	var messages []provider.Message
 	if len(cfg.Messages) > 0 {
-		// Use provided conversation history, prepend system prompt
-		messages = append([]map[string]interface{}{
-			{"role": "system", "content": systemPrompt},
-		}, cfg.Messages...)
+		messages = make([]provider.Message, len(cfg.Messages))
+		copy(messages, cfg.Messages)
 	} else {
-		messages = []map[string]interface{}{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": cfg.Prompt},
+		messages = []provider.Message{
+			{Role: "user", Content: cfg.Prompt},
 		}
 	}
 
 	// 4. Start Loop
 	maxSteps := 30
+	totalUsage := provider.Usage{}
+	llmCalls := 0
+
 	for step := 1; step <= maxSteps; step++ {
-		var content, reasoning string
-		var hasToolCalls bool
-		var toolCallsRaw string
-		var inputTokens, outputTokens int64
+		req := &provider.ChatRequest{
+			Model:    cfg.Model,
+			System:   systemPrompt,
+			Messages: messages,
+			Tools:    allTools,
+		}
+
+		var resp *provider.ChatResponse
+		var err error
 
 		if cfg.OnStreamChunk != nil {
 			// Streaming mode — wrap callback to filter out <think> blocks
 			filter := &thinkStreamFilter{forward: func(delta string) {
 				cfg.OnStreamChunk(cfg.KanbanCardID, delta)
 			}}
-			sr, err := callLLMStreaming(cfg, messages, allTools, func(delta string) {
-				filter.Write(delta)
+			resp, err = cfg.Provider.ChatStream(context.Background(), req, func(delta provider.StreamDelta) {
+				if delta.Content != "" {
+					filter.Write(delta.Content)
+				}
 			})
-			if err != nil {
-				return "", fmt.Errorf("LLM call failed: %v", err)
-			}
-			content = sr.Content
-			reasoning = sr.Reasoning
-			hasToolCalls = sr.HasToolCalls
-			toolCallsRaw = sr.ToolCallsRaw
-			inputTokens = sr.InputTokens
-			outputTokens = sr.OutputTokens
 		} else {
-			// Non-streaming fallback
-			respBody, err := callLLM(cfg, messages, allTools)
-			if err != nil {
-				return "", fmt.Errorf("LLM call failed: %v", err)
-			}
-			content = gjson.Get(respBody, "choices.0.message.content").String()
-			reasoning = gjson.Get(respBody, "choices.0.message.reasoning_content").String()
-			inputTokens = gjson.Get(respBody, "usage.prompt_tokens").Int()
-			outputTokens = gjson.Get(respBody, "usage.completion_tokens").Int()
-
-			tc := gjson.Get(respBody, "choices.0.message.tool_calls")
-			if tc.Exists() {
-				hasToolCalls = true
-				toolCallsRaw = tc.Raw
-			}
+			// Non-streaming mode
+			resp, err = cfg.Provider.Chat(context.Background(), req)
 		}
+
+		if err != nil {
+			return nil, fmt.Errorf("LLM call failed: %v", err)
+		}
+
+		llmCalls++
+		totalUsage.Add(resp.Usage)
 
 		// Append Assistant Message
-		assistantMsg := map[string]interface{}{
-			"role":    "assistant",
-			"content": content,
-		}
-		if reasoning != "" {
-			assistantMsg["reasoning_content"] = reasoning
-		}
-		if hasToolCalls {
-			var tcInterface []interface{}
-			if err := json.Unmarshal([]byte(toolCallsRaw), &tcInterface); err == nil {
-				assistantMsg["tool_calls"] = tcInterface
-			}
+		assistantMsg := provider.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
 		}
 		messages = append(messages, assistantMsg)
 
 		// Log Thinking
-		if reasoning != "" {
-			ctx.Log("<think>\n%s\n</think>", reasoning)
+		if resp.Reasoning != "" {
+			ctx.Log("<think>\n%s\n</think>", resp.Reasoning)
 		}
-		if content != "" {
-			ctx.Log("<think>\n%s\n</think>", content)
+		if resp.Content != "" {
+			ctx.Log("<think>\n%s\n</think>", resp.Content)
 		}
 
 		// Check for Termination
-		if !hasToolCalls {
+		if !resp.HasToolCalls() {
 			// Strip <think> tags — if the model only returned thinking, it's not a real answer
-			cleanContent := stripThinkTags(content)
+			cleanContent := stripThinkTags(resp.Content)
 
 			if cleanContent != "" {
 				// Record the final "Generating Result" step
@@ -369,31 +343,37 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 						"name":   "Generating Result",
 						"status": "done",
 					}
-					if inputTokens > 0 || outputTokens > 0 {
-						stepData["input_tokens"] = inputTokens
-						stepData["output_tokens"] = outputTokens
+					if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
+						stepData["input_tokens"] = resp.Usage.InputTokens
+						stepData["output_tokens"] = resp.Usage.OutputTokens
 					}
 					cfg.KanbanUpdater.AppendKanbanStep(cfg.KanbanCardID, stepData)
 				}
 				ctx.Log("[Agent] Finished.")
-				return cleanContent, nil
+				return &AgentResult{
+					Content:    cleanContent,
+					TotalUsage: totalUsage,
+					TotalCost:  provider.CalculateCost(cfg.Model, totalUsage),
+					Model:      cfg.Model,
+					LLMCalls:   llmCalls,
+				}, nil
 			}
 
 			// Content was only <think> tags (model was reasoning but didn't produce a response)
 			// Re-prompt the model to continue
 			ctx.Log("[Agent] Model returned only <think> content, prompting to continue...")
-			messages = append(messages, map[string]interface{}{
-				"role":    "user",
-				"content": "Please continue. Use the available tools to get the information needed, then provide your answer.",
+			messages = append(messages, provider.Message{
+				Role:    "user",
+				Content: "Please continue. Use the available tools to get the information needed, then provide your answer.",
 			})
 			continue
 		}
 
 		// Execute Tools
-		for _, tc := range gjson.Parse(toolCallsRaw).Array() {
-			fnName := tc.Get("function.name").String()
-			fnArgs := tc.Get("function.arguments").String()
-			callID := tc.Get("id").String()
+		for _, tc := range resp.ToolCalls {
+			fnName := tc.Name
+			fnArgs := tc.Arguments
+			callID := tc.ID
 
 			ctx.Log("<tool_call name=\" %s \">\n%s\n</tool_call>", fnName, fnArgs)
 
@@ -413,9 +393,9 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 					}
 					stepData["args"] = argsStr
 				}
-				if inputTokens > 0 || outputTokens > 0 {
-					stepData["input_tokens"] = inputTokens
-					stepData["output_tokens"] = outputTokens
+				if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
+					stepData["input_tokens"] = resp.Usage.InputTokens
+					stepData["output_tokens"] = resp.Usage.OutputTokens
 				}
 				cfg.KanbanUpdater.AppendKanbanStep(cfg.KanbanCardID, stepData)
 			}
@@ -424,11 +404,11 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 			var argsMap map[string]interface{}
 			if err := json.Unmarshal([]byte(fnArgs), &argsMap); err != nil {
 				errMsg := fmt.Sprintf("Error parsing arguments for %s: %v", fnName, err)
-				messages = append(messages, map[string]interface{}{
-					"role":         "tool",
-					"tool_call_id": callID,
-					"name":         fnName,
-					"content":      errMsg,
+				messages = append(messages, provider.Message{
+					Role:       "tool",
+					Content:    errMsg,
+					ToolCallID: callID,
+					ToolName:   fnName,
 				})
 				ctx.Log("[Error] %s", errMsg)
 				continue
@@ -454,11 +434,11 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 				ctx.Log("[Wait] Sleeping for %.1f seconds...", secVal)
 				time.Sleep(time.Duration(secVal * float64(time.Second)))
 
-				messages = append(messages, map[string]interface{}{
-					"role":         "tool",
-					"tool_call_id": callID,
-					"name":         fnName,
-					"content":      fmt.Sprintf("Waited for %.1f seconds.", secVal),
+				messages = append(messages, provider.Message{
+					Role:       "tool",
+					Content:    fmt.Sprintf("Waited for %.1f seconds.", secVal),
+					ToolCallID: callID,
+					ToolName:   fnName,
 				})
 				continue
 			}
@@ -485,11 +465,11 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 				}
 				ctx.Log("[Kanban] %s", resultMsg)
 
-				messages = append(messages, map[string]interface{}{
-					"role":         "tool",
-					"tool_call_id": callID,
-					"name":         fnName,
-					"content":      resultMsg,
+				messages = append(messages, provider.Message{
+					Role:       "tool",
+					Content:    resultMsg,
+					ToolCallID: callID,
+					ToolName:   fnName,
 				})
 				continue
 			}
@@ -522,11 +502,11 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 					}
 				}
 				ctx.Log("[Sandbox] %s → %s", truncate(command, 80), truncate(resultMsg, 200))
-				messages = append(messages, map[string]interface{}{
-					"role":         "tool",
-					"tool_call_id": callID,
-					"name":         fnName,
-					"content":      resultMsg,
+				messages = append(messages, provider.Message{
+					Role:       "tool",
+					Content:    resultMsg,
+					ToolCallID: callID,
+					ToolName:   fnName,
 				})
 				markStepDone(resultMsg)
 				continue
@@ -546,11 +526,11 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 					}
 				}
 				ctx.Log("[ExtraTool:%s] %s", fnName, truncate(resultMsg, 200))
-				messages = append(messages, map[string]interface{}{
-					"role":         "tool",
-					"tool_call_id": callID,
-					"name":         fnName,
-					"content":      resultMsg,
+				messages = append(messages, provider.Message{
+					Role:       "tool",
+					Content:    resultMsg,
+					ToolCallID: callID,
+					ToolName:   fnName,
 				})
 				markStepDone(resultMsg)
 				continue
@@ -586,7 +566,7 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 						}
 					}
 
-					result, err := executeSkillSubCall(cfg, *matchedSkill, input)
+					result, err := executeSkillSubCall(cfg.Provider, cfg.Model, *matchedSkill, input)
 					resultMsg := ""
 					if err != nil {
 						// Build diagnostic info for the agent
@@ -613,19 +593,19 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 						resultMsg = result
 					}
 					ctx.Log("[Skill:%s] Result: %s", matchedSkill.Name, truncate(resultMsg, 200))
-					messages = append(messages, map[string]interface{}{
-						"role":         "tool",
-						"tool_call_id": callID,
-						"name":         fnName,
-						"content":      resultMsg,
+					messages = append(messages, provider.Message{
+						Role:       "tool",
+						Content:    resultMsg,
+						ToolCallID: callID,
+						ToolName:   fnName,
 					})
 					markStepDone(resultMsg)
 				} else {
-					messages = append(messages, map[string]interface{}{
-						"role":         "tool",
-						"tool_call_id": callID,
-						"name":         fnName,
-						"content":      fmt.Sprintf("Skill '%s' not found", skillKey),
+					messages = append(messages, provider.Message{
+						Role:       "tool",
+						Content:    fmt.Sprintf("Skill '%s' not found", skillKey),
+						ToolCallID: callID,
+						ToolName:   fnName,
 					})
 				}
 				continue
@@ -635,11 +615,11 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 			cli, exists := clientMap[fnName]
 			if !exists {
 				errMsg := fmt.Sprintf("Tool '%s' not found.", fnName)
-				messages = append(messages, map[string]interface{}{
-					"role":         "tool",
-					"tool_call_id": callID,
-					"name":         fnName,
-					"content":      errMsg,
+				messages = append(messages, provider.Message{
+					Role:       "tool",
+					Content:    errMsg,
+					ToolCallID: callID,
+					ToolName:   fnName,
 				})
 				ctx.Log("[Error] %s", errMsg)
 				continue
@@ -672,14 +652,14 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 					}
 				}
 				outputText = sb.String()
-			ctx.Log("[Result] %s", truncate(outputText, 100))
+				ctx.Log("[Result] %s", truncate(outputText, 100))
 			}
-				
-				messages = append(messages, map[string]interface{}{
-				"role":         "tool",
-				"tool_call_id": callID,
-				"name":         fnName,
-				"content":      outputText,
+
+			messages = append(messages, provider.Message{
+				Role:       "tool",
+				Content:    outputText,
+				ToolCallID: callID,
+				ToolName:   fnName,
 			})
 			markStepDone(outputText)
 		}
@@ -687,25 +667,24 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 		// Context compaction check — after tool execution, before next iteration
 		contextWindow := cfg.MaxContextTokens
 		if contextWindow == 0 {
-			contextWindow = getContextWindow(cfg.AI.Model)
+			contextWindow = provider.GetContextWindow(cfg.Model)
 		}
 		compactThreshold := int64(float64(contextWindow) * 0.80)
 
-		if inputTokens > compactThreshold && len(messages) > 4 {
-			ctx.Log("[Agent] Context compaction triggered: %d tokens > %d threshold", inputTokens, compactThreshold)
+		if resp.Usage.InputTokens > compactThreshold && len(messages) > 4 {
+			ctx.Log("[Agent] Context compaction triggered: %d tokens > %d threshold", resp.Usage.InputTokens, compactThreshold)
 
-			summary, compactErr := compactMessages(cfg, messages)
+			summary, compactErr := compactMessages(cfg.Provider, cfg.Model, messages)
 			if compactErr != nil {
 				ctx.Log("[Agent] Compaction failed: %v", compactErr)
 			} else {
 				originalCount := len(messages)
-				originalTokens := int(inputTokens)
-				// Keep system prompt (messages[0]) + last 2 messages
-				kept := make([]map[string]interface{}, len(messages[len(messages)-2:]))
+				originalTokens := int(resp.Usage.InputTokens)
+				// Keep last 2 messages
+				kept := make([]provider.Message, len(messages[len(messages)-2:]))
 				copy(kept, messages[len(messages)-2:])
-				messages = []map[string]interface{}{
-					messages[0],
-					{"role": "user", "content": fmt.Sprintf("<context_summary>\n%s\n</context_summary>\n\nThe above is a summary of our conversation so far. Please continue from where we left off.", summary)},
+				messages = []provider.Message{
+					{Role: "user", Content: fmt.Sprintf("<context_summary>\n%s\n</context_summary>\n\nThe above is a summary of our conversation so far. Please continue from where we left off.", summary)},
 				}
 				messages = append(messages, kept...)
 
@@ -721,75 +700,61 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (string, error)
 	// Max steps fallback
 	lastContent := ""
 	if len(messages) > 0 {
-		if lastMsg, ok := messages[len(messages)-1]["content"].(string); ok {
-			lastContent = lastMsg
+		lastMsg := messages[len(messages)-1]
+		if lastMsg.Content != "" {
+			lastContent = lastMsg.Content
 		}
 	}
 	if lastContent != "" {
 		ctx.Log("[Agent] Max steps reached. Returning partial result.")
-		return lastContent, nil
+		return &AgentResult{
+			Content:    lastContent,
+			TotalUsage: totalUsage,
+			TotalCost:  provider.CalculateCost(cfg.Model, totalUsage),
+			Model:      cfg.Model,
+			LLMCalls:   llmCalls,
+		}, nil
 	}
 
-	return "", fmt.Errorf("max steps (%d) reached without final answer", maxSteps)
-}
-
-// getContextWindow returns the context window size for a given model name.
-func getContextWindow(model string) int {
-	switch {
-	case strings.Contains(model, "gpt-4o"):
-		return 128000
-	case strings.Contains(model, "gpt-4-turbo"):
-		return 128000
-	case strings.Contains(model, "gpt-4"):
-		return 8192
-	case strings.Contains(model, "gpt-3.5"):
-		return 16385
-	case strings.Contains(model, "claude"):
-		return 200000
-	case strings.Contains(model, "deepseek"):
-		return 64000
-	default:
-		return 128000
-	}
+	return nil, fmt.Errorf("max steps (%d) reached without final answer", maxSteps)
 }
 
 // compactMessages uses the same LLM to generate a concise summary of the conversation.
-func compactMessages(cfg AgentConfig, messages []map[string]interface{}) (string, error) {
+func compactMessages(p provider.Provider, model string, messages []provider.Message) (string, error) {
 	var conversationText strings.Builder
-	for _, msg := range messages[1:] { // skip system prompt
-		role, _ := msg["role"].(string)
-		content, _ := msg["content"].(string)
-		if content == "" || role == "system" {
+	for _, msg := range messages {
+		if msg.Content == "" {
 			continue
 		}
-		conversationText.WriteString(fmt.Sprintf("[%s]: %s\n\n", role, content))
+		conversationText.WriteString(fmt.Sprintf("[%s]: %s\n\n", msg.Role, msg.Content))
 	}
 
-	summaryMessages := []map[string]interface{}{
-		{"role": "system", "content": "You are a helpful assistant that creates concise conversation summaries."},
-		{"role": "user", "content": fmt.Sprintf(
-			"Summarize the following conversation concisely. Preserve:\n"+
-				"1. Key decisions and conclusions\n"+
-				"2. Important facts, data, and code snippets mentioned\n"+
-				"3. Current task context and what was being worked on\n"+
-				"4. Any pending questions or next steps\n\n"+
-				"Conversation:\n%s", conversationText.String())},
+	req := &provider.ChatRequest{
+		Model:  model,
+		System: "You are a helpful assistant that creates concise conversation summaries.",
+		Messages: []provider.Message{
+			{Role: "user", Content: fmt.Sprintf(
+				"Summarize the following conversation concisely. Preserve:\n"+
+					"1. Key decisions and conclusions\n"+
+					"2. Important facts, data, and code snippets mentioned\n"+
+					"3. Current task context and what was being worked on\n"+
+					"4. Any pending questions or next steps\n\n"+
+					"Conversation:\n%s", conversationText.String())},
+		},
 	}
 
-	respBody, err := callLLM(cfg, summaryMessages, nil)
+	resp, err := p.Chat(context.Background(), req)
 	if err != nil {
 		return "", err
 	}
-	return gjson.Get(respBody, "choices.0.message.content").String(), nil
+	return resp.Content, nil
 }
 
 // estimateTokens provides a rough token count estimate for messages.
-func estimateTokens(messages []map[string]interface{}) int {
+func estimateTokens(messages []provider.Message) int {
 	total := 0
 	for _, msg := range messages {
-		if content, ok := msg["content"].(string); ok {
-			total += len(content) / 4
-		}
+		total += len(msg.Content) / 4
 	}
 	return total
 }
@@ -883,11 +848,6 @@ func setupClient(cfg MCPServerConfig, ctx *models.ExecutionContext) (*client.Cli
 	// Create Transport
 	tr := transport.NewStdio(cfg.Command, env, processedArgs...)
 
-	// Note: transport.Stdio doesn't expose a way to set Dir directly easily 
-	// because it manages its own *exec.Cmd. 
-	// However, we can use reflection hack again or just rely on the absolute path injection.
-	// Most MCP servers take the root as an argument.
-
 	if err := tr.Start(context.Background()); err != nil {
 		return nil, nil, fmt.Errorf("failed to start stdio transport: %v", err)
 	}
@@ -937,8 +897,8 @@ func setupClient(cfg MCPServerConfig, ctx *models.ExecutionContext) (*client.Cli
 	return cli, cleanup, nil
 }
 
-func convertTools(mcpTools []mcp.Tool) []OpenAITool {
-	var result []OpenAITool
+func convertTools(mcpTools []mcp.Tool) []provider.Tool {
+	var result []provider.Tool
 	for _, t := range mcpTools {
 		var schemaMap map[string]interface{}
 		jsonBytes, err := json.Marshal(t.InputSchema)
@@ -959,13 +919,13 @@ func convertTools(mcpTools []mcp.Tool) []OpenAITool {
 			}
 		}
 
-		// Sanitize tool name for OpenAI compatibility (a-z, 0-9, _, -)
+		// Sanitize tool name for compatibility (a-z, 0-9, _, -)
 		name := sanitizeToolName(t.Name)
 		if name == "" {
 			log.Printf("[Warn] Skipping tool with empty name (original: %q)", t.Name)
 			continue
 		}
-		// OpenAI max function name length is 64
+		// Max function name length is 64
 		if len(name) > 64 {
 			name = name[:64]
 		}
@@ -975,43 +935,40 @@ func convertTools(mcpTools []mcp.Tool) []OpenAITool {
 		if desc == "" {
 			desc = "Tool: " + name
 		}
-		// Truncate overly long descriptions (OpenAI has limits)
+		// Truncate overly long descriptions
 		if len(desc) > 1024 {
 			desc = desc[:1021] + "..."
 		}
 
-		result = append(result, OpenAITool{
-			Type: "function",
-			Function: OpenAIFunctionDef{
-				Name:        name,
-				Description: desc,
-				Parameters:  schemaMap,
-			},
+		result = append(result, provider.Tool{
+			Name:        name,
+			Description: desc,
+			Parameters:  schemaMap,
 		})
 	}
 	return result
 }
 
-// validateTools checks and fixes tool definitions before sending to OpenAI.
-func validateTools(tools []OpenAITool) []OpenAITool {
-	var valid []OpenAITool
+// validateTools checks and fixes tool definitions before use.
+func validateTools(tools []provider.Tool) []provider.Tool {
+	var valid []provider.Tool
 	for _, t := range tools {
-		// Ensure function name is valid
-		if t.Function.Name == "" {
+		// Ensure name is valid
+		if t.Name == "" {
 			continue
 		}
-		if len(t.Function.Name) > 64 {
-			t.Function.Name = t.Function.Name[:64]
+		if len(t.Name) > 64 {
+			t.Name = t.Name[:64]
 		}
 
 		// Ensure parameters is a valid object schema
-		if t.Function.Parameters == nil {
-			t.Function.Parameters = map[string]interface{}{
+		if t.Parameters == nil {
+			t.Parameters = map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
 			}
 		}
-		if params, ok := t.Function.Parameters.(map[string]interface{}); ok {
+		if params, ok := t.Parameters.(map[string]interface{}); ok {
 			if _, hasType := params["type"]; !hasType {
 				params["type"] = "object"
 			}
@@ -1021,169 +978,16 @@ func validateTools(tools []OpenAITool) []OpenAITool {
 		}
 
 		// Ensure description exists
-		if t.Function.Description == "" {
-			t.Function.Description = "Tool: " + t.Function.Name
+		if t.Description == "" {
+			t.Description = "Tool: " + t.Name
 		}
-		if len(t.Function.Description) > 1024 {
-			t.Function.Description = t.Function.Description[:1021] + "..."
+		if len(t.Description) > 1024 {
+			t.Description = t.Description[:1021] + "..."
 		}
 
 		valid = append(valid, t)
 	}
 	return valid
-}
-
-func callLLM(cfg AgentConfig, messages []map[string]interface{}, tools []OpenAITool) (string, error) {
-	headers := map[string]string{
-		"Content-Type":  "application/json",
-		"Authorization": "Bearer " + cfg.AI.APIKey,
-	}
-
-	payload := map[string]interface{}{
-		"model":    cfg.AI.Model,
-		"messages": messages,
-	}
-
-	if len(tools) > 0 {
-		// Validate tools before sending
-		tools = validateTools(tools)
-		payload["tools"] = tools
-		payload["parallel_tool_calls"] = false // Force sequential execution
-	}
-
-	resp, err := executor.PostJSON(cfg.AI.Endpoint, headers, payload, 120)
-	if err != nil && strings.Contains(err.Error(), "400") {
-		// Log tool names for debugging Invalid tools errors
-		var toolNames []string
-		for _, t := range tools {
-			toolNames = append(toolNames, t.Function.Name)
-		}
-		log.Printf("[LLM Error 400] Tools sent: %v", toolNames)
-		log.Printf("[LLM Error 400] Full error: %s", err.Error())
-	}
-	return resp, err
-}
-
-// StreamingResult holds the aggregated result from a streaming LLM call
-type StreamingResult struct {
-	Content      string
-	Reasoning    string
-	ToolCallsRaw string // JSON array of tool_calls (empty if none)
-	HasToolCalls bool
-	InputTokens  int64
-	OutputTokens int64
-}
-
-// callLLMStreaming calls the LLM with stream:true and returns aggregated results.
-// onChunk is called with each content delta (only when no tool_calls detected).
-func callLLMStreaming(cfg AgentConfig, messages []map[string]interface{}, tools []OpenAITool, onChunk func(string)) (*StreamingResult, error) {
-	headers := map[string]string{
-		"Content-Type":  "application/json",
-		"Authorization": "Bearer " + cfg.AI.APIKey,
-	}
-
-	payload := map[string]interface{}{
-		"model":    cfg.AI.Model,
-		"messages": messages,
-		"stream":   true,
-		"stream_options": map[string]interface{}{
-			"include_usage": true,
-		},
-	}
-
-	if len(tools) > 0 {
-		tools = validateTools(tools)
-		payload["tools"] = tools
-		payload["parallel_tool_calls"] = false
-	}
-
-	result := &StreamingResult{}
-	var contentBuf strings.Builder
-
-	// Tool call accumulation: index → {id, name, argsBuf}
-	type tcAccum struct {
-		ID   string
-		Name string
-		Args strings.Builder
-	}
-	toolCallMap := make(map[int]*tcAccum)
-
-	err := executor.PostJSONStream(cfg.AI.Endpoint, headers, payload, 120, func(chunk string) error {
-		delta := gjson.Get(chunk, "choices.0.delta")
-
-		// Content delta
-		if cd := delta.Get("content"); cd.Exists() && cd.String() != "" {
-			text := cd.String()
-			contentBuf.WriteString(text)
-			if !result.HasToolCalls && onChunk != nil {
-				onChunk(text)
-			}
-		}
-
-		// Reasoning delta
-		if rd := delta.Get("reasoning_content"); rd.Exists() && rd.String() != "" {
-			result.Reasoning += rd.String()
-		}
-
-		// Tool calls delta
-		if tc := delta.Get("tool_calls"); tc.Exists() {
-			result.HasToolCalls = true
-			for _, call := range tc.Array() {
-				idx := int(call.Get("index").Int())
-				acc, ok := toolCallMap[idx]
-				if !ok {
-					acc = &tcAccum{}
-					toolCallMap[idx] = acc
-				}
-				if id := call.Get("id"); id.Exists() && id.String() != "" {
-					acc.ID = id.String()
-				}
-				if fn := call.Get("function.name"); fn.Exists() && fn.String() != "" {
-					acc.Name = fn.String()
-				}
-				if args := call.Get("function.arguments"); args.Exists() {
-					acc.Args.WriteString(args.String())
-				}
-			}
-		}
-
-		// Usage (last chunk)
-		if usage := gjson.Get(chunk, "usage"); usage.Exists() {
-			result.InputTokens = usage.Get("prompt_tokens").Int()
-			result.OutputTokens = usage.Get("completion_tokens").Int()
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("streaming LLM call failed: %v", err)
-	}
-
-	result.Content = contentBuf.String()
-
-	// Reconstruct tool_calls JSON array for compatibility with non-streaming code path
-	if result.HasToolCalls && len(toolCallMap) > 0 {
-		var tcArray []map[string]interface{}
-		for i := 0; i < len(toolCallMap); i++ {
-			acc := toolCallMap[i]
-			if acc == nil {
-				continue
-			}
-			tcArray = append(tcArray, map[string]interface{}{
-				"id":   acc.ID,
-				"type": "function",
-				"function": map[string]interface{}{
-					"name":      acc.Name,
-					"arguments": acc.Args.String(),
-				},
-			})
-		}
-		raw, _ := json.Marshal(tcArray)
-		result.ToolCallsRaw = string(raw)
-	}
-
-	return result, nil
 }
 
 func truncate(s string, n int) string {
@@ -1206,7 +1010,7 @@ func sanitizeToolName(name string) string {
 
 // executeSkillSubCall runs a skill by doing a sub-LLM call with the skill's instructions.
 // Returns structured output: message (informational) + commands (to execute in sandbox).
-func executeSkillSubCall(cfg AgentConfig, skill SkillTool, input string) (string, error) {
+func executeSkillSubCall(p provider.Provider, model string, skill SkillTool, input string) (string, error) {
 	instructions := skill.Instructions
 
 	// 展开 {baseDir} 占位符为沙箱内的相对路径
@@ -1250,15 +1054,19 @@ Rules:
 - NO grep -P (Perl regex) — macOS grep does not support it. Use grep -E or sed instead
 ` + constraintBlock
 
-	messages := []map[string]interface{}{
-		{"role": "system", "content": systemPrompt},
-		{"role": "user", "content": input},
+	req := &provider.ChatRequest{
+		Model:  model,
+		System: systemPrompt,
+		Messages: []provider.Message{
+			{Role: "user", Content: input},
+		},
 	}
-	resp, err := callLLM(cfg, messages, nil)
+
+	resp, err := p.Chat(context.Background(), req)
 	if err != nil {
 		return "", fmt.Errorf("skill sub-call LLM failed for '%s': %v. The skill's sub-LLM call could not complete. Try accomplishing the goal with sandbox_exec directly", skill.Name, err)
 	}
-	content := gjson.Get(resp, "choices.0.message.content").String()
+	content := resp.Content
 	if content == "" {
 		return "Skill returned empty response", nil
 	}
@@ -1275,22 +1083,23 @@ Rules:
 		}
 	}
 
-	msg := gjson.Get(content, "message").String()
-	cmds := gjson.Get(content, "commands")
-
-	if msg != "" || cmds.Exists() {
+	var parsed struct {
+		Message  string   `json:"message"`
+		Commands []string `json:"commands"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err == nil && (parsed.Message != "" || len(parsed.Commands) > 0) {
 		// Successfully parsed structured response
 		var result strings.Builder
-		if msg != "" {
-			result.WriteString(msg)
+		if parsed.Message != "" {
+			result.WriteString(parsed.Message)
 		}
-		if cmds.IsArray() && len(cmds.Array()) > 0 {
+		if len(parsed.Commands) > 0 {
 			if result.Len() > 0 {
 				result.WriteString("\n\n")
 			}
 			result.WriteString("[COMMANDS TO EXECUTE]\n")
-			for _, cmd := range cmds.Array() {
-				result.WriteString("$ " + cmd.String() + "\n")
+			for _, cmd := range parsed.Commands {
+				result.WriteString("$ " + cmd + "\n")
 			}
 			result.WriteString("\n[Execute these commands using sandbox_exec to get actual results.]")
 		}
