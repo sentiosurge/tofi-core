@@ -23,9 +23,19 @@ except ImportError:
     USE_TRAFILATURA = False
 
 CHROME_PATHS = {
-    "Darwin": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "Linux": "/usr/bin/google-chrome",
-    "Windows": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    "Darwin": [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ],
+    "Linux": [
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/snap/bin/chromium",
+    ],
+    "Windows": [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    ],
 }
 
 
@@ -33,12 +43,12 @@ def find_chrome():
     """Find Chrome/Chromium binary. Returns path or None."""
     system = platform.system()
 
-    # Check default path first
-    default_path = CHROME_PATHS.get(system)
-    if default_path and os.path.isfile(default_path):
-        return default_path
+    # Check known paths first
+    for path in CHROME_PATHS.get(system, []):
+        if os.path.isfile(path):
+            return path
 
-    # Search common names
+    # Search common names via which/where
     for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
         try:
             result = subprocess.run(
@@ -55,6 +65,12 @@ def find_chrome():
 
 def fetch_with_chrome(url, chrome_path, max_chars=12000):
     """Fetch a URL using headless Chrome --dump-dom, then extract text."""
+    # Use a realistic User-Agent to avoid 403 blocks
+    user_agent = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+
     try:
         result = subprocess.run(
             [
@@ -65,6 +81,8 @@ def fetch_with_chrome(url, chrome_path, max_chars=12000):
                 "--disable-gpu",
                 "--disable-extensions",
                 "--disable-background-networking",
+                "--disable-blink-features=AutomationControlled",
+                f"--user-agent={user_agent}",
                 "--timeout=15000",
                 url,
             ],
