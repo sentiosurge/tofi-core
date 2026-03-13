@@ -196,8 +196,7 @@ func (s *Server) executeWish(card *storage.KanbanCardRecord, userID, requestedMo
 
 	// 3. 执行 — 所有 Provider 都走 Agent Loop (tool calling)
 	log.Printf("🤖 [wish:%s] Using Agent Loop (provider=%s, model=%s)", cardID[:8], providerName, model)
-	var result string
-	result, err = s.executeWithAgent(card, installedSkills, apiKey, model, providerName, userID, updater)
+	agentResult, err := s.executeWithAgent(card, installedSkills, apiKey, model, providerName, userID, updater)
 
 	if err != nil {
 		log.Printf("❌ [wish:%s] Execution failed: %v", cardID[:8], err)
@@ -205,14 +204,19 @@ func (s *Server) executeWish(card *storage.KanbanCardRecord, userID, requestedMo
 		return
 	}
 
-	// 4. 完成
-	log.Printf("✅ [wish:%s] Wish completed", cardID[:8])
-	updater.UpdateKanbanCardBySystem(cardID, "done", 100, result)
+	// 4. 完成 — save result and usage
+	log.Printf("✅ [wish:%s] Wish completed (tokens: %d in / %d out, cost: $%.4f, calls: %d)",
+		cardID[:8], agentResult.TotalUsage.InputTokens, agentResult.TotalUsage.OutputTokens,
+		agentResult.TotalCost, agentResult.LLMCalls)
+	updater.UpdateKanbanCardBySystem(cardID, "done", 100, agentResult.Content)
+	s.db.UpdateKanbanCardUsage(cardID, agentResult.Model,
+		agentResult.TotalUsage.InputTokens, agentResult.TotalUsage.OutputTokens,
+		agentResult.TotalCost, agentResult.LLMCalls)
 }
 
 // executeWithAgent 使用 Agent Loop (ReAct tool calling) 执行 Wish
 // Skills 被注册为可调用的工具，LLM 可以决定是否调用
-func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkills []*storage.SkillRecord, apiKey, model, providerName, userID string, updater mcp.KanbanUpdater) (string, error) {
+func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkills []*storage.SkillRecord, apiKey, model, providerName, userID string, updater mcp.KanbanUpdater) (*mcp.AgentResult, error) {
 	cardID := card.ID
 
 	// 1. Tool Selection: if too many skills, use LLM to pick relevant ones
@@ -291,7 +295,7 @@ func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkill
 		}
 		errMsg += "\nPlease configure them in Settings → Secrets."
 		log.Printf("⚠️ [wish:%s] %s", cardID[:8], errMsg)
-		return "", fmt.Errorf("%s", errMsg)
+		return nil, fmt.Errorf("%s", errMsg)
 	}
 
 	// 3. 构建额外内置工具
@@ -506,7 +510,7 @@ Current time: ` + time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
 		CardID:  cardID,
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to create sandbox: %v", err)
+		return nil, fmt.Errorf("failed to create sandbox: %v", err)
 	}
 	defer s.executor.Cleanup(sandboxDir)
 	log.Printf("📦 [wish:%s] Sandbox created: %s", cardID[:8], sandboxDir)
@@ -546,7 +550,7 @@ Current time: ` + time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
 	// Create Provider instance
 	p, err := provider.NewForModel(model, apiKey)
 	if err != nil {
-		return "", fmt.Errorf("failed to create provider: %v", err)
+		return nil, fmt.Errorf("failed to create provider: %v", err)
 	}
 	agentCfg.Provider = p
 	agentCfg.Model = model
@@ -559,11 +563,11 @@ Current time: ` + time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
 	// 7. 运行 Agent Loop
 	agentResult, err := mcp.RunAgentLoop(agentCfg, ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	updater.UpdateKanbanCardBySystem(cardID, "working", 90, "")
-	return agentResult.Content, nil
+	return agentResult, nil
 }
 
 // buildWishTools 构建 Wish 执行时的额外内置工具

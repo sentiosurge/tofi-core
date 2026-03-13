@@ -272,8 +272,15 @@ Current time: %s`, time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
 		return
 	}
 
-	// 10. Send final result
-	done, _ := json.Marshal(map[string]string{"result": agentResult.Content})
+	// 10. Send final result with usage stats
+	done, _ := json.Marshal(map[string]interface{}{
+		"result":              agentResult.Content,
+		"model":               agentResult.Model,
+		"total_input_tokens":  agentResult.TotalUsage.InputTokens,
+		"total_output_tokens": agentResult.TotalUsage.OutputTokens,
+		"total_cost":          agentResult.TotalCost,
+		"llm_calls":           agentResult.LLMCalls,
+	})
 	fmt.Fprintf(w, "event: done\ndata: %s\n\n", done)
 	flusher.Flush()
 }

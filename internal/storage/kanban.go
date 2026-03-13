@@ -23,6 +23,12 @@ type KanbanCardRecord struct {
 	UserID      string `json:"user_id"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
+	// Usage tracking
+	Model             string  `json:"model,omitempty"`
+	TotalInputTokens  int64   `json:"total_input_tokens,omitempty"`
+	TotalOutputTokens int64   `json:"total_output_tokens,omitempty"`
+	TotalCost         float64 `json:"total_cost,omitempty"`
+	LLMCalls          int     `json:"llm_calls,omitempty"`
 }
 
 // KanbanAction represents a pending action (e.g. skill installation) that requires user approval
@@ -64,6 +70,12 @@ func (db *DB) initKanbanTable() error {
 	db.conn.Exec(`ALTER TABLE kanban_cards ADD COLUMN steps TEXT DEFAULT '[]'`)
 	// Migration: add actions column if it doesn't exist
 	db.conn.Exec(`ALTER TABLE kanban_cards ADD COLUMN actions TEXT DEFAULT '[]'`)
+	// Migration: add usage tracking columns
+	db.conn.Exec(`ALTER TABLE kanban_cards ADD COLUMN model TEXT DEFAULT ''`)
+	db.conn.Exec(`ALTER TABLE kanban_cards ADD COLUMN total_input_tokens INTEGER DEFAULT 0`)
+	db.conn.Exec(`ALTER TABLE kanban_cards ADD COLUMN total_output_tokens INTEGER DEFAULT 0`)
+	db.conn.Exec(`ALTER TABLE kanban_cards ADD COLUMN total_cost REAL DEFAULT 0`)
+	db.conn.Exec(`ALTER TABLE kanban_cards ADD COLUMN llm_calls INTEGER DEFAULT 0`)
 	return nil
 }
 
@@ -98,14 +110,16 @@ func (db *DB) CreateKanbanCard(card *KanbanCardRecord) error {
 
 // GetKanbanCard 获取单张卡片
 func (db *DB) GetKanbanCard(id string) (*KanbanCardRecord, error) {
-	query := `SELECT id, title, COALESCE(description,''), status, COALESCE(app_id,''), COALESCE(agent_id,''), COALESCE(execution_id,''), progress, COALESCE(result,''), COALESCE(steps,'[]'), COALESCE(actions,'[]'), user_id, created_at, updated_at
+	query := `SELECT id, title, COALESCE(description,''), status, COALESCE(app_id,''), COALESCE(agent_id,''), COALESCE(execution_id,''), progress, COALESCE(result,''), COALESCE(steps,'[]'), COALESCE(actions,'[]'), user_id, created_at, updated_at,
+		COALESCE(model,''), COALESCE(total_input_tokens,0), COALESCE(total_output_tokens,0), COALESCE(total_cost,0), COALESCE(llm_calls,0)
 	FROM kanban_cards WHERE id = ?`
 
 	row := db.conn.QueryRow(query, id)
 	var c KanbanCardRecord
 	err := row.Scan(&c.ID, &c.Title, &c.Description, &c.Status,
 		&c.AppID, &c.AgentID, &c.ExecutionID, &c.Progress, &c.Result, &c.Steps, &c.Actions,
-		&c.UserID, &c.CreatedAt, &c.UpdatedAt)
+		&c.UserID, &c.CreatedAt, &c.UpdatedAt,
+		&c.Model, &c.TotalInputTokens, &c.TotalOutputTokens, &c.TotalCost, &c.LLMCalls)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +128,8 @@ func (db *DB) GetKanbanCard(id string) (*KanbanCardRecord, error) {
 
 // ListKanbanCards 列出用户的所有卡片，按 updated_at DESC 排序
 func (db *DB) ListKanbanCards(userID string) ([]*KanbanCardRecord, error) {
-	query := `SELECT id, title, COALESCE(description,''), status, COALESCE(app_id,''), COALESCE(agent_id,''), COALESCE(execution_id,''), progress, COALESCE(result,''), COALESCE(steps,'[]'), COALESCE(actions,'[]'), user_id, created_at, updated_at
+	query := `SELECT id, title, COALESCE(description,''), status, COALESCE(app_id,''), COALESCE(agent_id,''), COALESCE(execution_id,''), progress, COALESCE(result,''), COALESCE(steps,'[]'), COALESCE(actions,'[]'), user_id, created_at, updated_at,
+		COALESCE(model,''), COALESCE(total_input_tokens,0), COALESCE(total_output_tokens,0), COALESCE(total_cost,0), COALESCE(llm_calls,0)
 	FROM kanban_cards WHERE user_id = ? ORDER BY updated_at DESC`
 
 	rows, err := db.conn.Query(query, userID)
@@ -128,7 +143,8 @@ func (db *DB) ListKanbanCards(userID string) ([]*KanbanCardRecord, error) {
 		var c KanbanCardRecord
 		if err := rows.Scan(&c.ID, &c.Title, &c.Description, &c.Status,
 			&c.AppID, &c.AgentID, &c.ExecutionID, &c.Progress, &c.Result, &c.Steps, &c.Actions,
-			&c.UserID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.UserID, &c.CreatedAt, &c.UpdatedAt,
+			&c.Model, &c.TotalInputTokens, &c.TotalOutputTokens, &c.TotalCost, &c.LLMCalls); err != nil {
 			continue
 		}
 		cards = append(cards, &c)
@@ -371,4 +387,12 @@ func (db *DB) UpdateKanbanCardBySystem(id string, status string, progress int, r
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// UpdateKanbanCardUsage saves LLM usage stats to a card after execution completes.
+func (db *DB) UpdateKanbanCardUsage(id string, model string, inputTokens, outputTokens int64, cost float64, llmCalls int) error {
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	query := `UPDATE kanban_cards SET model = ?, total_input_tokens = ?, total_output_tokens = ?, total_cost = ?, llm_calls = ?, updated_at = ? WHERE id = ?`
+	_, err := db.conn.Exec(query, model, inputTokens, outputTokens, cost, llmCalls, now, id)
+	return err
 }
