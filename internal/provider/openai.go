@@ -249,9 +249,9 @@ func (o *openaiResponses) parseResponse(body string) (*ChatResponse, error) {
 				}
 			}
 		case "function_call":
-			callID := item.CallID
+			callID := item.ID
 			if callID == "" {
-				callID = item.ID
+				callID = item.CallID
 			}
 			result.ToolCalls = append(result.ToolCalls, ToolCall{
 				ID:        callID,
@@ -339,9 +339,9 @@ func (o *openaiResponses) parseStream(body io.Reader, onDelta func(StreamDelta))
 				} `json:"item"`
 			}
 			if json.Unmarshal([]byte(data), &ev) == nil && ev.Item.Type == "function_call" {
-				callID := ev.Item.CallID
+				callID := ev.Item.ID
 				if callID == "" {
-					callID = ev.Item.ID
+					callID = ev.Item.CallID
 				}
 				fcMap[ev.OutputIndex] = &fcAccum{
 					ID:   callID,
