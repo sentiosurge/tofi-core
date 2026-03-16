@@ -13,6 +13,7 @@ import (
 	"tofi-core/internal/models"
 	"tofi-core/internal/skills"
 	"tofi-core/internal/storage"
+	"tofi-core/internal/workspace"
 )
 
 // DeployMode constants
@@ -62,6 +63,10 @@ type Server struct {
 
 	// App scheduler (min-heap + timer for scheduled app runs)
 	appScheduler *AppScheduler
+
+	// File-based workspace (source of truth for agents)
+	workspace     *workspace.Workspace
+	workspaceSync *workspace.Sync
 }
 
 // IsSaaS returns true if running in SaaS (multi-user cloud) mode.
@@ -221,6 +226,10 @@ func (s *Server) Start() error {
 		log.Printf("⚠️  Cron 调度器启动失败: %v", err)
 	}
 	defer s.scheduler.Stop()
+
+	// 初始化文件 workspace 并同步到 DB 索引
+	s.initWorkspace()
+	s.syncWorkspaceOnStartup()
 
 	// 安装/更新 System Skills（内置技能）
 	skills.InstallSystemSkills(s.db, s.config.HomeDir)

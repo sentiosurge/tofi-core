@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"tofi-core/internal/apps"
 	"tofi-core/internal/crypto"
 	"tofi-core/internal/executor"
 	"tofi-core/internal/mcp"
@@ -18,6 +19,7 @@ import (
 	"tofi-core/internal/provider"
 	"tofi-core/internal/skills"
 	"tofi-core/internal/storage"
+	"tofi-core/internal/workspace"
 
 	"github.com/google/uuid"
 )
@@ -83,6 +85,7 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCreateApp POST /api/v1/apps
+// Flow: parse request → build AgentDef → write files → sync to DB index
 func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
 
@@ -109,66 +112,41 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	skillsJSON, _ := json.Marshal(req.Skills)
-	if req.Skills == nil {
-		skillsJSON = []byte("[]")
+	// Build AgentDef from request
+	def := requestToAgentDef(req.Name, req.Description, req.Prompt, req.SystemPrompt, req.Model,
+		req.Skills, req.ScheduleRules, req.Capabilities, req.BufferSize, req.RenewalThreshold,
+		req.ParameterDefs)
+
+	// Step 1: Write agent files to disk (source of truth)
+	if s.workspace != nil {
+		if err := s.workspace.WriteAgent(userID, def); err != nil {
+			http.Error(w, fmt.Sprintf("failed to write agent files: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
-	scheduleRules := "[]"
-	if req.ScheduleRules != nil {
-		scheduleRules = string(*req.ScheduleRules)
+	// Step 2: Sync to DB index
+	var record *storage.AppRecord
+	if s.workspaceSync != nil {
+		synced, err := s.workspaceSync.SyncAgentToDB(userID, req.Name)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to sync agent to index: %v", err), http.StatusInternalServerError)
+			return
+		}
+		record = synced
+	} else {
+		// Fallback: direct DB write (for backwards compatibility if workspace not initialized)
+		record = workspace.AgentDefToRecord(userID, def)
+		record.ID = uuid.New().String()
+		if err := s.db.CreateApp(record); err != nil {
+			http.Error(w, fmt.Sprintf("failed to create app: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
-	capabilities := "{}"
-	if req.Capabilities != nil {
-		capabilities = string(*req.Capabilities)
-	}
-
-	parameters := "{}"
-	if req.Parameters != nil {
-		parameters = string(*req.Parameters)
-	}
-
-	parameterDefs := "{}"
-	if req.ParameterDefs != nil {
-		parameterDefs = string(*req.ParameterDefs)
-	}
-
-	bufferSize := 20
-	if req.BufferSize != nil {
-		bufferSize = *req.BufferSize
-	}
-	renewalThreshold := 5
-	if req.RenewalThreshold != nil {
-		renewalThreshold = *req.RenewalThreshold
-	}
-
-	app := &storage.AppRecord{
-		ID:               uuid.New().String(),
-		Name:             req.Name,
-		Description:      req.Description,
-		Prompt:           req.Prompt,
-		SystemPrompt:     req.SystemPrompt,
-		Model:            req.Model,
-		Skills:           string(skillsJSON),
-		ScheduleRules:    scheduleRules,
-		Capabilities:     capabilities,
-		BufferSize:       bufferSize,
-		RenewalThreshold: renewalThreshold,
-		IsActive:         false,
-		UserID:           userID,
-		Parameters:       parameters,
-		ParameterDefs:    parameterDefs,
-	}
-
-	if err := s.db.CreateApp(app); err != nil {
-		http.Error(w, fmt.Sprintf("failed to create app: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	created, err := s.db.GetApp(app.ID)
+	created, err := s.db.GetApp(record.ID)
 	if err != nil {
-		created = app
+		created = record
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -177,6 +155,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUpdateApp PUT /api/v1/apps/{id}
+// Flow: merge updates → convert to AgentDef → write files → sync to DB index
 func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
 	id := r.PathValue("id")
@@ -206,6 +185,10 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Track original name for file rename
+	oldName := existing.Name
+
+	// Merge updates into existing record
 	if req.Name != nil {
 		existing.Name = *req.Name
 	}
@@ -244,9 +227,44 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		existing.ParameterDefs = string(*req.ParameterDefs)
 	}
 
-	if err := s.db.UpdateApp(existing); err != nil {
-		http.Error(w, fmt.Sprintf("failed to update app: %v", err), http.StatusInternalServerError)
-		return
+	// Step 1: Write updated agent files to disk
+	if s.workspace != nil {
+		// If name changed, delete old agent directory first
+		if req.Name != nil && oldName != existing.Name {
+			_ = s.workspace.DeleteAgent(userID, oldName)
+		}
+
+		def := workspace.RecordToAgentDef(existing)
+		if err := s.workspace.WriteAgent(userID, def); err != nil {
+			http.Error(w, fmt.Sprintf("failed to write agent files: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Step 2: Sync to DB index
+	if s.workspaceSync != nil {
+		synced, err := s.workspaceSync.SyncAgentToDB(userID, existing.Name)
+		if err != nil {
+			log.Printf("[app-update] sync failed, falling back to direct DB: %v", err)
+			if err := s.db.UpdateApp(existing); err != nil {
+				http.Error(w, fmt.Sprintf("failed to update app: %v", err), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Preserve fields that only live in DB (not in files)
+			synced.IsActive = existing.IsActive
+			synced.Parameters = existing.Parameters
+			synced.ID = existing.ID
+			if err := s.db.UpdateApp(synced); err != nil {
+				http.Error(w, fmt.Sprintf("failed to update app index: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
+	} else {
+		if err := s.db.UpdateApp(existing); err != nil {
+			http.Error(w, fmt.Sprintf("failed to update app: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// If app is active and schedule changed, reschedule
@@ -264,14 +282,31 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteApp DELETE /api/v1/apps/{id}
+// Flow: get app name → delete files → remove from DB index
 func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
 	id := r.PathValue("id")
+
+	// Get app name before deleting (needed for file deletion)
+	app, err := s.db.GetApp(id)
+	if err != nil || app.UserID != userID {
+		http.Error(w, "app not found", http.StatusNotFound)
+		return
+	}
 
 	if s.appScheduler != nil {
 		s.appScheduler.RemoveApp(id)
 	}
 
+	// Step 1: Delete agent files from disk
+	if s.workspace != nil && app.Name != "" {
+		if err := s.workspace.DeleteAgent(userID, app.Name); err != nil {
+			log.Printf("[app-delete] failed to delete agent files for %q: %v", app.Name, err)
+			// Continue to delete from DB even if file deletion fails
+		}
+	}
+
+	// Step 2: Remove from DB index
 	if err := s.db.DeleteApp(id, userID); err != nil {
 		http.Error(w, fmt.Sprintf("failed to delete app: %v", err), http.StatusInternalServerError)
 		return
@@ -1043,5 +1078,62 @@ func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
 				return "Question presented to user. Wait for their answer before proceeding.", nil
 			},
 		},
+	}
+}
+
+// requestToAgentDef converts API request fields into an AgentDef for file-based storage.
+func requestToAgentDef(
+	name, description, prompt, systemPrompt, model string,
+	skillsList []string,
+	scheduleRules, capabilities *json.RawMessage,
+	bufferSize, renewalThreshold *int,
+	parameterDefs *json.RawMessage,
+) *apps.AgentDef {
+	cfg := apps.AppConfig{
+		Name:        name,
+		Description: description,
+		Model:       model,
+		Skills:      skillsList,
+	}
+
+	if bufferSize != nil {
+		cfg.BufferSize = *bufferSize
+	} else {
+		cfg.BufferSize = 20
+	}
+	if renewalThreshold != nil {
+		cfg.RenewalThreshold = *renewalThreshold
+	} else {
+		cfg.RenewalThreshold = 5
+	}
+
+	// Parse capabilities JSON into map
+	if capabilities != nil {
+		var caps map[string]any
+		if err := json.Unmarshal(*capabilities, &caps); err == nil {
+			cfg.Capabilities = caps
+		}
+	}
+
+	// Parse parameter defs JSON
+	if parameterDefs != nil {
+		var params map[string]*apps.AppParameter
+		if err := json.Unmarshal(*parameterDefs, &params); err == nil {
+			cfg.Parameters = params
+		}
+	}
+
+	// Parse schedule rules JSON
+	if scheduleRules != nil {
+		var schedule apps.AppConfigSchedule
+		if err := json.Unmarshal(*scheduleRules, &schedule); err == nil {
+			cfg.Schedule = &schedule
+		}
+	}
+
+	return &apps.AgentDef{
+		Config:   cfg,
+		AgentsMD: prompt,
+		SoulMD:   systemPrompt,
 	}
 }
