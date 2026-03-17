@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
@@ -155,12 +156,17 @@ type chatModel struct {
 	ready             bool
 
 	// Interactive selection mode
-	selectMode     bool
-	selectTitle    string
-	selectItems    []selectItem
-	selectCursor   int
-	selectSelected int // index of selected item (-1 = none)
-	selectAction   func(item selectItem)
+	selectMode          bool
+	selectTitle         string
+	selectItems         []selectItem  // all items
+	selectFiltered      []selectItem  // filtered subset (nil = show all)
+	selectFilter        string        // current search/filter text
+	selectCursor        int
+	selectSelected      int // index of selected item (-1 = none, single select)
+	selectAction        func(item selectItem)
+	selectMulti         bool                    // multi-select mode
+	selectMultiChecked  map[string]bool         // id → checked state
+	selectMultiAction   func(items []selectItem)
 
 	// Deferred init rendering (ensureSession runs before TUI has width)
 	initPending  bool
@@ -174,6 +180,9 @@ type chatModel struct {
 
 	// Initial message to auto-send after TUI is ready
 	initialMessage string
+
+	// Markdown renderer
+	mdRenderer *glamour.TermRenderer
 }
 
 type selectItem struct {
@@ -184,12 +193,12 @@ type selectItem struct {
 
 func newChatModel(client *apiClient) *chatModel {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message... (Enter to send, /help for commands)"
+	ta.Placeholder = "Type a message... (Enter send, Alt+Enter newline, /help commands)"
 	ta.Focus()
 	ta.CharLimit = 4096
 	ta.SetHeight(2)
 	ta.ShowLineNumbers = false
-	ta.KeyMap.InsertNewline.SetEnabled(false)
+	ta.KeyMap.InsertNewline.SetEnabled(false) // we handle newline manually via Alt+Enter
 	// Remove default left border — the outer frame handles borders
 	ta.Prompt = " "
 	ta.FocusedStyle.Prompt = lipgloss.NewStyle()
@@ -202,10 +211,17 @@ func newChatModel(client *apiClient) *chatModel {
 		scope = "agent:" + chatAgentName
 	}
 
+	// Create glamour renderer for Markdown (dark theme, auto-width)
+	renderer, _ := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(0), // we'll set width dynamically
+	)
+
 	return &chatModel{
-		textarea: ta,
-		client:   client,
-		scope:    scope,
+		textarea:   ta,
+		client:     client,
+		scope:      scope,
+		mdRenderer: renderer,
 	}
 }
 
@@ -221,6 +237,19 @@ func (m *chatModel) headerText() string {
 // Layout: │ <content> │ → border(1) + pad(1) + content(iw) + pad(1) + border(1) = width
 func (m *chatModel) innerWidth() int {
 	return max(20, m.width-4)
+}
+
+// autoResizeTextarea adjusts textarea height based on content lines (2-8 lines).
+func (m *chatModel) autoResizeTextarea() {
+	lines := strings.Count(m.textarea.Value(), "\n") + 1
+	newHeight := max(2, min(8, lines))
+	if newHeight != m.textarea.Height() {
+		m.textarea.SetHeight(newHeight)
+		// Recalculate viewport height
+		vpHeight := max(3, m.height-m.fixedLines())
+		m.viewport.Height = vpHeight
+		m.refreshViewport()
+	}
 }
 
 // Fixed lines in the frame (everything except viewport).
@@ -240,6 +269,13 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		iw := m.innerWidth()
 		m.textarea.SetWidth(iw)
+		// Recreate glamour renderer with new width
+		if r, err := glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(iw-2),
+		); err == nil {
+			m.mdRenderer = r
+		}
 
 		vpHeight := msg.Height - m.fixedLines()
 		if vpHeight < 3 {
@@ -289,6 +325,15 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			return m, nil
+		case "alt+enter":
+			// Insert newline for multi-line input
+			if !m.streaming {
+				m.textarea.InsertString("\n")
+				m.autoResizeTextarea()
+				return m, nil
+			}
+			return m, nil
+
 		case "enter":
 			if m.streaming {
 				return m, nil
@@ -298,6 +343,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.textarea.Reset()
+			m.autoResizeTextarea()
 
 			if strings.HasPrefix(input, "/") {
 				m.handleSlashCommand(input)
@@ -543,59 +589,165 @@ func (m *chatModel) enterSelectMode(title string, items []selectItem, action fun
 	m.selectAction = action
 }
 
+func (m *chatModel) enterMultiSelectMode(title string, items []selectItem, preSelected map[string]bool, action func([]selectItem)) {
+	m.selectMode = true
+	m.selectMulti = true
+	m.selectTitle = title
+	m.selectItems = items
+	m.selectCursor = 0
+	m.selectSelected = -1
+	m.selectMultiChecked = make(map[string]bool)
+	for k, v := range preSelected {
+		m.selectMultiChecked[k] = v
+	}
+	m.selectMultiAction = action
+}
+
 func (m *chatModel) exitSelectMode() {
 	m.selectMode = false
+	m.selectMulti = false
 	m.selectItems = nil
+	m.selectFiltered = nil
+	m.selectFilter = ""
 	m.selectAction = nil
+	m.selectSelected = -1
+	m.selectMultiChecked = nil
+	m.selectMultiAction = nil
+}
+
+// selectVisible returns the currently visible items (filtered or all).
+func (m *chatModel) selectVisible() []selectItem {
+	if m.selectFiltered != nil {
+		return m.selectFiltered
+	}
+	return m.selectItems
+}
+
+// applySelectFilter filters selectItems by the current filter string.
+func (m *chatModel) applySelectFilter() {
+	if m.selectFilter == "" {
+		m.selectFiltered = nil
+		return
+	}
+	query := strings.ToLower(m.selectFilter)
+	filtered := make([]selectItem, 0)
+	for _, item := range m.selectItems {
+		if strings.Contains(strings.ToLower(item.label), query) ||
+			strings.Contains(strings.ToLower(item.meta), query) {
+			filtered = append(filtered, item)
+		}
+	}
+	m.selectFiltered = filtered
+	m.selectCursor = 0
 	m.selectSelected = -1
 }
 
 func (m *chatModel) updateSelectMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	visible := m.selectVisible()
+
 	switch msg.String() {
-	case "esc", "q":
+	case "esc":
+		if m.selectFilter != "" {
+			m.selectFilter = ""
+			m.applySelectFilter()
+			return m, nil
+		}
 		m.exitSelectMode()
 		return m, nil
-	case "up", "k":
+	case "up", "ctrl+p":
 		if m.selectCursor > 0 {
 			m.selectCursor--
 		}
 		return m, nil
-	case "down", "j":
-		if m.selectCursor < len(m.selectItems)-1 {
+	case "down", "ctrl+n":
+		if m.selectCursor < len(visible)-1 {
 			m.selectCursor++
 		}
 		return m, nil
-	case " ": // Space = select/toggle current item
-		if len(m.selectItems) > 0 {
-			if m.selectSelected == m.selectCursor {
-				m.selectSelected = -1 // deselect
+	case " ": // Space = select/toggle
+		if len(visible) > 0 && m.selectCursor < len(visible) {
+			if m.selectMulti {
+				// Multi-select: toggle checked state
+				item := visible[m.selectCursor]
+				m.selectMultiChecked[item.id] = !m.selectMultiChecked[item.id]
 			} else {
-				m.selectSelected = m.selectCursor
+				// Single-select: toggle selection
+				if m.selectSelected == m.selectCursor {
+					m.selectSelected = -1
+				} else {
+					m.selectSelected = m.selectCursor
+				}
 			}
 		}
 		return m, nil
-	case "enter": // Enter = confirm selected item
-		if m.selectSelected >= 0 && m.selectSelected < len(m.selectItems) {
-			item := m.selectItems[m.selectSelected]
-			action := m.selectAction
+	case "enter": // Enter = confirm
+		if m.selectMulti {
+			// Collect all checked items
+			var selected []selectItem
+			for _, item := range m.selectItems {
+				if m.selectMultiChecked[item.id] {
+					selected = append(selected, item)
+				}
+			}
+			action := m.selectMultiAction
 			m.exitSelectMode()
 			if action != nil {
-				action(item)
+				action(selected)
 			}
+		} else {
+			// Single select
+			idx := m.selectSelected
+			if idx < 0 {
+				idx = m.selectCursor
+			}
+			if idx >= 0 && idx < len(visible) {
+				item := visible[idx]
+				action := m.selectAction
+				m.exitSelectMode()
+				if action != nil {
+					action(item)
+				}
+			}
+		}
+		return m, nil
+	case "backspace":
+		if len(m.selectFilter) > 0 {
+			m.selectFilter = m.selectFilter[:len(m.selectFilter)-1]
+			m.applySelectFilter()
 		}
 		return m, nil
 	case "ctrl+c":
 		return m, tea.Quit
+	default:
+		// Type to filter — only accept printable single runes
+		key := msg.String()
+		if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
+			m.selectFilter += key
+			m.applySelectFilter()
+		}
+		return m, nil
 	}
-	return m, nil
 }
 
 func (m *chatModel) renderSelectList(iw int, maxLines int) []string {
 	lines := make([]string, 0, maxLines)
+	visible := m.selectVisible()
 
-	// Title
+	// Title + optional filter
 	titleLine := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#d2a8ff")).PaddingLeft(1).Render(m.selectTitle)
+	if m.selectFilter != "" {
+		filterDisplay := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Render(" 🔍 " + m.selectFilter + "▎")
+		titleLine += "  " + filterDisplay
+	}
 	lines = append(lines, "", titleLine, "")
+
+	if len(visible) == 0 {
+		lines = append(lines, subtitleStyle.Render("   (no matches)"))
+		for len(lines) < maxLines {
+			lines = append(lines, "")
+		}
+		return lines
+	}
 
 	// Visible items
 	visibleSlots := maxLines - 4 // title(1) + blank(2) + hint(1)
@@ -609,21 +761,26 @@ func (m *chatModel) renderSelectList(iw int, maxLines int) []string {
 		startIdx = m.selectCursor - visibleSlots + 1
 	}
 	endIdx := startIdx + visibleSlots
-	if endIdx > len(m.selectItems) {
-		endIdx = len(m.selectItems)
+	if endIdx > len(visible) {
+		endIdx = len(visible)
 	}
 
 	for i := startIdx; i < endIdx; i++ {
-		item := m.selectItems[i]
+		item := visible[i]
 		var line string
 
-		isSelected := i == m.selectSelected
 		isCursor := i == m.selectCursor
+		isChecked := false
+		if m.selectMulti {
+			isChecked = m.selectMultiChecked[item.id]
+		} else {
+			isChecked = i == m.selectSelected
+		}
 
 		if isCursor {
 			// Cursor row — highlighted background, full width
 			indicator := " ► "
-			if isSelected {
+			if isChecked {
 				indicator = " ✓ "
 			}
 			plain := indicator + item.label
@@ -639,7 +796,7 @@ func (m *chatModel) renderSelectList(iw int, maxLines int) []string {
 				Render(plain + strings.Repeat(" ", pad))
 		} else {
 			indicator := subtitleStyle.Render(" ○ ")
-			if isSelected {
+			if isChecked {
 				indicator = successStyle.Render(" ✓ ")
 			}
 			label := accentStyle.Render(item.label)
@@ -781,9 +938,8 @@ func (m *chatModel) finalizeStreamBlock() {
 	if m.streamBuf.Len() == 0 {
 		return
 	}
-	iw := m.innerWidth()
 	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#3fb950")).PaddingLeft(1).Render("Tofi")
-	text := lipgloss.NewStyle().Width(iw).PaddingLeft(1).Render(m.streamBuf.String())
+	text := m.renderMarkdown(m.streamBuf.String())
 	m.content.WriteString(label + "\n" + text + "\n")
 	m.streamBuf.Reset()
 }
@@ -811,10 +967,35 @@ func (m *chatModel) renderUserMsg(content string) string {
 }
 
 func (m *chatModel) renderAssistantMsg(content string) string {
-	iw := m.innerWidth()
 	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#3fb950")).PaddingLeft(1).Render("Tofi")
-	text := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e")).Width(iw).PaddingLeft(1).Render(content)
+	text := m.renderMarkdown(content)
 	return label + "\n" + text
+}
+
+// renderMarkdown renders content as Markdown using glamour.
+// Falls back to plain text on error.
+func (m *chatModel) renderMarkdown(content string) string {
+	if m.mdRenderer == nil || strings.TrimSpace(content) == "" {
+		iw := m.innerWidth()
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e")).Width(iw).PaddingLeft(1).Render(content)
+	}
+	rendered, err := m.mdRenderer.Render(content)
+	if err != nil {
+		iw := m.innerWidth()
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e")).Width(iw).PaddingLeft(1).Render(content)
+	}
+	// glamour adds trailing newlines; trim and add left padding
+	rendered = strings.TrimRight(rendered, "\n")
+	// Add 1-space left padding to each line for alignment with label
+	var padded strings.Builder
+	for i, line := range strings.Split(rendered, "\n") {
+		if i > 0 {
+			padded.WriteByte('\n')
+		}
+		padded.WriteByte(' ')
+		padded.WriteString(line)
+	}
+	return padded.String()
 }
 
 func (m *chatModel) renderToolCall(tool string, durationMs int) string {
@@ -1269,36 +1450,39 @@ func (m *chatModel) fetchAndShowSkills() {
 		return
 	}
 
-	activeSet := make(map[string]bool)
-	for _, s := range m.skills {
-		activeSet[s] = true
+	// Build items for multi-select
+	items := make([]selectItem, 0, len(skills))
+	for _, sk := range skills {
+		meta := sk.Description
+		if sk.Scope == "system" {
+			meta = "(built-in) " + meta
+		}
+		d := []rune(meta)
+		if len(d) > 45 {
+			meta = string(d[:42]) + "..."
+		}
+		items = append(items, selectItem{id: sk.Name, label: sk.Name, meta: meta})
 	}
 
-	m.appendContent(m.renderInfo("Available skills:"))
-	for _, sk := range skills {
-		check := subtitleStyle.Render(" [ ] ")
-		if activeSet[sk.Name] {
-			check = successStyle.Render(" [✓] ")
-		}
-		name := accentStyle.Render(sk.Name)
-		scope := ""
-		if sk.Scope == "system" {
-			scope = subtitleStyle.Render(" (built-in)")
-		}
-		desc := ""
-		if sk.Description != "" {
-			d := []rune(sk.Description)
-			if len(d) > 35 {
-				desc = subtitleStyle.Render(" — " + string(d[:32]) + "...")
-			} else {
-				desc = subtitleStyle.Render(" — " + string(d))
-			}
-		}
-		m.appendContent(check + name + scope + desc)
+	// Pre-select currently active skills
+	preSelected := make(map[string]bool)
+	for _, s := range m.skills {
+		preSelected[s] = true
 	}
-	m.appendContent("")
-	m.appendContent(m.renderInfo("Use " + accentStyle.Render("/skills name1,name2") + subtitleStyle.Render(" to enable")))
-	m.appendContent(m.renderInfo("Use " + accentStyle.Render("/skills off") + subtitleStyle.Render(" to disable all")))
+
+	m.enterMultiSelectMode("Select Skills (Space toggle, Enter confirm)", items, preSelected, func(selected []selectItem) {
+		m.skills = nil
+		for _, item := range selected {
+			m.skills = append(m.skills, item.id)
+		}
+		m.patchSession(map[string]any{"skills": m.skills})
+		if len(m.skills) > 0 {
+			m.appendContent(m.renderSuccess("Skills: " + accentStyle.Render(strings.Join(m.skills, ", "))))
+		} else {
+			m.appendContent(m.renderSuccess("All skills disabled"))
+		}
+		m.appendContent("")
+	})
 }
 
 // --- SSE streaming via Session API ---
