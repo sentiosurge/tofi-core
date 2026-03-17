@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"time"
+	"tofi-core/internal/chat"
 	"tofi-core/internal/crypto"
 	"tofi-core/internal/executor"
 	"tofi-core/internal/models"
@@ -67,6 +68,12 @@ type Server struct {
 	// File-based workspace (source of truth for agents)
 	workspace     *workspace.Workspace
 	workspaceSync *workspace.Sync
+
+	// Chat session store (XML files + SQLite index)
+	chatStore *chat.Store
+
+	// Access token for token-mode auth (read from config.yaml)
+	accessToken string
 }
 
 // IsSaaS returns true if running in SaaS (multi-user cloud) mode.
@@ -129,14 +136,15 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	return &Server{
-		config:       config,
-		registry:     registry,
-		db:           db,
-		workerPool:   workerPool,
-		executor:     exec,
-		sseHub:       NewSSEHub(),
+		config:          config,
+		registry:        registry,
+		db:              db,
+		workerPool:      workerPool,
+		executor:        exec,
+		sseHub:          NewSSEHub(),
 		holdChannels:    make(map[string]chan HoldSignal),
 		previewSessions: make(map[string]*PreviewSession),
+		chatStore:       chat.NewStore(config.HomeDir, db),
 	}, nil
 }
 
@@ -226,6 +234,9 @@ func (s *Server) Start() error {
 		log.Printf("⚠️  Cron 调度器启动失败: %v", err)
 	}
 	defer s.scheduler.Stop()
+
+	// Load access token for token-mode auth
+	s.loadAccessToken()
 
 	// 初始化文件 workspace 并同步到 DB 索引
 	s.initWorkspace()
@@ -352,8 +363,14 @@ func (s *Server) Start() error {
 	// Skills Registry (搜索 skills.sh 生态)
 	mux.HandleFunc("GET /api/v1/registry/search", s.AuthMiddleware(s.handleRegistrySearch))
 
-	// Test Chat (capability 测试)
-	mux.HandleFunc("POST /api/v1/test/chat", s.AuthMiddleware(s.handleTestChat))
+	// Chat Sessions
+
+	mux.HandleFunc("POST /api/v1/chat/sessions", s.AuthMiddleware(s.handleCreateChatSession))
+	mux.HandleFunc("GET /api/v1/chat/sessions", s.AuthMiddleware(s.handleListChatSessions))
+	mux.HandleFunc("GET /api/v1/chat/sessions/{id}", s.AuthMiddleware(s.handleGetChatSession))
+	mux.HandleFunc("DELETE /api/v1/chat/sessions/{id}", s.AuthMiddleware(s.handleDeleteChatSession))
+	mux.HandleFunc("PATCH /api/v1/chat/sessions/{id}", s.AuthMiddleware(s.handleUpdateChatSession))
+	mux.HandleFunc("POST /api/v1/chat/sessions/{id}/messages", s.AuthMiddleware(s.handleChatMessage))
 
 	// Settings / AI Key 管理
 	mux.HandleFunc("GET /api/v1/settings/ai-keys", s.AuthMiddleware(s.handleListAIKeys))
@@ -372,9 +389,6 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/v1/connectors/telegram/test", s.AuthMiddleware(s.handleTelegramTest))
 	mux.HandleFunc("DELETE /api/v1/connectors/telegram", s.AuthMiddleware(s.handleTelegramDelete))
 	mux.HandleFunc("DELETE /api/v1/connectors/telegram/receivers/{id}", s.AuthMiddleware(s.handleTelegramDeleteReceiver))
-
-	// Wish 许愿路由
-	mux.HandleFunc("POST /api/v1/wish", s.AuthMiddleware(s.handleWish))
 
 	// Kanban 看板路由
 	mux.HandleFunc("POST /api/v1/kanban", s.AuthMiddleware(s.handleCreateKanbanCard))

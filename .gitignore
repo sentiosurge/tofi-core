@@ -1,6 +1,6 @@
-# Binary
-tofi
-tofi-server
+# Binary (root only, don't ignore cmd/tofi/ source)
+/tofi
+/tofi-server
 # Runtime files
 .tofi/
 

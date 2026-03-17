@@ -237,6 +237,11 @@ func InitDB(homeDir string) (*DB, error) {
 		log.Printf("⚠️  memories table creation (may already exist): %v", err)
 	}
 
+	// 创建 chat_sessions 索引表
+	if err := db.initChatSessionsTable(); err != nil {
+		log.Printf("⚠️  chat_sessions table creation (may already exist): %v", err)
+	}
+
 	return db, nil
 }
 

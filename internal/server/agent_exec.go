@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,56 +18,7 @@ import (
 	"tofi-core/internal/provider"
 	"tofi-core/internal/skills"
 	"tofi-core/internal/storage"
-
-	"github.com/google/uuid"
 )
-
-// handleWish POST /api/v1/wish — 许愿：创建 Kanban 卡片 + 异步执行 Agent
-func (s *Server) handleWish(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(UserContextKey).(string)
-
-	var req struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Model       string `json:"model"` // 可选覆盖模型
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if req.Title == "" {
-		http.Error(w, "title is required", http.StatusBadRequest)
-		return
-	}
-
-	// 1. 创建 Kanban 卡片（todo 状态）
-	card := &storage.KanbanCardRecord{
-		ID:          uuid.New().String(),
-		Title:       req.Title,
-		Description: req.Description,
-		Status:      "todo",
-		UserID:      userID,
-	}
-
-	if err := s.db.CreateKanbanCard(card); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// 获取完整的卡片
-	created, _ := s.db.GetKanbanCard(card.ID)
-	if created == nil {
-		created = card
-	}
-
-	// 2. 异步执行 Agent（自动检测可用 key）
-	go s.executeWish(created, userID, req.Model)
-
-	// 3. 立即返回卡片（不等待执行完成）
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(created)
-}
 
 // resolveModelAndKey 智能检测可用的 API Key 和模型
 // 优先级：用户指定 model > Settings 中有 key 的 provider > 环境变量中有 key 的 provider

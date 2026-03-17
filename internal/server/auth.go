@@ -14,20 +14,19 @@ import (
 
 var jwtSecret []byte
 
-// InitAuth 初始化 JWT 密钥
-// 如果环境变量 TOFI_JWT_SECRET 未设置，则生成一个随机密钥 (开发模式)
+// InitAuth initializes JWT secret from TOFI_JWT_SECRET env var.
+// If not set, generates a temporary secret (dev mode).
 func InitAuth() {
 	secret := os.Getenv("TOFI_JWT_SECRET")
 	if secret == "" {
 		jwtSecret = []byte(fmt.Sprintf("dev-secret-%d", time.Now().UnixNano()))
-		log.Printf("⚠️  TOFI_JWT_SECRET not set. Generated temporary secret: %s", jwtSecret)
-		log.Println("⚠️  Use this secret to sign tokens for testing.")
+		log.Printf("TOFI_JWT_SECRET not set. Generated temporary secret for dev mode.")
 	} else {
 		jwtSecret = []byte(secret)
 	}
 }
 
-// GenerateToken 为指定用户生成一个长期有效的 Token (用于 CLI 测试)
+// GenerateToken generates a long-lived JWT for the given user.
 func GenerateToken(username string, role string) (string, error) {
 	if len(jwtSecret) == 0 {
 		InitAuth()
@@ -37,7 +36,7 @@ func GenerateToken(username string, role string) (string, error) {
 		"role": role,
 		"iss":  "tofi-engine",
 		"iat":  time.Now().Unix(),
-		"exp":  time.Now().Add(365 * 24 * time.Hour).Unix(), // 1年有效期
+		"exp":  time.Now().Add(365 * 24 * time.Hour).Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(jwtSecret)
@@ -47,7 +46,7 @@ type contextKey string
 
 const UserContextKey contextKey = "user"
 
-// parseJWT 解析并验证 JWT Token，返回用户 ID
+// parseJWT parses and validates a JWT token, returning the user ID.
 func parseJWT(tokenString string) (string, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -72,7 +71,10 @@ func parseJWT(tokenString string) (string, error) {
 	return user, nil
 }
 
-// AuthMiddleware 验证 JWT 并注入 User 到 Context
+// AuthMiddleware validates auth token and injects user into context.
+// Supports two modes:
+//   - Token mode: raw access_token from config (matched against s.accessToken)
+//   - JWT mode: standard JWT signed with jwt_secret
 func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
@@ -87,7 +89,18 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		user, err := parseJWT(parts[1])
+		tokenStr := parts[1]
+
+		// Check if it's a raw access token (token auth mode)
+		if s.accessToken != "" && tokenStr == s.accessToken {
+			// Token mode: use "admin" as the default user
+			ctx := context.WithValue(r.Context(), UserContextKey, "admin")
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		// Otherwise try JWT
+		user, err := parseJWT(tokenStr)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
@@ -98,11 +111,17 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// AdminMiddleware 验证用户是否为 Admin
-// 在 AuthMiddleware 的基础上检查用户角色
+// AdminMiddleware validates that the user is an admin.
 func (s *Server) AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return s.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		username := r.Context().Value(UserContextKey).(string)
+
+		// Token-mode admin is always admin
+		if username == "admin" && s.accessToken != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		user, err := s.db.GetUser(username)
 		if err != nil {
 			http.Error(w, "User not found", http.StatusUnauthorized)
