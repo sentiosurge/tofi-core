@@ -56,7 +56,7 @@ func runDaemon() error {
 	}
 
 	fmt.Println()
-	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72")).Render(logo))
+	fmt.Println(logo)
 	fmt.Println()
 
 	// Start checks
@@ -91,7 +91,7 @@ func runDaemon() error {
 	fmt.Println()
 
 	badge := lipgloss.NewStyle().
-		Background(lipgloss.Color("#1f6feb")).
+		Background(lipgloss.Color("#238636")).
 		Foreground(lipgloss.Color("#ffffff")).
 		Padding(0, 1).
 		Render(" Engine ready ")

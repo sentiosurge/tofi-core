@@ -14,6 +14,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
+	glamourstyles "github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
@@ -211,9 +213,9 @@ func newChatModel(client *apiClient) *chatModel {
 		scope = "agent:" + chatAgentName
 	}
 
-	// Create glamour renderer for Markdown (dark theme, auto-width)
+	// Create glamour renderer with compact margins (1 char indent instead of default 2)
 	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithStylePath("dark"),
+		glamour.WithStyles(chatGlamourStyle()),
 		glamour.WithWordWrap(0), // we'll set width dynamically
 	)
 
@@ -271,7 +273,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.SetWidth(iw)
 		// Recreate glamour renderer with new width
 		if r, err := glamour.NewTermRenderer(
-			glamour.WithStylePath("dark"),
+			glamour.WithStyles(chatGlamourStyle()),
 			glamour.WithWordWrap(iw-2),
 		); err == nil {
 			m.mdRenderer = r
@@ -386,6 +388,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamToolMsg:
 		m.finalizeStreamBlock()
 		m.appendContent(m.renderToolCall(msg.tool, msg.durationMs))
+		m.appendContent("") // blank line after tool call
 		return m, nil
 
 	case streamCompactMsg:
@@ -567,8 +570,8 @@ func (m *chatModel) renderStatusBar(iw int) string {
 	// Model
 	if m.model != "" {
 		badges = append(badges, lipgloss.NewStyle().
-			Background(lipgloss.Color("#1f6feb")).
-			Foreground(lipgloss.Color("#ffffff")).
+			Background(lipgloss.Color("#30363d")).
+			Foreground(lipgloss.Color("#f0f6fc")).
 			Padding(0, 1).
 			Render(m.model))
 	}
@@ -734,7 +737,7 @@ func (m *chatModel) renderSelectList(iw int, maxLines int) []string {
 	visible := m.selectVisible()
 
 	// Title + optional filter
-	titleLine := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#d2a8ff")).PaddingLeft(1).Render(m.selectTitle)
+	titleLine := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).PaddingLeft(1).Render(m.selectTitle)
 	if m.selectFilter != "" {
 		filterDisplay := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Render(" 🔍 " + m.selectFilter + "▎")
 		titleLine += "  " + filterDisplay
@@ -790,7 +793,7 @@ func (m *chatModel) renderSelectList(iw int, maxLines int) []string {
 			plainW := lipgloss.Width(plain)
 			pad := max(0, iw-plainW)
 			line = lipgloss.NewStyle().
-				Background(lipgloss.Color("#1f6feb")).
+				Background(lipgloss.Color("#ff7b72")).
 				Foreground(lipgloss.Color("#ffffff")).
 				Bold(true).
 				Render(plain + strings.Repeat(" ", pad))
@@ -799,7 +802,7 @@ func (m *chatModel) renderSelectList(iw int, maxLines int) []string {
 			if isChecked {
 				indicator = successStyle.Render(" ✓ ")
 			}
-			label := accentStyle.Render(item.label)
+			label := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Render(item.label)
 			meta := ""
 			if item.meta != "" {
 				meta = subtitleStyle.Render("  " + item.meta)
@@ -895,13 +898,13 @@ func (m *chatModel) renderCompletionList(iw int) []string {
 			pw := lipgloss.Width(plain)
 			pad := max(0, iw-pw)
 			line := lipgloss.NewStyle().
-				Background(lipgloss.Color("#1f6feb")).
+				Background(lipgloss.Color("#ff7b72")).
 				Foreground(lipgloss.Color("#ffffff")).
 				Bold(true).
 				Render(plain + strings.Repeat(" ", pad))
 			lines = append(lines, line)
 		} else {
-			name := accentStyle.Render(fmt.Sprintf("%-12s", cmd.cmd))
+			name := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Render(fmt.Sprintf("%-12s", cmd.cmd))
 			desc := subtitleStyle.Render(cmd.desc)
 			lines = append(lines, "   "+name+" "+desc)
 		}
@@ -921,7 +924,6 @@ func (m *chatModel) viewportContent() string {
 }
 
 func (m *chatModel) renderStreamingBlock() string {
-	iw := m.innerWidth()
 	if m.streamBuf.Len() == 0 {
 		return lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#8b949e")).
@@ -929,8 +931,9 @@ func (m *chatModel) renderStreamingBlock() string {
 			PaddingLeft(1).
 			Render("thinking...") + "\n"
 	}
-	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#3fb950")).PaddingLeft(1).Render("Tofi")
-	text := lipgloss.NewStyle().Width(iw).PaddingLeft(1).Render(m.streamBuf.String())
+	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).PaddingLeft(1).Render("Tofi")
+	// Use the same markdown renderer as finalizeStreamBlock to avoid layout jumps
+	text := m.renderMarkdown(m.streamBuf.String())
 	return label + "\n" + text + "\n"
 }
 
@@ -938,7 +941,7 @@ func (m *chatModel) finalizeStreamBlock() {
 	if m.streamBuf.Len() == 0 {
 		return
 	}
-	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#3fb950")).PaddingLeft(1).Render("Tofi")
+	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).PaddingLeft(1).Render("Tofi")
 	text := m.renderMarkdown(m.streamBuf.String())
 	m.content.WriteString(label + "\n" + text + "\n")
 	m.streamBuf.Reset()
@@ -961,15 +964,30 @@ func (m *chatModel) refreshViewport() {
 
 func (m *chatModel) renderUserMsg(content string) string {
 	iw := m.innerWidth()
-	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#58a6ff")).PaddingLeft(1).Render("You")
+	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f0f6fc")).PaddingLeft(1).Render("You")
 	text := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Width(iw).PaddingLeft(1).Render(content)
 	return label + "\n" + text
 }
 
 func (m *chatModel) renderAssistantMsg(content string) string {
-	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#3fb950")).PaddingLeft(1).Render("Tofi")
+	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).PaddingLeft(1).Render("Tofi")
 	text := m.renderMarkdown(content)
 	return label + "\n" + text
+}
+
+// chatGlamourStyle returns a glamour style based on "dark" with compact margins.
+func chatGlamourStyle() ansi.StyleConfig {
+	// Start from the dark theme
+	s := glamourstyles.DarkStyleConfig
+	// Reduce document margin from default 2 to 1 for tighter layout
+	one := uint(1)
+	zero := uint(0)
+	s.Document.Margin = &one
+	s.Document.BlockPrefix = ""
+	s.Document.BlockSuffix = ""
+	// Remove paragraph margins to avoid double spacing
+	s.Paragraph.Margin = &zero
+	return s
 }
 
 // renderMarkdown renders content as Markdown using glamour.
@@ -977,30 +995,43 @@ func (m *chatModel) renderAssistantMsg(content string) string {
 func (m *chatModel) renderMarkdown(content string) string {
 	if m.mdRenderer == nil || strings.TrimSpace(content) == "" {
 		iw := m.innerWidth()
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e")).Width(iw).PaddingLeft(1).Render(content)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Width(iw).PaddingLeft(1).Render(content)
 	}
 	rendered, err := m.mdRenderer.Render(content)
 	if err != nil {
 		iw := m.innerWidth()
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e")).Width(iw).PaddingLeft(1).Render(content)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Width(iw).PaddingLeft(1).Render(content)
 	}
-	// glamour adds trailing newlines; trim and add left padding
+	// glamour adds trailing newlines; trim them
 	rendered = strings.TrimRight(rendered, "\n")
-	// Add 1-space left padding to each line for alignment with label
-	var padded strings.Builder
-	for i, line := range strings.Split(rendered, "\n") {
-		if i > 0 {
-			padded.WriteByte('\n')
-		}
-		padded.WriteByte(' ')
-		padded.WriteString(line)
-	}
-	return padded.String()
+	return rendered
+}
+
+// toolDisplayName maps internal tool IDs to user-friendly names.
+var toolDisplayName = map[string]string{
+	"tofi_shell":           "Shell",
+	"tofi_read":            "Read",
+	"tofi_write":           "Write",
+	"tofi_search":          "Search",
+	"tofi_wait":            "Wait",
+	"tofi_save_memory":     "Save Memory",
+	"tofi_recall_memory":   "Recall Memory",
+	"tofi_get_time":        "Get Time",
+	"tofi_get_user":        "Get User",
+	"tofi_notify":          "Notify",
+	"tofi_suggest_install": "Suggest Install",
+	"tofi_update_kanban":   "Update Card",
+	"web_search":           "Web Search",
+	"auto_compact":         "Auto Compact",
 }
 
 func (m *chatModel) renderToolCall(tool string, durationMs int) string {
-	icon := lipgloss.NewStyle().Foreground(lipgloss.Color("#d29922")).Render("⚡")
-	name := lipgloss.NewStyle().Foreground(lipgloss.Color("#d29922")).Bold(true).Render(tool)
+	display := tool
+	if friendly, ok := toolDisplayName[tool]; ok {
+		display = friendly
+	}
+	icon := lipgloss.NewStyle().Foreground(lipgloss.Color("#d29922")).Render("▸")
+	name := lipgloss.NewStyle().Foreground(lipgloss.Color("#d29922")).Bold(true).Render(display)
 	dur := ""
 	if durationMs > 0 {
 		dur = subtitleStyle.Render(fmt.Sprintf(" (%dms)", durationMs))
@@ -1224,7 +1255,7 @@ func (m *chatModel) handleSlashCommand(input string) {
 	switch cmd {
 	case "/help":
 		m.appendContent("")
-		m.appendContent(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#d2a8ff")).PaddingLeft(1).Render("Commands:"))
+		m.appendContent(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).PaddingLeft(1).Render("Commands:"))
 		m.appendContent("")
 		m.appendContent(" " + accentStyle.Render("/model <name>") + subtitleStyle.Render("     Switch model"))
 		m.appendContent(" " + accentStyle.Render("/model") + subtitleStyle.Render("             Show current model"))
@@ -1641,6 +1672,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	p := tea.NewProgram(model,
 		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 	)
 	model.program = p
 

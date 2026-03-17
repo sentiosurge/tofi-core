@@ -11,30 +11,29 @@ var connectCmd = &cobra.Command{
 	Use:     "connect",
 	Aliases: []string{"conn"},
 	Short:   "Manage notification connectors (Telegram, Slack, Discord, Email)",
+	RunE:    runConnConfigure,
+}
+
+var connectHelpCmd = &cobra.Command{
+	Use:     "commands",
+	Aliases: []string{"cmds"},
+	Short:   "Show all connect subcommands",
 	RunE:    runConnectHelp,
 }
 
 func init() {
 	rootCmd.AddCommand(connectCmd)
+	connectCmd.AddCommand(connectHelpCmd)
 }
 
 func runConnectHelp(cmd *cobra.Command, args []string) error {
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72"))
-	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#79c0ff"))
-	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
-	highlightStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7ee787"))
+	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc"))
 
-	fmt.Println()
-	fmt.Println(headerStyle.Render("  Connect") + descStyle.Render(" — Telegram, Slack, Discord, Email"))
-	fmt.Println()
-
-	// Highlight configure
-	fmt.Println(highlightStyle.Render("  Get started:"))
-	fmt.Println("    " + cmdStyle.Render("tofi connect configure") + descStyle.Render("   Interactive setup wizard"))
-	fmt.Println()
-
-	// Other commands
-	fmt.Println(descStyle.Render("  Commands:"))
+	content := "\n" +
+		titleStyle.Render("Connect") + subtitleStyle.Render(" — Telegram, Slack, Discord, Email") + "\n\n" +
+		titleStyle.Render("Get started") + "\n" +
+		"  " + cmdStyle.Render("tofi connect") + subtitleStyle.Render("             Interactive setup wizard") + "\n\n" +
+		subtitleStyle.Render("Commands") + "\n"
 
 	type cmdEntry struct {
 		name string
@@ -52,11 +51,12 @@ func runConnectHelp(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, c := range cmds {
-		fmt.Printf("    %s  %s\n", cmdStyle.Render(fmt.Sprintf("%-28s", c.name)), descStyle.Render(c.desc))
+		content += fmt.Sprintf("  %s  %s\n", cmdStyle.Render(fmt.Sprintf("%-28s", c.name)), subtitleStyle.Render(c.desc))
 	}
 
-	fmt.Println()
-	fmt.Println(descStyle.Render("  Use ") + cmdStyle.Render("tofi connect <command> --help") + descStyle.Render(" for details"))
+	content += "\n" + subtitleStyle.Render("Use ") + cmdStyle.Render("tofi connect <command> --help") + subtitleStyle.Render(" for details")
+
+	fmt.Println("\n" + renderBox(content))
 	fmt.Println()
 	return nil
 }

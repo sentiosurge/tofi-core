@@ -8,7 +8,6 @@ import (
 
 	"tofi-core/internal/daemon"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
 
@@ -51,52 +50,35 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	status := daemon.GetStatus(homeDir, startPort)
 
-	// Logo
-	logoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72"))
-	fmt.Println(logoStyle.Render(logo))
-	fmt.Println()
-
 	if !status.Running {
-		badge := lipgloss.NewStyle().
-			Background(lipgloss.Color("#30363d")).
-			Foreground(lipgloss.Color("#8b949e")).
-			Padding(0, 1).
-			Render(" Engine Stopped ")
-
-		fmt.Printf("  %s\n\n", badge)
-		fmt.Printf("  %s\n\n", subtitleStyle.Render("Run ")+accentStyle.Render("tofi start")+subtitleStyle.Render(" to launch the engine"))
+		content := "\n" +
+			subtitleStyle.Render("Engine Stopped") + "\n\n" +
+			subtitleStyle.Render("Run ") + accentStyle.Render("tofi start") + subtitleStyle.Render(" to launch")
+		fmt.Println(renderBox(content))
+		fmt.Println()
 		return nil
 	}
 
-	// Running badge
-	badge := lipgloss.NewStyle().
-		Background(lipgloss.Color("#238636")).
-		Foreground(lipgloss.Color("#ffffff")).
-		Padding(0, 1).
-		Render(" Engine Running ")
-
+	// Running
 	uptime := status.Uptime
 	if uptime == "" {
 		uptime = "unknown"
 	}
 
-	fmt.Printf("  %s  %s  %s\n", badge, subtitleStyle.Render("uptime "+uptime), subtitleStyle.Render(fmt.Sprintf("pid %d", status.PID)))
-	fmt.Println(subtitleStyle.Render("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"))
-
-
-	// Agents
 	total, active := appsCount(startPort)
 	inactive := total - active
-	fmt.Printf("  %s        %s  %s\n",
-		titleStyle.Render("Agents"),
-		successStyle.Render(fmt.Sprintf("%d active", active)),
-		subtitleStyle.Render(fmt.Sprintf("%d inactive  %d total", inactive, total)))
 
-	// Listening
-	fmt.Printf("  %s          %s\n",
-		titleStyle.Render("Port"),
-		accentStyle.Render(fmt.Sprintf("localhost:%d", startPort)))
+	content := "\n" +
+		successStyle.Render("Engine Running") + "  " +
+		subtitleStyle.Render("uptime "+uptime) + "  " +
+		subtitleStyle.Render(fmt.Sprintf("pid %d", status.PID)) + "\n\n" +
+		titleStyle.Render("Agents") + "    " +
+		successStyle.Render(fmt.Sprintf("%d active", active)) + "  " +
+		subtitleStyle.Render(fmt.Sprintf("%d inactive  %d total", inactive, total)) + "\n" +
+		titleStyle.Render("Port") + "      " +
+		accentStyle.Render(fmt.Sprintf("localhost:%d", startPort))
 
+	fmt.Println(renderBox(content))
 	fmt.Println()
 	return nil
 }

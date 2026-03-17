@@ -17,7 +17,7 @@ import (
 // --- tofi connect configure ---
 
 var connConfigureCmd = &cobra.Command{
-	Use:   "configure",
+	Use:   "config",
 	Short: "Interactive wizard to set up a connector",
 	Args:  cobra.NoArgs,
 	RunE:  runConnConfigure,
@@ -405,7 +405,7 @@ func (m connConfigModel) manageActions() []struct {
 		action manageAction
 		label  string
 	}{
-		{manageReceivers, "Manage authorized users"},
+		{manageReceivers, "Manage / Add users"},
 		{manageScope, "Change scope (global / app)"},
 	}
 	if m.selectedExisting != nil {
@@ -953,7 +953,7 @@ func (m connConfigModel) View() string {
 
 	var s strings.Builder
 	s.WriteString("\n")
-	s.WriteString(titleStyle.Render("  Connector Setup") + "\n\n")
+	s.WriteString(logoText + "  " + titleStyle.Render("Connect") + "\n\n")
 
 	switch m.step {
 	case connStepLoading:
@@ -974,9 +974,9 @@ func (m connConfigModel) View() string {
 			icon := connectorIcon(c.Type)
 			scope := subtitleStyle.Render("global")
 			if c.AppName != "" {
-				scope = lipgloss.NewStyle().Foreground(lipgloss.Color("#d2a8ff")).Render("app: " + c.AppName)
+				scope = titleStyle.Render("app: " + c.AppName)
 			} else if c.AppID != "" {
-				scope = lipgloss.NewStyle().Foreground(lipgloss.Color("#d2a8ff")).Render("app: " + c.AppID[:8])
+				scope = titleStyle.Render("app: " + c.AppID[:8])
 			}
 			receivers := subtitleStyle.Render(fmt.Sprintf("%d users", c.ReceiverCount))
 			s.WriteString("  " + cursor + icon + " " + nameStyle.Render(c.Type) + "  " + scope + "  " + receivers + "\n")
@@ -987,9 +987,9 @@ func (m connConfigModel) View() string {
 		addStyle := subtitleStyle
 		if m.cursor == addIdx {
 			addCursor = accentStyle.Render("❯ ")
-			addStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7ee787"))
+			addStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#3fb950"))
 		} else {
-			addStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7ee787"))
+			addStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950"))
 		}
 		s.WriteString("\n  " + addCursor + addStyle.Render("+ Add new connector") + "\n")
 		s.WriteString("\n" + subtitleStyle.Render("  ↑/↓ navigate · Enter select · Ctrl+C exit"))
@@ -1039,7 +1039,7 @@ func (m connConfigModel) View() string {
 			s.WriteString("  " + cursor + icon + " " + nameStyle.Render(opt.display) + "\n")
 			mode := subtitleStyle.Render("[notify-only]")
 			if opt.canReceive {
-				mode = lipgloss.NewStyle().Foreground(lipgloss.Color("#7ee787")).Render("[interactive]")
+				mode = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950")).Render("[interactive]")
 			}
 			s.WriteString("       " + mode + " " + subtitleStyle.Render(opt.description) + "\n\n")
 		}
@@ -1053,7 +1053,7 @@ func (m connConfigModel) View() string {
 		s.WriteString(subtitleStyle.Render("  Enter your "+m.connType.display+" token:") + "\n\n")
 		s.WriteString("  " + m.tokenInput.View() + "\n\n")
 		// Per-type hints
-		hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#d2a8ff"))
+		hintStyle := titleStyle
 		switch m.connType.id {
 		case "telegram":
 			s.WriteString(hintStyle.Render("  How to get a token:") + "\n")
@@ -1074,6 +1074,22 @@ func (m connConfigModel) View() string {
 	case connStepWebhook:
 		s.WriteString(subtitleStyle.Render("  Enter your "+m.connType.display+" webhook URL:") + "\n\n")
 		s.WriteString("  " + m.webhookInput.View() + "\n\n")
+		hintStyle := titleStyle
+		switch m.connType.id {
+		case "slack_webhook":
+			s.WriteString(hintStyle.Render("  How to get a Slack webhook URL:") + "\n")
+			s.WriteString(subtitleStyle.Render("  1. Go to ") + accentStyle.Render("api.slack.com/apps") + subtitleStyle.Render(" → create or select your app") + "\n")
+			s.WriteString(subtitleStyle.Render("  2. Click ") + accentStyle.Render("Incoming Webhooks") + subtitleStyle.Render(" in the left sidebar") + "\n")
+			s.WriteString(subtitleStyle.Render("  3. Toggle ") + accentStyle.Render("Activate Incoming Webhooks") + subtitleStyle.Render(" to On") + "\n")
+			s.WriteString(subtitleStyle.Render("  4. Click ") + accentStyle.Render("Add New Webhook to Workspace") + subtitleStyle.Render(" → pick a channel") + "\n")
+			s.WriteString(subtitleStyle.Render("  5. Copy the webhook URL (starts with https://hooks.slack.com/...)") + "\n\n")
+		case "discord_webhook":
+			s.WriteString(hintStyle.Render("  How to get a Discord webhook URL:") + "\n")
+			s.WriteString(subtitleStyle.Render("  1. Open Discord → go to the channel you want notifications in") + "\n")
+			s.WriteString(subtitleStyle.Render("  2. Click ") + accentStyle.Render("Edit Channel") + subtitleStyle.Render(" (gear icon) → ") + accentStyle.Render("Integrations") + "\n")
+			s.WriteString(subtitleStyle.Render("  3. Click ") + accentStyle.Render("Create Webhook") + subtitleStyle.Render(" (or view existing)") + "\n")
+			s.WriteString(subtitleStyle.Render("  4. Click ") + accentStyle.Render("Copy Webhook URL") + "\n\n")
+		}
 		s.WriteString(subtitleStyle.Render("  Enter to continue · Esc go back"))
 
 	case connStepEmail:
@@ -1243,10 +1259,10 @@ func (m connConfigModel) View() string {
 			// "Add new user"
 			addIdx := len(m.users)
 			addCursor := "  "
-			addStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#7ee787"))
+			addStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950"))
 			if m.userCursor == addIdx {
 				addCursor = accentStyle.Render("❯ ")
-				addStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7ee787"))
+				addStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#3fb950"))
 			}
 			s.WriteString("\n  " + addCursor + addStyle.Render("+ Add new user") + "\n")
 			// "Back"
@@ -1274,7 +1290,7 @@ func (m connConfigModel) View() string {
 			label string
 			color string
 		}{
-			{"Send test message", "#7ee787"},
+			{"Send test message", "#3fb950"},
 			{"Remove user", "#ff7b72"},
 			{"Back", ""},
 		}

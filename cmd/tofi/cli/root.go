@@ -17,7 +17,7 @@ var (
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#d2a8ff"))
+			Foreground(lipgloss.Color("#ff7b72"))
 
 	subtitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#8b949e"))
@@ -32,17 +32,50 @@ var (
 			Foreground(lipgloss.Color("#58a6ff"))
 )
 
-var logo = `
-  ╺╋╸┏━┓┏━╸╻
-   ┃ ┃ ┃┣╸ ┃
-   ╹ ┗━┛╹  ╹`
+var logoText = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72")).Render("/") +
+	lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f0f6fc")).Render("tofi")
+
+// logo is the standalone banner (used by other files for backward compat)
+var logo = logoText
+
+// boxStyle is the shared frame for all CLI output panels
+var boxStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(lipgloss.Color("#30363d")).
+	Padding(1, 2).
+	Width(52)
+
+// renderBox wraps content in a branded box with /tofi header
+func renderBox(content string) string {
+	header := logoText + "  " + subtitleStyle.Render("AI App Engine")
+	return boxStyle.Render(header + "\n" + content)
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "tofi",
 	Short: "Tofi — AI App Engine",
-	Long: lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72")).Render(logo) + "\n\n" +
-		titleStyle.Render("Tofi — AI App Engine") + "\n" +
-		subtitleStyle.Render("Create, manage, and run AI agents with natural language,\nskills, scheduling, and memory."),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// ./tofi with no args → branded quick-reference
+		cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc"))
+		content := "\n" +
+			subtitleStyle.Render("Create, manage, and run AI agents") + "\n" +
+			subtitleStyle.Render("with skills, scheduling, and memory.") + "\n\n" +
+			titleStyle.Render("Quick start") + "\n" +
+			"  " + cmdStyle.Render("tofi chat") + subtitleStyle.Render("          Start chatting with AI") + "\n" +
+			"  " + cmdStyle.Render("tofi chat --agent") + subtitleStyle.Render("   Chat with a specific agent") + "\n\n" +
+			titleStyle.Render("Engine") + "\n" +
+			"  " + cmdStyle.Render("tofi start") + subtitleStyle.Render("        Launch the engine") + "\n" +
+			"  " + cmdStyle.Render("tofi stop") + subtitleStyle.Render("         Stop the engine") + "\n" +
+			"  " + cmdStyle.Render("tofi restart") + subtitleStyle.Render("      Restart the engine") + "\n" +
+			"  " + cmdStyle.Render("tofi status") + subtitleStyle.Render("       Show engine status") + "\n\n" +
+			titleStyle.Render("More") + "\n" +
+			"  " + cmdStyle.Render("tofi app") + subtitleStyle.Render("          Manage AI agents") + "\n" +
+			"  " + cmdStyle.Render("tofi connect") + subtitleStyle.Render("      Set up notifications") + "\n" +
+			"  " + cmdStyle.Render("tofi help") + subtitleStyle.Render("         All commands")
+		fmt.Println("\n" + renderBox(content))
+		fmt.Println()
+		return nil
+	},
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }

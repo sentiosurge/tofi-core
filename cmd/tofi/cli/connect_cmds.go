@@ -60,7 +60,7 @@ func runConnList(cmd *cobra.Command, args []string) error {
 			if c.AppName != "" {
 				appLabel = c.AppName
 			}
-			scope = lipgloss.NewStyle().Foreground(lipgloss.Color("#d2a8ff")).Render("(app: " + appLabel + ")")
+			scope = titleStyle.Render("(app: " + appLabel + ")")
 		}
 
 		status := successStyle.Render("●")

@@ -308,7 +308,7 @@ func (m initModel) View() string {
 
 	// Header
 	s.WriteString("\n")
-	s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72")).Render(logo))
+	s.WriteString(logo)
 	s.WriteString("\n\n")
 
 	switch m.step {
