@@ -348,6 +348,14 @@ func (s *Server) executeWithAgent(card *storage.KanbanCardRecord, installedSkill
 		}
 	}
 
+	// 3b. 注入 tofi_notify 工具（基于 v2 connector 系统）
+	notifyDeps := capability.ConnectorNotifyDeps{
+		ListConnectorsByApp:    s.db.ListConnectorsByApp,
+		ListConnectors:         s.db.ListConnectors,
+		ListConnectorReceivers: s.db.ListConnectorReceivers,
+	}
+	extraTools = capability.InjectConnectorNotifyTool(extraTools, userID, appID, notifyDeps)
+
 	// 4. System Prompt — App runs get a focused prompt (no skill discovery)
 	var systemPrompt string
 	if isAppRun {
@@ -359,6 +367,7 @@ You are an EXECUTOR, not an advisor. When a task requires running commands, you 
 ## Tools Available
 - **run_skill_***: Invoke a configured skill. Skills return data or suggest commands. **If a skill returns commands, you MUST execute them with tofi_shell.**
 - **tofi_shell**: Run shell commands in a sandbox (python3, node, curl, git, jq, npm, etc.).
+- **tofi_notify**: Send notifications to connected receivers (Telegram, Slack, etc.). Specify "to" (receiver names or "all") and "message". Optional "channel" to target a specific connector type.
 - **update_kanban**: Report progress as you work.
 
 You can ONLY use the tools listed above. Do NOT attempt to search for or install new skills.
@@ -405,6 +414,7 @@ You are an EXECUTOR, not an advisor. When a task requires running commands, you 
 - **tofi_shell**: Run shell commands in a sandbox. Full system tools available (python3, node, curl, git, jq, npm, etc.). This is your primary tool for getting things done.
 - **tofi_search**: Find new skills on the skills.sh marketplace.
 - **tofi_suggest_install**: Suggest installing a skill — execution will PAUSE for user approval.
+- **tofi_notify**: Send notifications to connected receivers (Telegram, Slack, etc.). Specify "to" (receiver names or "all") and "message".
 - **update_kanban**: Report progress as you work.
 
 ## Sandbox Environment

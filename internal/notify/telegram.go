@@ -269,7 +269,9 @@ func PollForVerifyCode(botToken, code string, timeout time.Duration) (*VerifiedU
 
 		for _, update := range updateResp.Result {
 			offset = update.UpdateID + 1
-			if strings.TrimSpace(update.Message.Text) == code {
+			msgText := strings.TrimSpace(update.Message.Text)
+			// 支持两种格式：纯验证码 "1234" 和 /start 深链 "/start 1234"
+			if msgText == code || msgText == "/start "+code {
 				// 确认 offset 避免重复处理
 				http.Get(fmt.Sprintf("%s%s/getUpdates?offset=%d&timeout=1", telegramAPI, botToken, offset))
 

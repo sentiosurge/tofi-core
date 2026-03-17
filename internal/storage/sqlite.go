@@ -227,10 +227,22 @@ func InitDB(homeDir string) (*DB, error) {
 	db.migrateAgentsToApps()
 	db.migrateKanbanAppID()
 
-	// 创建 telegram_receivers 表
+	// 创建 telegram_receivers 表 (legacy, kept for migration)
 	if err := db.initTelegramReceiversTable(); err != nil {
 		log.Printf("⚠️  telegram_receivers table creation (may already exist): %v", err)
 	}
+
+	// 创建新 connector 表
+	if err := db.initConnectorsTable(); err != nil {
+		log.Printf("⚠️  connectors table creation (may already exist): %v", err)
+	}
+	if err := db.initConnectorReceiversTable(); err != nil {
+		log.Printf("⚠️  connector_receivers table creation (may already exist): %v", err)
+	}
+	if err := db.initAppConnectorsTable(); err != nil {
+		log.Printf("⚠️  app_connectors table creation (may already exist): %v", err)
+	}
+	db.migrateOldTelegramToConnectors()
 
 	// 创建 memories 表 + FTS5 全文搜索索引
 	if err := db.initMemoriesTable(); err != nil {

@@ -382,13 +382,30 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/v1/settings/enabled-models", s.AuthMiddleware(s.handleSetEnabledModels))
 	mux.HandleFunc("GET /api/v1/models", s.AuthMiddleware(s.handleListModels))
 
-	// Connectors (Telegram 等)
+	// Connectors (Telegram 等) — Legacy API (UI 兼容)
 	mux.HandleFunc("POST /api/v1/connectors/telegram/setup", s.AuthMiddleware(s.handleTelegramSetup))
 	mux.HandleFunc("GET /api/v1/connectors/telegram/status", s.AuthMiddleware(s.handleTelegramStatus))
 	mux.HandleFunc("POST /api/v1/connectors/telegram/verify", s.AuthMiddleware(s.handleTelegramVerify))
 	mux.HandleFunc("POST /api/v1/connectors/telegram/test", s.AuthMiddleware(s.handleTelegramTest))
 	mux.HandleFunc("DELETE /api/v1/connectors/telegram", s.AuthMiddleware(s.handleTelegramDelete))
 	mux.HandleFunc("DELETE /api/v1/connectors/telegram/receivers/{id}", s.AuthMiddleware(s.handleTelegramDeleteReceiver))
+
+	// Connectors v2 — 统一多渠道 API
+	mux.HandleFunc("GET /api/v1/connectors", s.AuthMiddleware(s.handleListConnectors))
+	mux.HandleFunc("POST /api/v1/connectors", s.AuthMiddleware(s.handleCreateConnector))
+	mux.HandleFunc("GET /api/v1/connectors/{id}", s.AuthMiddleware(s.handleGetConnector))
+	mux.HandleFunc("DELETE /api/v1/connectors/{id}", s.AuthMiddleware(s.handleDeleteConnector))
+	mux.HandleFunc("PUT /api/v1/connectors/{id}/toggle", s.AuthMiddleware(s.handleToggleConnector))
+	mux.HandleFunc("POST /api/v1/connectors/{id}/verify", s.AuthMiddleware(s.handleConnectorVerify))
+	mux.HandleFunc("GET /api/v1/connectors/{id}/verify-status", s.AuthMiddleware(s.handleConnectorVerifyStatus))
+	mux.HandleFunc("GET /api/v1/connectors/{id}/receivers", s.AuthMiddleware(s.handleConnectorReceivers))
+	mux.HandleFunc("DELETE /api/v1/connectors/{id}/receivers/{rid}", s.AuthMiddleware(s.handleDeleteConnectorReceiver))
+	mux.HandleFunc("POST /api/v1/connectors/{id}/test", s.AuthMiddleware(s.handleConnectorTest))
+
+	// App-Connector linking
+	mux.HandleFunc("GET /api/v1/apps/{id}/connectors", s.AuthMiddleware(s.handleListAppConnectors))
+	mux.HandleFunc("POST /api/v1/apps/{id}/connectors", s.AuthMiddleware(s.handleLinkAppConnector))
+	mux.HandleFunc("DELETE /api/v1/apps/{id}/connectors/{cid}", s.AuthMiddleware(s.handleUnlinkAppConnector))
 
 	// Kanban 看板路由
 	mux.HandleFunc("POST /api/v1/kanban", s.AuthMiddleware(s.handleCreateKanbanCard))
