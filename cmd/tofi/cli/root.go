@@ -51,6 +51,26 @@ func renderBox(content string) string {
 	return boxStyle.Render(header + "\n" + content)
 }
 
+// tuiBoxStyle is a wider box for interactive TUI wizards
+var tuiBoxStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(lipgloss.Color("#30363d")).
+	Padding(1, 2).
+	Width(68)
+
+// renderTUIBox wraps TUI content in a branded box with a section title
+func renderTUIBox(section string, content string) string {
+	header := logoText + "  " + titleStyle.Render(section)
+	return tuiBoxStyle.Render(header + "\n\n" + content)
+}
+
+// tuiSelectedRow is the shared highlight style for TUI list selection
+// Usage: tuiSelectedRow.Render("► " + label)
+var tuiSelectedRow = lipgloss.NewStyle().
+	Background(lipgloss.Color("#ff7b72")).
+	Foreground(lipgloss.Color("#0d1117")).
+	Bold(true)
+
 var rootCmd = &cobra.Command{
 	Use:   "tofi",
 	Short: "Tofi — AI App Engine",

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -1031,6 +1032,22 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			OutputCostPer1M: info.OutputCostPer1M,
 		})
 	}
+
+	// Sort by provider order: openai → anthropic → gemini → deepseek
+	providerOrder := map[string]int{
+		"openai": 0, "anthropic": 1, "gemini": 2, "deepseek": 3,
+	}
+	sort.SliceStable(models, func(i, j int) bool {
+		oi := providerOrder[models[i].Provider]
+		oj := providerOrder[models[j].Provider]
+		if _, ok := providerOrder[models[i].Provider]; !ok {
+			oi = 99
+		}
+		if _, ok := providerOrder[models[j].Provider]; !ok {
+			oj = 99
+		}
+		return oi < oj
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models)

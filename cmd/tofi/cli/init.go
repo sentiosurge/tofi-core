@@ -119,11 +119,11 @@ func (m initModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			// Allow ctrl+c from text inputs
-			if m.step == stepAPIKey || m.step == stepUsername || m.step == stepPassword {
-				m.quitting = true
-				return m, tea.Quit
-			}
+			m.quitting = true
+			return m, tea.Quit
+		case "esc":
+			m.quitting = true
+			return m, tea.Quit
 		case "q":
 			if m.step != stepAPIKey && m.step != stepUsername && m.step != stepPassword {
 				m.quitting = true
@@ -306,11 +306,6 @@ func (m initModel) View() string {
 
 	var s strings.Builder
 
-	// Header
-	s.WriteString("\n")
-	s.WriteString(logo)
-	s.WriteString("\n\n")
-
 	switch m.step {
 	case stepWelcome:
 		s.WriteString(titleStyle.Render("  Welcome to Tofi!") + "\n\n")
@@ -437,8 +432,7 @@ func (m initModel) View() string {
 		}
 	}
 
-	s.WriteString("\n")
-	return s.String()
+	return "\n" + renderTUIBox("Init", s.String()) + "\n"
 }
 
 func maskKey(key string) string {

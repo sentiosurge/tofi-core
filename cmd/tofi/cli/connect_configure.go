@@ -952,8 +952,6 @@ func (m connConfigModel) View() string {
 	}
 
 	var s strings.Builder
-	s.WriteString("\n")
-	s.WriteString(logoText + "  " + titleStyle.Render("Connect") + "\n\n")
 
 	switch m.step {
 	case connStepLoading:
@@ -1340,8 +1338,7 @@ func (m connConfigModel) View() string {
 		}
 	}
 
-	s.WriteString("\n")
-	return s.String()
+	return "\n" + renderTUIBox("Connect", s.String()) + "\n"
 }
 
 // --- QR rendering ---

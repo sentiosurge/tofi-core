@@ -11,24 +11,52 @@ import (
 )
 
 var configCmd = &cobra.Command{
-	Use:   "config",
-	Short: "Manage configuration",
-	Long: `View and manage Tofi configuration.
+	Use:     "config",
+	Aliases: []string{"cfg"},
+	Short:   "Manage configuration (interactive wizard)",
+	RunE:    runConfigWizard,
+}
 
-  tofi config keys              List configured AI provider keys
-  tofi config set-key <provider> <key>   Set an AI provider key
-  tofi config delete-key <provider>      Delete an AI provider key
-  tofi config model              Show preferred model
-  tofi config model <name>       Set preferred model`,
+var configHelpCmd = &cobra.Command{
+	Use:     "commands",
+	Aliases: []string{"cmds"},
+	Short:   "Show all config subcommands",
+	RunE:    runConfigHelp,
 }
 
 func init() {
 	rootCmd.AddCommand(configCmd)
 
+	configCmd.AddCommand(configHelpCmd)
+	configCmd.AddCommand(configWizardCmd)
 	configCmd.AddCommand(configKeysCmd)
 	configCmd.AddCommand(configSetKeyCmd)
 	configCmd.AddCommand(configDeleteKeyCmd)
 	configCmd.AddCommand(configModelCmd)
+}
+
+func runConfigHelp(cmd *cobra.Command, args []string) error {
+	content := titleStyle.Render("Config Commands") + "\n\n"
+
+	commands := []struct {
+		cmd  string
+		desc string
+	}{
+		{"tofi config", "Interactive configuration wizard"},
+		{"tofi config keys", "List configured AI provider keys"},
+		{"tofi config set-key <provider> <key>", "Set an AI provider key"},
+		{"tofi config delete-key <provider>", "Delete an AI provider key"},
+		{"tofi config model [name]", "View or set preferred model"},
+	}
+
+	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc"))
+	for _, c := range commands {
+		content += cmdStyle.Render(c.cmd) + "\n"
+		content += subtitleStyle.Render("  "+c.desc) + "\n\n"
+	}
+
+	fmt.Println(renderBox(content))
+	return nil
 }
 
 // --- tofi config keys ---
