@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -609,12 +610,16 @@ func (m *chatModel) padBorderLine(content string, iw int) string {
 
 func (m *chatModel) renderStatusBar(iw int) string {
 	var leftText string
+	selectKey := "Opt"
+	if runtime.GOOS != "darwin" {
+		selectKey = "Shift"
+	}
 	if m.ctrlCOnce {
 		leftText = errorStyle.Render("Press Ctrl+C again to exit")
 	} else if m.streaming {
-		leftText = subtitleStyle.Render("Esc stop · Ctrl+C stop")
+		leftText = subtitleStyle.Render("Esc stop · Ctrl+C stop · " + selectKey + "+drag select")
 	} else {
-		leftText = subtitleStyle.Render("/help · Esc quit")
+		leftText = subtitleStyle.Render("/help · Esc quit · " + selectKey + "+drag select")
 	}
 	left := leftText
 
