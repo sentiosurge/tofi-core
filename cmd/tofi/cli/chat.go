@@ -118,6 +118,7 @@ type slashCmd struct {
 
 var slashCommands = []slashCmd{
 	{"/help", "Show available commands"},
+	{"/status", "Session info and usage"},
 	{"/model", "Switch or view model"},
 	{"/skills", "Manage skills"},
 	{"/new", "Start new session"},
@@ -1021,6 +1022,7 @@ var toolDisplayName = map[string]string{
 	"tofi_notify":          "Notify",
 	"tofi_suggest_install": "Suggest Install",
 	"tofi_update_progress": "Update Progress",
+	"tofi_session_info":    "Session Info",
 	"web_search":           "Web Search",
 	"auto_compact":         "Auto Compact",
 }
@@ -1257,6 +1259,7 @@ func (m *chatModel) handleSlashCommand(input string) {
 		m.appendContent("")
 		m.appendContent(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).PaddingLeft(1).Render("Commands:"))
 		m.appendContent("")
+		m.appendContent(" " + accentStyle.Render("/status") + subtitleStyle.Render("            Session info and usage"))
 		m.appendContent(" " + accentStyle.Render("/model <name>") + subtitleStyle.Render("     Switch model"))
 		m.appendContent(" " + accentStyle.Render("/model") + subtitleStyle.Render("             Show current model"))
 		m.appendContent(" " + accentStyle.Render("/skills <s1,s2>") + subtitleStyle.Render("   Enable skills"))
@@ -1266,6 +1269,30 @@ func (m *chatModel) handleSlashCommand(input string) {
 		m.appendContent(" " + accentStyle.Render("/history") + subtitleStyle.Render("           List past sessions"))
 		m.appendContent(" " + accentStyle.Render("/switch <id>") + subtitleStyle.Render("      Switch to session"))
 		m.appendContent(" " + accentStyle.Render("/help") + subtitleStyle.Render("              Show this help"))
+		m.appendContent("")
+
+	case "/status":
+		m.appendContent("")
+		m.appendContent(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).PaddingLeft(1).Render("Session Status"))
+		m.appendContent("")
+		m.appendContent("  " + subtitleStyle.Render("Session: ") + accentStyle.Render(m.sessionID))
+		m.appendContent("  " + subtitleStyle.Render("Model:   ") + accentStyle.Render(m.model))
+		inTok := formatTokens(m.totalInputTokens)
+		outTok := formatTokens(m.totalOutputTokens)
+		m.appendContent("  " + subtitleStyle.Render("Tokens:  ") + lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Render(fmt.Sprintf("↑%s in · ↓%s out", inTok, outTok)))
+		m.appendContent("  " + subtitleStyle.Render("Cost:    ") + lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Render(fmt.Sprintf("$%.4f", m.totalCost)))
+		if m.contextPct > 0 {
+			ctxColor := "#3fb950"
+			if m.contextPct > 80 {
+				ctxColor = "#f85149"
+			} else if m.contextPct > 60 {
+				ctxColor = "#d29922"
+			}
+			m.appendContent("  " + subtitleStyle.Render("Context: ") + lipgloss.NewStyle().Foreground(lipgloss.Color(ctxColor)).Render(fmt.Sprintf("%d%%", m.contextPct)))
+		}
+		if len(m.skills) > 0 {
+			m.appendContent("  " + subtitleStyle.Render("Skills:  ") + accentStyle.Render(strings.Join(m.skills, ", ")))
+		}
 		m.appendContent("")
 
 	case "/model":

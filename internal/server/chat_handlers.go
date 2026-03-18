@@ -343,10 +343,11 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 		Messages:   providerMessages,
 		MCPServers: capMCPServers,
 		SkillTools: skillTools,
-		ExtraTools: append(append(append(append(extraTools,
+		ExtraTools: append(append(append(append(append(extraTools,
 			s.buildChatWishTools(userID, sessionID, session, scope)...),
 			s.buildMemoryTools(userID, "")...),
-			s.buildBuiltinTools(userID)...)),
+			s.buildBuiltinTools(userID)...),
+			buildSessionInfoTool(session, resolvedModel))),
 		SandboxDir: sandboxDir,
 		UserDir:    userID,
 		Executor:   s.executor,
@@ -645,6 +646,36 @@ func (s *Server) buildChatWishTools(userID, sessionID string, session *chat.Sess
 					return fmt.Sprintf("Installation of '%s' timed out. Continuing without it.", skillName), nil
 				}
 			},
+		},
+	}
+}
+
+// buildSessionInfoTool creates a tool that lets the agent query current session info.
+func buildSessionInfoTool(session *chat.Session, model string) mcp.ExtraBuiltinTool {
+	return mcp.ExtraBuiltinTool{
+		Schema: provider.Tool{
+			Name:        "tofi_session_info",
+			Description: "Get current chat session information: session ID, model, token usage, cost, and message count. Use this when you need to report session status or check resource usage.",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		Handler: func(args map[string]any) (string, error) {
+			msgCount := len(session.Messages)
+			info := fmt.Sprintf(
+				"Session: %s\nModel: %s\nMessages: %d\nInput tokens: %d\nOutput tokens: %d\nTotal cost: $%.4f",
+				session.ID, model, msgCount,
+				session.Usage.InputTokens, session.Usage.OutputTokens,
+				session.Usage.Cost,
+			)
+			if session.Skills != "" {
+				info += "\nSkills: " + session.Skills
+			}
+			if session.Title != "" {
+				info += "\nTitle: " + session.Title
+			}
+			return info, nil
 		},
 	}
 }
