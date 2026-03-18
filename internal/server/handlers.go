@@ -505,7 +505,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value(UserContextKey).(string); ok {
 		user = u
 	} else {
-		user = "cli-admin"
+		user = "admin"
 	}
 
 	body, err := io.ReadAll(r.Body)

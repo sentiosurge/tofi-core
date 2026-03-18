@@ -312,8 +312,120 @@ func (d *ChatBridgeDispatcher) handleCommand(
 			d.restartFn(botToken, chatID)
 		}()
 
+	case "resume":
+		if receiver == nil {
+			_ = b.SendMessage(msg.ChatID, "请先完成验证。")
+			return
+		}
+		d.sendSessionHistory(connector, b, msg.ChatID, userID)
+
 	case "help":
 		_ = b.SendMessage(msg.ChatID, FormatHelp())
+	}
+}
+
+// sendSessionHistory 列出用户最近的 sessions，以 inline keyboard 形式展示
+func (d *ChatBridgeDispatcher) sendSessionHistory(
+	connector *storage.Connector, b ChatBridge, chatID, userID string,
+) {
+	scope := chat.ScopeUser
+	if connector.AppID != "" {
+		appPrefix := connector.AppID
+		if len(appPrefix) > 8 {
+			appPrefix = appPrefix[:8]
+		}
+		scope = chat.AgentScope("app-" + appPrefix)
+	}
+
+	sessions, err := d.db.ListChatSessions(userID, scope, 10)
+	if err != nil {
+		_ = b.SendMessage(chatID, "❌ 获取历史会话失败")
+		return
+	}
+	if len(sessions) == 0 {
+		_ = b.SendMessage(chatID, "没有历史会话。发消息即可开始新对话。")
+		return
+	}
+
+	// 当前 session
+	currentSessionID, _ := d.db.GetBridgeSession(connector.ID, chatID)
+
+	// Build inline keyboard — each session as one row
+	var buttons [][]InlineButton
+	for _, s := range sessions {
+		title := s.Title
+		if title == "" {
+			title = "(未命名)"
+		}
+		titleRunes := []rune(title)
+		if len(titleRunes) > 25 {
+			title = string(titleRunes[:22]) + "..."
+		}
+
+		// Parse time
+		timeStr := ""
+		if t, parseErr := time.Parse("2006-01-02 15:04:05", s.UpdatedAt); parseErr == nil {
+			timeStr = t.Format("01/02 15:04")
+		} else if t, parseErr := time.Parse("2006-01-02T15:04:05Z", s.UpdatedAt); parseErr == nil {
+			timeStr = t.Format("01/02 15:04")
+		}
+
+		label := fmt.Sprintf("%s · %d条 · %s", title, s.MessageCount, timeStr)
+		if s.ID == currentSessionID {
+			label = "✅ " + label
+		}
+
+		buttons = append(buttons, []InlineButton{
+			{Label: label, CallbackData: "switch:" + s.ID},
+		})
+	}
+
+	_ = b.SendMessageWithButtons(chatID, "📋 最近会话（点击切换）：", buttons)
+}
+
+// HandleCallback 处理 inline keyboard 按钮点击
+func (d *ChatBridgeDispatcher) HandleCallback(connectorID, chatID, senderID, data string) {
+	// Get bridge
+	bridgeVal, ok := d.bridges.Load(connectorID)
+	if !ok {
+		return
+	}
+	b := bridgeVal.(ChatBridge)
+
+	// Parse callback data
+	if len(data) > 7 && data[:7] == "switch:" {
+		sessionID := data[7:]
+		// Update bridge session mapping
+		connector, err := d.db.GetConnectorByID(connectorID)
+		if err != nil {
+			_ = b.SendMessage(chatID, "❌ 内部错误")
+			return
+		}
+		if err := d.db.SetBridgeSession(connectorID, chatID, connector.UserID, sessionID); err != nil {
+			_ = b.SendMessage(chatID, "❌ 切换失败")
+			return
+		}
+
+		// Load session to show title
+		scope := chat.ScopeUser
+		if connector.AppID != "" {
+			appPrefix := connector.AppID
+			if len(appPrefix) > 8 {
+				appPrefix = appPrefix[:8]
+			}
+			scope = chat.AgentScope("app-" + appPrefix)
+		}
+		session, loadErr := d.chatStore.Load(connector.UserID, scope, sessionID)
+		title := sessionID[:10]
+		if loadErr == nil && session.Title != "" {
+			titleRunes := []rune(session.Title)
+			if len(titleRunes) > 30 {
+				title = string(titleRunes[:27]) + "..."
+			} else {
+				title = session.Title
+			}
+		}
+		_ = b.SendMessage(chatID, fmt.Sprintf("✅ 已切换到: %s\n继续发消息即可。", title))
 	}
 }
 

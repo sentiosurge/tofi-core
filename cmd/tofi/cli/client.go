@@ -62,7 +62,7 @@ func (c *apiClient) loadToken() string {
 	if cfg.JWTSecret != "" {
 		os.Setenv("TOFI_JWT_SECRET", cfg.JWTSecret)
 		server.InitAuth()
-		token, err := server.GenerateToken("cli-admin", "admin")
+		token, err := server.GenerateToken("admin", "admin")
 		if err != nil {
 			return ""
 		}

@@ -19,7 +19,7 @@ var pendingVerifiesMu sync.Mutex
 
 // handleListConnectors GET /api/v1/connectors
 func (s *Server) handleListConnectors(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 
 	connectors, err := s.db.ListConnectors(userID)
 	if err != nil {
@@ -59,7 +59,7 @@ func (s *Server) handleListConnectors(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateConnector POST /api/v1/connectors
 func (s *Server) handleCreateConnector(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 
 	var req struct {
 		Type   string `json:"type"`
@@ -146,7 +146,7 @@ func (s *Server) handleCreateConnector(w http.ResponseWriter, r *http.Request) {
 
 // handleGetConnector GET /api/v1/connectors/{id}
 func (s *Server) handleGetConnector(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	connID := r.PathValue("id")
 
 	conn, err := s.db.GetConnector(connID, userID)
@@ -167,7 +167,7 @@ func (s *Server) handleGetConnector(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteConnector DELETE /api/v1/connectors/{id}
 func (s *Server) handleDeleteConnector(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	connID := r.PathValue("id")
 
 	conn, err := s.db.GetConnector(connID, userID)
@@ -209,7 +209,7 @@ func (s *Server) handleDeleteConnector(w http.ResponseWriter, r *http.Request) {
 
 // handleToggleConnector PUT /api/v1/connectors/{id}/toggle
 func (s *Server) handleToggleConnector(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	connID := r.PathValue("id")
 
 	var req struct {
@@ -246,7 +246,7 @@ func (s *Server) handleToggleConnector(w http.ResponseWriter, r *http.Request) {
 // handleConnectorVerify POST /api/v1/connectors/{id}/verify
 // Telegram: 生成验证码，polling 等待
 func (s *Server) handleConnectorVerify(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	connID := r.PathValue("id")
 
 	conn, err := s.db.GetConnector(connID, userID)
@@ -382,7 +382,7 @@ func (s *Server) handleConnectorVerify(w http.ResponseWriter, r *http.Request) {
 
 // handleConnectorReceivers GET /api/v1/connectors/{id}/receivers
 func (s *Server) handleConnectorReceivers(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	connID := r.PathValue("id")
 
 	// 验证 connector 归属
@@ -403,7 +403,7 @@ func (s *Server) handleConnectorReceivers(w http.ResponseWriter, r *http.Request
 
 // handleDeleteConnectorReceiver DELETE /api/v1/connectors/{id}/receivers/{rid}
 func (s *Server) handleDeleteConnectorReceiver(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	connID := r.PathValue("id")
 	ridStr := r.PathValue("rid")
 	rid, err := strconv.ParseInt(ridStr, 10, 64)
@@ -441,7 +441,7 @@ func (s *Server) handleDeleteConnectorReceiver(w http.ResponseWriter, r *http.Re
 
 // handleConnectorTest POST /api/v1/connectors/{id}/test
 func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	connID := r.PathValue("id")
 
 	conn, err := s.db.GetConnector(connID, userID)
@@ -532,7 +532,7 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 
 // handleLinkAppConnector POST /api/v1/apps/{id}/connectors
 func (s *Server) handleLinkAppConnector(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	appID := r.PathValue("id")
 
 	// 验证 app 存在
@@ -566,7 +566,7 @@ func (s *Server) handleLinkAppConnector(w http.ResponseWriter, r *http.Request) 
 
 // handleUnlinkAppConnector DELETE /api/v1/apps/{id}/connectors/{cid}
 func (s *Server) handleUnlinkAppConnector(w http.ResponseWriter, r *http.Request) {
-	_ = r.Header.Get("X-User-ID")
+	_ = r.Context().Value(UserContextKey).(string)
 	appID := r.PathValue("id")
 	connID := r.PathValue("cid")
 
@@ -586,7 +586,7 @@ func (s *Server) handleUnlinkAppConnector(w http.ResponseWriter, r *http.Request
 
 // handleListAppConnectors GET /api/v1/apps/{id}/connectors
 func (s *Server) handleListAppConnectors(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
+	userID := r.Context().Value(UserContextKey).(string)
 	appID := r.PathValue("id")
 
 	connectors, err := s.db.ListConnectorsByApp(userID, appID)

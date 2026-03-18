@@ -25,7 +25,7 @@ func ParseSlashCommand(text string) *SlashCommand {
 		args = strings.TrimSpace(parts[1])
 	}
 	switch cmd {
-	case "start", "new", "stop", "help", "status", "restart":
+	case "start", "new", "stop", "help", "status", "restart", "resume":
 		return &SlashCommand{Command: cmd, Args: args}
 	default:
 		return nil
@@ -43,9 +43,10 @@ func FormatWelcome(botName string) string {
 // FormatHelp 生成帮助消息
 func FormatHelp() string {
 	return "可用命令：\n" +
-		"/new — 开始新对话（清除当前对话历史）\n" +
-		"/stop — 停止当前正在执行的任务\n" +
-		"/status — 查看当前对话状态\n" +
-		"/restart — 重启 Tofi 服务\n" +
-		"/help — 查看此帮助信息"
+		"/new — 开始新对话\n" +
+		"/resume — 继续历史会话\n" +
+		"/stop — 停止当前任务\n" +
+		"/status — 查看当前状态\n" +
+		"/restart — 重启服务\n" +
+		"/help — 查看帮助"
 }

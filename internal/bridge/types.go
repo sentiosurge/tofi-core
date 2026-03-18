@@ -7,12 +7,19 @@ import (
 	"tofi-core/internal/storage"
 )
 
+// InlineButton 表示一个 inline keyboard 按钮
+type InlineButton struct {
+	Label        string // 按钮文字
+	CallbackData string // 点击后回调的数据
+}
+
 // ChatBridge — 通用双向通信桥接接口。
 // Telegram/Discord/Slack/Email 各自实现。
 type ChatBridge interface {
 	Start(ctx context.Context) error
 	Stop()
 	SendMessage(chatID, text string) error
+	SendMessageWithButtons(chatID, text string, buttons [][]InlineButton) error
 	SendTyping(chatID string) error
 	ConnectorID() string
 	Type() storage.ConnectorType

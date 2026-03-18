@@ -96,6 +96,7 @@ type sessionMessage struct {
 // --- Bubble Tea messages ---
 
 type streamChunkMsg struct{ delta string }
+type streamThinkingMsg struct{ delta string }
 type streamToolMsg struct {
 	tool       string
 	durationMs int
@@ -111,6 +112,9 @@ type streamDoneMsg struct {
 type streamErrorMsg struct{ err string }
 type streamCompactMsg struct{}
 type ctrlCResetMsg struct{}
+type titlePollMsg struct{}      // poll server for AI-generated title
+type titleAnimTickMsg struct{}  // typewriter animation tick
+type resumeDoneMsg struct{ title string } // restore header after "Resuming" flash
 
 // --- Slash command definitions ---
 
@@ -125,8 +129,7 @@ var slashCommands = []slashCmd{
 	{"/model", "Switch or view model"},
 	{"/skills", "Manage skills"},
 	{"/new", "Start new session"},
-	{"/history", "List past sessions"},
-	{"/switch", "Switch to session"},
+	{"/resume", "Resume a past session"},
 }
 
 // --- Border color ---
@@ -155,9 +158,22 @@ type chatModel struct {
 	historyIdx   int     // -1 = not browsing, 0..len-1 = browsing
 	client       *apiClient
 	sessionID    string
-	scope       string
-	model       string
-	skills      []string
+	scope        string
+	model        string
+	skills       []string
+	sessionTitle     string // displayed in header: "New Chat" → AI-generated title
+	isNewSession     bool   // true until first AI response title is set
+	titleAnimating   bool   // typewriter animation in progress
+	titleTarget      string // target title to animate to
+	titleAnimIdx     int    // current char index in animation
+	titlePollCount   int    // retry counter for title polling
+	titleInitial     string // initial truncated title (to detect AI update)
+	resumingTitle    string // non-empty = header shows "Resuming · title" temporarily
+
+	// Thinking/reasoning display
+	thinkingBuf   strings.Builder // accumulated thinking text
+	thinkingDone  bool            // true after first content chunk arrives
+	thinkingStart time.Time       // when thinking started
 	contextPct        int
 	width             int
 	height            int
@@ -236,12 +252,29 @@ func newChatModel(client *apiClient) *chatModel {
 	}
 }
 
-// headerText returns the header title based on scope.
-func (m *chatModel) headerText() string {
+// headerTitle returns the styled header with session title.
+func (m *chatModel) headerTitle() string {
+	prefix := "TOFI Chat"
 	if agentName, ok := strings.CutPrefix(m.scope, "agent:"); ok {
-		return "TOFI Chat — " + agentName
+		prefix = "TOFI Chat — " + agentName
 	}
-	return "TOFI Chat"
+
+	styledPrefix := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).Render(" " + prefix + " ")
+
+	// Temporary "Resuming" flash
+	if m.resumingTitle != "" {
+		resumePart := " · Resuming · " + m.resumingTitle
+		styledResume := lipgloss.NewStyle().Foreground(lipgloss.Color("#d29922")).Render(resumePart)
+		return styledPrefix + styledResume
+	}
+
+	if m.sessionTitle == "" {
+		return styledPrefix
+	}
+
+	sessionPart := " · " + m.sessionTitle
+	styledSession := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e")).Render(sessionPart)
+	return styledPrefix + styledSession
 }
 
 // innerWidth returns the content width inside the border frame.
@@ -264,9 +297,9 @@ func (m *chatModel) autoResizeTextarea() {
 }
 
 // Fixed lines in the frame (everything except viewport).
-// top_border(1) + separator(1) + status(1) + separator(1) + textarea_lines + bottom_border(1)
+// padding(1) + top_border(1) + separator(1) + status(1) + separator(1) + textarea_lines + bottom_border(1)
 func (m *chatModel) fixedLines() int {
-	return 5 + m.textarea.Height()
+	return 6 + m.textarea.Height()
 }
 
 func (m *chatModel) Init() tea.Cmd {
@@ -306,6 +339,9 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendContent(m.renderUserMsg(msg))
 				m.appendContent("")
 				m.streaming = true
+				m.thinkingBuf.Reset()
+				m.thinkingDone = false
+				m.thinkingStart = time.Time{}
 				ctx, cancel := context.WithCancel(context.Background())
 				m.streamCancel = cancel
 				m.viewport.SetContent(m.viewportContent())
@@ -393,6 +429,9 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendContent("")
 
 			m.streaming = true
+			m.thinkingBuf.Reset()
+			m.thinkingDone = false
+			m.thinkingStart = time.Time{}
 			m.textarea.Blur()
 			ctx, cancel := context.WithCancel(context.Background())
 			m.streamCancel = cancel
@@ -449,12 +488,27 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
 
+	case streamThinkingMsg:
+		if m.thinkingStart.IsZero() {
+			m.thinkingStart = time.Now()
+		}
+		m.thinkingBuf.WriteString(msg.delta)
+		m.refreshViewport()
+		return m, nil
+
 	case streamChunkMsg:
+		// First content chunk = thinking is done
+		if !m.thinkingDone && m.thinkingBuf.Len() > 0 {
+			m.thinkingDone = true
+		}
 		m.streamBuf.WriteString(msg.delta)
 		m.refreshViewport()
 		return m, nil
 
 	case streamToolMsg:
+		if !m.thinkingDone && m.thinkingBuf.Len() > 0 {
+			m.thinkingDone = true
+		}
 		m.finalizeStreamBlock()
 		m.appendContent(m.renderToolCall(msg.tool, msg.durationMs))
 		m.appendContent("") // blank line after tool call
@@ -469,6 +523,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case streamDoneMsg:
+		m.thinkingDone = true // ensure thinking is collapsed
 		m.finalizeStreamBlock()
 		m.streaming = false
 		m.textarea.Focus()
@@ -484,6 +539,12 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendContent(subtitleStyle.Render(fmt.Sprintf(" %s · %d tokens · $%.4f",
 			msg.model, totalTok, msg.cost)))
 		m.appendContent("") // single blank line after turn
+
+		// After first AI response on new session, poll for AI-generated title
+		if m.isNewSession {
+			m.isNewSession = false
+			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return titlePollMsg{} })
+		}
 		return m, nil
 
 	case streamErrorMsg:
@@ -497,6 +558,58 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ctrlCResetMsg:
 		m.ctrlCOnce = false
 		return m, nil
+
+	case resumeDoneMsg:
+		// Clear the "Resuming" flash, restore normal title
+		if m.resumingTitle == msg.title {
+			m.resumingTitle = ""
+		}
+		return m, nil
+
+	case titlePollMsg:
+		m.titlePollCount++
+		if m.titlePollCount > 10 {
+			return m, nil // give up
+		}
+		// Poll server for AI-generated title
+		var resp struct{ Title string `json:"Title"` }
+		if err := m.client.get("/api/v1/chat/sessions/"+m.sessionID, &resp); err == nil && resp.Title != "" {
+			// Compare with what's currently displayed ("New Chat" or truncated text)
+			if resp.Title != m.sessionTitle {
+				// Check if this is just the truncated version (not AI-generated yet)
+				if m.titleInitial == "" {
+					m.titleInitial = resp.Title // first value seen = truncated
+				}
+				// If different from initial (truncated) OR first poll already has AI title
+				// (detected by: title is shorter than truncated, or totally different)
+				isAITitle := resp.Title != m.titleInitial || m.titlePollCount >= 2
+				if isAITitle {
+					m.titleTarget = resp.Title
+					m.titleAnimIdx = 0
+					m.titleAnimating = true
+					m.sessionTitle = ""
+					return m, tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg { return titleAnimTickMsg{} })
+				}
+				// First poll: just set the truncated title, keep polling for AI title
+				m.sessionTitle = resp.Title
+			}
+		}
+		return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return titlePollMsg{} })
+
+	case titleAnimTickMsg:
+		if !m.titleAnimating {
+			return m, nil
+		}
+		titleRunes := []rune(m.titleTarget)
+		m.titleAnimIdx++
+		if m.titleAnimIdx >= len(titleRunes) {
+			// Animation complete
+			m.sessionTitle = m.titleTarget
+			m.titleAnimating = false
+			return m, nil
+		}
+		m.sessionTitle = string(titleRunes[:m.titleAnimIdx])
+		return m, tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg { return titleAnimTickMsg{} })
 	}
 
 	if !m.streaming {
@@ -525,8 +638,9 @@ func (m *chatModel) View() string {
 	iw := m.innerWidth()
 	var out strings.Builder
 
-	// Top border with title
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).Render(" " + m.headerText() + " ")
+	// Top border with title (extra padding line above)
+	out.WriteString("\n")
+	title := m.headerTitle()
 	titleW := lipgloss.Width(title)
 	fillW := max(0, iw-titleW)
 	out.WriteString(bdr("╭─") + title + bdr(strings.Repeat("─", fillW)+"─╮") + "\n")
@@ -1010,7 +1124,7 @@ func (m *chatModel) renderCompletionList(iw int) []string {
 // --- Content management ---
 
 func (m *chatModel) viewportContent() string {
-	base := m.content.String()
+	base := "\n" + m.content.String()
 	if m.streaming {
 		base += m.renderStreamingBlock()
 	}
@@ -1018,20 +1132,71 @@ func (m *chatModel) viewportContent() string {
 }
 
 func (m *chatModel) renderStreamingBlock() string {
-	if m.streamBuf.Len() == 0 {
-		return lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#8b949e")).
+	var out strings.Builder
+
+	// Show thinking block (gray, max 3 lines)
+	if m.thinkingBuf.Len() > 0 {
+		thinkStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6e7681")).
 			Italic(true).
-			PaddingLeft(1).
-			Render("thinking...") + "\n"
+			PaddingLeft(1)
+
+		if m.thinkingDone {
+			// Collapsed: show duration only
+			dur := time.Since(m.thinkingStart).Truncate(time.Millisecond)
+			out.WriteString(thinkStyle.Render(fmt.Sprintf("💭 thinking (%s)", dur)) + "\n")
+		} else {
+			// In progress: show last 3 lines of thinking
+			lines := strings.Split(m.thinkingBuf.String(), "\n")
+			start := len(lines) - 3
+			if start < 0 {
+				start = 0
+			}
+			iw := m.innerWidth() - 2 // padding
+			for _, line := range lines[start:] {
+				r := []rune(line)
+				if len(r) > iw {
+					r = r[:iw]
+				}
+				out.WriteString(thinkStyle.Render(string(r)) + "\n")
+			}
+		}
 	}
-	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).PaddingLeft(1).Render("Tofi")
-	// Use the same markdown renderer as finalizeStreamBlock to avoid layout jumps
-	text := m.renderMarkdown(m.streamBuf.String())
-	return label + "\n" + text + "\n"
+
+	if m.streamBuf.Len() == 0 && !m.thinkingDone {
+		if m.thinkingBuf.Len() == 0 {
+			// No thinking either — show generic placeholder
+			out.WriteString(lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#8b949e")).
+				Italic(true).
+				PaddingLeft(1).
+				Render("thinking...") + "\n")
+		}
+		return out.String()
+	}
+
+	if m.streamBuf.Len() > 0 {
+		label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).PaddingLeft(1).Render("Tofi")
+		text := m.renderMarkdown(m.streamBuf.String())
+		out.WriteString(label + "\n" + text + "\n")
+	}
+	return out.String()
 }
 
 func (m *chatModel) finalizeStreamBlock() {
+	// Persist thinking collapsed line if there was thinking
+	if m.thinkingBuf.Len() > 0 && !m.thinkingStart.IsZero() {
+		dur := time.Since(m.thinkingStart).Truncate(time.Millisecond)
+		thinkLine := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6e7681")).
+			Italic(true).
+			PaddingLeft(1).
+			Render(fmt.Sprintf("💭 thinking (%s)", dur))
+		m.content.WriteString(thinkLine + "\n")
+		m.thinkingBuf.Reset()
+		m.thinkingStart = time.Time{}
+	}
+
 	if m.streamBuf.Len() == 0 {
 		return
 	}
@@ -1181,7 +1346,9 @@ func (m *chatModel) ensureSession() error {
 		if title == "" {
 			title = sessions[0].ID
 		}
-		m.initLines = append(m.initLines, "Resuming: "+title)
+		m.sessionTitle = title
+		m.isNewSession = false
+		m.resumingTitle = title // flash "Resuming · title" in header for 1s
 		m.loadAndShowHistory()
 		return nil
 	}
@@ -1190,6 +1357,11 @@ func (m *chatModel) ensureSession() error {
 }
 
 func (m *chatModel) createNewSession() error {
+	// If model not yet known, resolve default from server
+	if m.model == "" {
+		m.resolveDefaultModel()
+	}
+
 	reqBody := map[string]any{"scope": m.scope}
 	if m.model != "" {
 		reqBody["model"] = m.model
@@ -1205,17 +1377,13 @@ func (m *chatModel) createNewSession() error {
 	}
 
 	m.sessionID = resp.ID
+	m.sessionTitle = "New Chat"
+	m.isNewSession = true
 	if resp.Model != "" {
 		m.model = resp.Model
 	}
 
-	if m.initPending {
-		// Store for deferred rendering
-		m.initLines = append(m.initLines, "new:"+resp.ID)
-	} else {
-		m.appendContent(m.renderSuccess("New session: " + accentStyle.Render(resp.ID)))
-		m.appendContent("")
-	}
+	// Header shows "New Chat · session_id" — no content line needed
 	return nil
 }
 
@@ -1246,18 +1414,19 @@ func (m *chatModel) loadSessionInfo() error {
 	m.totalOutputTokens = int(resp.Usage.OutputTokens)
 	m.totalCost = resp.Usage.Cost
 
+	if resp.Title != "" {
+		m.sessionTitle = resp.Title
+	} else {
+		m.sessionTitle = m.sessionID
+	}
+	m.isNewSession = false
+
+	// Flash "Resuming · title" in header
+	m.resumingTitle = m.sessionTitle
+
 	if m.initPending {
-		if resp.Title != "" {
-			m.initLines = append(m.initLines, "Resuming: "+resp.Title)
-		}
-		m.initLines = append(m.initLines, "Session: "+m.sessionID)
 		m.initMessages = resp.Messages
 	} else {
-		if resp.Title != "" {
-			m.appendContent(m.renderInfo("Resuming: " + resp.Title))
-		}
-		m.appendContent(m.renderInfo("Session: " + m.sessionID))
-		m.appendContent("")
 		m.showRecentMessages(resp.Messages)
 	}
 	return nil
@@ -1292,21 +1461,27 @@ func (m *chatModel) displaySessionInit() {
 	}
 	m.initPending = false
 
-	for _, line := range m.initLines {
-		if strings.HasPrefix(line, "new:") {
-			sid := strings.TrimPrefix(line, "new:")
-			m.appendContent(m.renderSuccess("New session: " + accentStyle.Render(sid)))
-		} else {
-			m.appendContent(m.renderInfo(line))
-		}
-	}
-	m.appendContent("")
 	m.initLines = nil
+
+	// Schedule resume flash clear if resuming
+	if m.resumingTitle != "" {
+		m.scheduleResumeFlashClear(m.resumingTitle)
+	}
 
 	if len(m.initMessages) > 0 {
 		m.showRecentMessages(m.initMessages)
 		m.initMessages = nil
 	}
+}
+
+// scheduleResumeFlashClear sends a resumeDoneMsg after 1s to clear the "Resuming" header flash.
+func (m *chatModel) scheduleResumeFlashClear(title string) {
+	go func() {
+		time.Sleep(time.Second)
+		if m.program != nil {
+			m.program.Send(resumeDoneMsg{title: title})
+		}
+	}()
 }
 
 func (m *chatModel) showRecentMessages(messages []sessionMessage) {
@@ -1359,8 +1534,8 @@ func (m *chatModel) handleSlashCommand(input string) {
 		m.appendContent(" " + accentStyle.Render("/skills off") + subtitleStyle.Render("        Disable all skills"))
 		m.appendContent(" " + accentStyle.Render("/skills") + subtitleStyle.Render("            Show active skills"))
 		m.appendContent(" " + accentStyle.Render("/new") + subtitleStyle.Render("               Start new session"))
-		m.appendContent(" " + accentStyle.Render("/history") + subtitleStyle.Render("           List past sessions"))
-		m.appendContent(" " + accentStyle.Render("/switch <id>") + subtitleStyle.Render("      Switch to session"))
+		m.appendContent(" " + accentStyle.Render("/resume") + subtitleStyle.Render("            Resume a past session"))
+		m.appendContent(" " + accentStyle.Render("/resume <id>") + subtitleStyle.Render("      Resume session by ID"))
 		m.appendContent(" " + accentStyle.Render("/help") + subtitleStyle.Render("              Show this help"))
 		m.appendContent("")
 
@@ -1435,16 +1610,12 @@ func (m *chatModel) handleSlashCommand(input string) {
 			m.appendContent("")
 		}
 
-	case "/history":
-		m.showSessionHistorySelect()
-
-	case "/switch":
-		if len(parts) < 2 {
-			m.appendContent(m.renderInfo("Usage: /switch <session-id>"))
-			m.appendContent("")
-			return
+	case "/resume", "/history", "/switch":
+		if len(parts) >= 2 {
+			m.switchSession(parts[1])
+		} else {
+			m.showSessionHistorySelect()
 		}
-		m.switchSession(parts[1])
 
 	default:
 		m.appendContent(m.renderError("Unknown: "+cmd) + subtitleStyle.Render("  /help for commands"))
@@ -1490,7 +1661,10 @@ func (m *chatModel) switchSession(targetID string) {
 	if title == "" {
 		title = targetID
 	}
-	m.appendContent(m.renderSuccess("Switched to: " + accentStyle.Render(title)))
+	m.sessionTitle = title
+	m.isNewSession = false
+	m.resumingTitle = title // flash in header
+	m.scheduleResumeFlashClear(title)
 	m.appendContent("")
 	m.showRecentMessages(resp.Messages)
 }
@@ -1581,6 +1755,17 @@ func (m *chatModel) showModelSelect() {
 		m.appendContent("")
 	})
 	m.selectCursor = cursorIdx
+}
+
+// resolveDefaultModel fetches models list and picks the first one as default.
+func (m *chatModel) resolveDefaultModel() {
+	type apiModel struct {
+		Name string `json:"name"`
+	}
+	var models []apiModel
+	if err := m.client.get("/api/v1/models", &models); err == nil && len(models) > 0 {
+		m.model = models[0].Name
+	}
 }
 
 func (m *chatModel) fetchAndShowSkills() {
@@ -1694,6 +1879,11 @@ func (m *chatModel) streamChatMessage(ctx context.Context, message string) {
 		}
 
 		switch eventType {
+		case "thinking":
+			var chunk sseChunk
+			if json.Unmarshal([]byte(dataStr), &chunk) == nil && chunk.Delta != "" {
+				m.sendMsg(streamThinkingMsg{delta: chunk.Delta})
+			}
 		case "chunk":
 			var chunk sseChunk
 			if json.Unmarshal([]byte(dataStr), &chunk) == nil && chunk.Delta != "" {

@@ -53,12 +53,14 @@ type AgentConfig struct {
 	Executor      executor.Executor  // Sandbox executor (nil = use legacy functions)
 	SecretEnv     map[string]string  // Extra env vars injected into sandbox commands (skill secrets)
 	OnStreamChunk    func(sessionID, delta string)                              // Optional: called with each content delta during streaming
+	OnThinkingChunk  func(sessionID, delta string)                              // Optional: called with each reasoning/thinking delta during streaming
 	OnToolCall       func(toolName, input, output string, durationMs int64)    // Optional: called after each tool execution
 	MaxContextTokens int                                                       // 0 = auto-detect from model name
 	OnContextCompact func(summary string, originalTokens, compactedTokens int) // Optional: called when context is compacted
 	OnProgress       func(status string, progress int, message string)         // Generic progress update
 	OnStepStart      func(toolName, args string)                               // Generic step start
 	OnStepDone       func(toolName, result string, durationMs int64)           // Generic step done
+	LiveUsage        *provider.Usage                                           // Optional: updated in real-time during agent loop for tools to read
 }
 
 type MCPServerConfig struct {
@@ -303,6 +305,9 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 				if delta.Content != "" {
 					filter.Write(delta.Content)
 				}
+				if delta.Reasoning != "" && cfg.OnThinkingChunk != nil {
+					cfg.OnThinkingChunk(cfg.SessionID, delta.Reasoning)
+				}
 			})
 		} else {
 			// Non-streaming mode
@@ -315,6 +320,9 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 
 		llmCalls++
 		totalUsage.Add(resp.Usage)
+		if cfg.LiveUsage != nil {
+			*cfg.LiveUsage = totalUsage
+		}
 
 		// Append Assistant Message
 		assistantMsg := provider.Message{

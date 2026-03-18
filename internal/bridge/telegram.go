@@ -21,12 +21,16 @@ type verifyResult struct {
 	SenderID   string
 }
 
+// CallbackHandler 处理 inline keyboard 回调
+type CallbackHandler func(connectorID, chatID, senderID, data string)
+
 // TelegramPollingBridge 通过 long polling 接收 Telegram 消息
 type TelegramPollingBridge struct {
 	connectorID   string
 	botToken      string
 	botName       string
 	onMessage     MessageHandler
+	onCallback    CallbackHandler
 	sender        *TelegramSender
 	cancel        context.CancelFunc
 	offset        int64
@@ -44,11 +48,20 @@ func NewTelegramPollingBridge(connectorID, botToken, botName string, handler Mes
 	}
 }
 
+// SetCallbackHandler 设置 inline keyboard 回调处理器
+func (b *TelegramPollingBridge) SetCallbackHandler(handler CallbackHandler) {
+	b.onCallback = handler
+}
+
 func (b *TelegramPollingBridge) ConnectorID() string         { return b.connectorID }
 func (b *TelegramPollingBridge) Type() storage.ConnectorType { return storage.ConnectorTelegram }
 
 func (b *TelegramPollingBridge) SendMessage(chatID, text string) error {
 	return b.sender.SendMessage(chatID, text)
+}
+
+func (b *TelegramPollingBridge) SendMessageWithButtons(chatID, text string, buttons [][]InlineButton) error {
+	return b.sender.SendMessageWithButtons(chatID, text, buttons)
 }
 
 func (b *TelegramPollingBridge) SendTyping(chatID string) error {
@@ -59,9 +72,10 @@ func (b *TelegramPollingBridge) SendTyping(chatID string) error {
 func (b *TelegramPollingBridge) registerCommands() {
 	commands := []map[string]string{
 		{"command": "new", "description": "开始新对话"},
+		{"command": "resume", "description": "继续历史会话"},
 		{"command": "stop", "description": "停止当前任务"},
-		{"command": "status", "description": "查看当前对话状态"},
-		{"command": "restart", "description": "重启 Tofi 服务"},
+		{"command": "status", "description": "查看当前状态"},
+		{"command": "restart", "description": "重启服务"},
 		{"command": "help", "description": "查看帮助"},
 	}
 	body, _ := json.Marshal(map[string]any{"commands": commands})
@@ -115,6 +129,17 @@ func (b *TelegramPollingBridge) Start(ctx context.Context) error {
 				b.offset = u.UpdateID + 1
 			}
 
+			// Handle callback_query (inline keyboard button clicks)
+			if u.CallbackQuery != nil && b.onCallback != nil {
+				cq := u.CallbackQuery
+				chatID := fmt.Sprintf("%d", cq.Message.Chat.ID)
+				senderID := fmt.Sprintf("%d", cq.From.ID)
+				go b.onCallback(b.connectorID, chatID, senderID, cq.Data)
+				// Answer callback to remove loading state on button
+				b.answerCallbackQuery(cq.ID)
+				continue
+			}
+
 			if u.Message == nil || u.Message.Text == "" {
 				continue
 			}
@@ -157,6 +182,17 @@ func (b *TelegramPollingBridge) Stop() {
 	}
 }
 
+// answerCallbackQuery 应答 callback_query，移除按钮上的加载动画
+func (b *TelegramPollingBridge) answerCallbackQuery(callbackQueryID string) {
+	apiURL := fmt.Sprintf("%s%s/answerCallbackQuery?callback_query_id=%s",
+		telegramAPIBase, b.botToken, callbackQueryID)
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
+}
+
 // WaitForVerifyCode 注册一个验证码并等待用户发送 /start {code}。
 // 当用户发送后返回 chat 信息；超时返回错误。
 func (b *TelegramPollingBridge) WaitForVerifyCode(code string, timeout time.Duration) (*verifyResult, error) {
@@ -184,7 +220,7 @@ func (b *TelegramPollingBridge) WaitForVerifyCode(code string, timeout time.Dura
 }
 
 func (b *TelegramPollingBridge) getUpdates(ctx context.Context) ([]telegramUpdate, error) {
-	url := fmt.Sprintf("%s%s/getUpdates?offset=%d&timeout=30&allowed_updates=[\"message\"]",
+	url := fmt.Sprintf("%s%s/getUpdates?offset=%d&timeout=30&allowed_updates=[\"message\",\"callback_query\"]",
 		telegramAPIBase, b.botToken, b.offset)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -221,8 +257,16 @@ func (b *TelegramPollingBridge) getUpdates(ctx context.Context) ([]telegramUpdat
 // --- Telegram API types ---
 
 type telegramUpdate struct {
-	UpdateID int64            `json:"update_id"`
-	Message  *telegramMessage `json:"message,omitempty"`
+	UpdateID      int64                  `json:"update_id"`
+	Message       *telegramMessage       `json:"message,omitempty"`
+	CallbackQuery *telegramCallbackQuery `json:"callback_query,omitempty"`
+}
+
+type telegramCallbackQuery struct {
+	ID      string           `json:"id"`
+	From    telegramUser     `json:"from"`
+	Message *telegramMessage `json:"message,omitempty"`
+	Data    string           `json:"data"`
 }
 
 type telegramMessage struct {

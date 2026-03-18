@@ -142,6 +142,44 @@ func (ts *TelegramSender) sendRawReturnID(chatID, text, parseMode string) (int64
 	return result.Result.MessageID, nil
 }
 
+// SendMessageWithButtons 发送带 inline keyboard 的消息
+func (ts *TelegramSender) SendMessageWithButtons(chatID, text string, buttons [][]InlineButton) error {
+	if text == "" {
+		return nil
+	}
+
+	// Build inline_keyboard structure for Telegram API
+	keyboard := make([][]map[string]string, len(buttons))
+	for i, row := range buttons {
+		keyboard[i] = make([]map[string]string, len(row))
+		for j, btn := range row {
+			keyboard[i][j] = map[string]string{
+				"text":          btn.Label,
+				"callback_data": btn.CallbackData,
+			}
+		}
+	}
+
+	payload := map[string]any{
+		"chat_id":      chatID,
+		"text":         text,
+		"reply_markup": map[string]any{"inline_keyboard": keyboard},
+	}
+	body, _ := json.Marshal(payload)
+
+	apiURL := telegramAPIBase + ts.BotToken + "/sendMessage"
+	resp, err := http.Post(apiURL, "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("telegram sendMessage with buttons failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram sendMessage with buttons %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 // SendTyping 发送"正在输入"状态
 func (ts *TelegramSender) SendTyping(chatID string) error {
 	params := url.Values{

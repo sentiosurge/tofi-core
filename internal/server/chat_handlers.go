@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -339,6 +340,7 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	}
 
 	// 8. Build AgentConfig
+	var liveUsage provider.Usage // real-time usage updated during agent loop
 	agentCfg := mcp.AgentConfig{
 		System:     systemPrompt,
 		Messages:   providerMessages,
@@ -348,7 +350,8 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 			s.buildChatWishTools(userID, sessionID, session, scope)...),
 			s.buildMemoryTools(userID, "")...),
 			s.buildBuiltinTools(userID)...),
-			buildSessionInfoTool(session, resolvedModel))),
+			buildSessionInfoTool(session, resolvedModel, &liveUsage))),
+		LiveUsage:  &liveUsage,
 		SandboxDir: sandboxDir,
 		UserDir:    userID,
 		Executor:   s.executor,
@@ -362,6 +365,11 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 		agentCfg.OnStreamChunk = func(_ string, delta string) {
 			emit("chunk", map[string]string{"delta": delta})
 		}
+	}
+
+	// Thinking/reasoning chunks (always emit via SSE)
+	agentCfg.OnThinkingChunk = func(_ string, delta string) {
+		emit("thinking", map[string]string{"delta": delta})
 	}
 
 	if opts != nil && opts.OnToolCall != nil {
@@ -436,13 +444,18 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	session.Usage.OutputTokens += agentResult.TotalUsage.OutputTokens
 	session.Usage.Cost += agentResult.TotalCost
 
-	// Auto-generate title from first message (safe for multi-byte UTF-8)
-	if session.Title == "" && len(session.Messages) > 0 {
+	// Auto-generate title from first user message
+	firstTitle := session.Title == ""
+	if firstTitle && len(session.Messages) > 0 {
+		// Immediate: truncate first message as temporary title
 		runes := []rune(message)
 		if len(runes) > 50 {
 			runes = runes[:50]
 		}
 		session.Title = string(runes)
+
+		// Async: use AI to generate a better title (same model, no extra provider needed)
+		go s.generateSessionTitle(userID, scope, sessionID, resolvedModel, apiKey, message)
 	}
 
 	// Update model if it was auto-resolved
@@ -678,7 +691,9 @@ func (s *Server) buildChatWishTools(userID, sessionID string, session *chat.Sess
 }
 
 // buildSessionInfoTool creates a tool that lets the agent query current session info.
-func buildSessionInfoTool(session *chat.Session, model string) mcp.ExtraBuiltinTool {
+// liveUsage provides real-time token counts from the current agent loop iteration,
+// so the total includes both historical usage and the in-progress loop.
+func buildSessionInfoTool(session *chat.Session, model string, liveUsage *provider.Usage) mcp.ExtraBuiltinTool {
 	return mcp.ExtraBuiltinTool{
 		Schema: provider.Tool{
 			Name:        "tofi_session_info",
@@ -690,11 +705,18 @@ func buildSessionInfoTool(session *chat.Session, model string) mcp.ExtraBuiltinT
 		},
 		Handler: func(args map[string]any) (string, error) {
 			msgCount := len(session.Messages)
+			// Combine historical session usage with in-progress agent loop usage
+			inTok := session.Usage.InputTokens
+			outTok := session.Usage.OutputTokens
+			cost := session.Usage.Cost
+			if liveUsage != nil {
+				inTok += liveUsage.InputTokens
+				outTok += liveUsage.OutputTokens
+				cost += provider.CalculateCost(model, *liveUsage)
+			}
 			info := fmt.Sprintf(
 				"Session: %s\nModel: %s\nMessages: %d\nInput tokens: %d\nOutput tokens: %d\nTotal cost: $%.4f",
-				session.ID, model, msgCount,
-				session.Usage.InputTokens, session.Usage.OutputTokens,
-				session.Usage.Cost,
+				session.ID, model, msgCount, inTok, outTok, cost,
 			)
 			if session.Skills != "" {
 				info += "\nSkills: " + session.Skills
@@ -705,4 +727,59 @@ func buildSessionInfoTool(session *chat.Session, model string) mcp.ExtraBuiltinT
 			return info, nil
 		},
 	}
+}
+
+// generateSessionTitle uses AI to create a concise session title from the first user message.
+// Runs asynchronously — updates the session title in storage when done.
+func (s *Server) generateSessionTitle(userID, scope, sessionID, model, apiKey, firstMessage string) {
+	p, err := provider.NewForModel(model, apiKey)
+	if err != nil {
+		log.Printf("⚠️  [title:%s] failed to create provider: %v", sessionID[:8], err)
+		return
+	}
+
+	// Truncate long messages to save tokens
+	msgRunes := []rune(firstMessage)
+	if len(msgRunes) > 200 {
+		msgRunes = msgRunes[:200]
+	}
+
+	req := &provider.ChatRequest{
+		Model:  model,
+		System: "Generate a short title (max 20 characters) for a chat session based on the user's first message. Reply with ONLY the title, no quotes, no punctuation, no explanation. Use the SAME language as the user's message.",
+		Messages: []provider.Message{
+			{Role: "user", Content: string(msgRunes)},
+		},
+	}
+
+	resp, err := p.Chat(context.Background(), req)
+	if err != nil {
+		log.Printf("⚠️  [title:%s] AI title generation failed: %v", sessionID[:8], err)
+		return
+	}
+
+	title := strings.TrimSpace(resp.Content)
+	if title == "" {
+		return
+	}
+
+	// Enforce max length
+	titleRunes := []rune(title)
+	if len(titleRunes) > 30 {
+		titleRunes = titleRunes[:30]
+	}
+	title = string(titleRunes)
+
+	// Load → update title → save
+	session, err := s.chatStore.Load(userID, scope, sessionID)
+	if err != nil {
+		log.Printf("⚠️  [title:%s] failed to load session: %v", sessionID[:8], err)
+		return
+	}
+	session.Title = title
+	if err := s.chatStore.Save(userID, scope, session); err != nil {
+		log.Printf("⚠️  [title:%s] failed to save title: %v", sessionID[:8], err)
+		return
+	}
+	log.Printf("✅ [title:%s] %s", sessionID[:8], title)
 }

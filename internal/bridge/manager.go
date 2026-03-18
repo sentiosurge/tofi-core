@@ -141,9 +141,11 @@ func (m *ChatBridgeManager) createBridge(connector *storage.Connector) (ChatBrid
 		if err != nil {
 			return nil, err
 		}
-		return NewTelegramPollingBridge(
+		tb := NewTelegramPollingBridge(
 			connector.ID, cfg.BotToken, cfg.BotName, m.dispatcher.HandleMessage,
-		), nil
+		)
+		tb.SetCallbackHandler(m.dispatcher.HandleCallback)
+		return tb, nil
 	default:
 		return nil, fmt.Errorf("unsupported bridge type: %s", connector.Type)
 	}

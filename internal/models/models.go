@@ -172,7 +172,7 @@ type ExecutionContext struct {
 
 func NewExecutionContext(execID, user, homeDir string) *ExecutionContext {
 	if user == "" {
-		user = "cli-admin"
+		user = "admin"
 	}
 
 	// Initial paths (WorkflowName is empty initially)
