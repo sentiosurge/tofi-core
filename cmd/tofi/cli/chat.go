@@ -1020,7 +1020,7 @@ var toolDisplayName = map[string]string{
 	"tofi_get_user":        "Get User",
 	"tofi_notify":          "Notify",
 	"tofi_suggest_install": "Suggest Install",
-	"tofi_update_kanban":   "Update Card",
+	"tofi_update_progress": "Update Progress",
 	"web_search":           "Web Search",
 	"auto_compact":         "Auto Compact",
 }

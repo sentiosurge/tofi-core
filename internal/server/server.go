@@ -52,8 +52,6 @@ type Server struct {
 	workerPool *WorkerPool
 	scheduler  *Scheduler
 	executor   executor.Executor // Sandbox command executor
-	sseHub     *SSEHub           // SSE real-time push hub
-
 	// Hold channel management for agent tofi_suggest_install blocking
 	holdMu       sync.Mutex
 	holdChannels map[string]chan HoldSignal // cardID → signal channel
@@ -141,7 +139,6 @@ func NewServer(config Config) (*Server, error) {
 		db:              db,
 		workerPool:      workerPool,
 		executor:        exec,
-		sseHub:          NewSSEHub(),
 		holdChannels:    make(map[string]chan HoldSignal),
 		previewSessions: make(map[string]*PreviewSession),
 		chatStore:       chat.NewStore(config.HomeDir, db),
@@ -371,6 +368,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("DELETE /api/v1/chat/sessions/{id}", s.AuthMiddleware(s.handleDeleteChatSession))
 	mux.HandleFunc("PATCH /api/v1/chat/sessions/{id}", s.AuthMiddleware(s.handleUpdateChatSession))
 	mux.HandleFunc("POST /api/v1/chat/sessions/{id}/messages", s.AuthMiddleware(s.handleChatMessage))
+	mux.HandleFunc("POST /api/v1/chat/sessions/{id}/continue", s.AuthMiddleware(s.handleChatSessionContinue))
+	mux.HandleFunc("POST /api/v1/chat/sessions/{id}/abort", s.AuthMiddleware(s.handleChatSessionAbort))
 
 	// Settings / AI Key 管理
 	mux.HandleFunc("GET /api/v1/settings/ai-keys", s.AuthMiddleware(s.handleListAIKeys))
@@ -398,18 +397,6 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/v1/apps/{id}/connectors", s.AuthMiddleware(s.handleListAppConnectors))
 	mux.HandleFunc("POST /api/v1/apps/{id}/connectors", s.AuthMiddleware(s.handleLinkAppConnector))
 	mux.HandleFunc("DELETE /api/v1/apps/{id}/connectors/{cid}", s.AuthMiddleware(s.handleUnlinkAppConnector))
-
-	// Kanban 看板路由
-	mux.HandleFunc("POST /api/v1/kanban", s.AuthMiddleware(s.handleCreateKanbanCard))
-	mux.HandleFunc("GET /api/v1/kanban", s.AuthMiddleware(s.handleListKanbanCards))
-	mux.HandleFunc("GET /api/v1/kanban/{id}", s.AuthMiddleware(s.handleGetKanbanCard))
-	mux.HandleFunc("PUT /api/v1/kanban/{id}", s.AuthMiddleware(s.handleUpdateKanbanCard))
-	mux.HandleFunc("DELETE /api/v1/kanban/{id}", s.AuthMiddleware(s.handleDeleteKanbanCard))
-	mux.HandleFunc("POST /api/v1/kanban/{id}/actions/{index}/approve", s.AuthMiddleware(s.handleApproveAction))
-	mux.HandleFunc("POST /api/v1/kanban/{id}/continue", s.AuthMiddleware(s.handleContinueCard))
-	mux.HandleFunc("POST /api/v1/kanban/{id}/abort", s.AuthMiddleware(s.handleAbortCard))
-	mux.HandleFunc("POST /api/v1/kanban/{id}/retry", s.AuthMiddleware(s.handleRetryCard))
-	mux.HandleFunc("GET /api/v1/kanban/{id}/stream", s.handleCardStream) // SSE, auth via query param
 
 	// App 管理路由
 	mux.HandleFunc("POST /api/v1/apps/parse-schedule", s.AuthMiddleware(s.handleParseSchedule))

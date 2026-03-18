@@ -34,12 +34,23 @@ type Session struct {
 	Title   string   `xml:"title,attr,omitempty"`
 	Model   string   `xml:"model,attr,omitempty"`
 	Skills  string   `xml:"skills,attr,omitempty"` // comma-separated skill names
+	Status  string   `xml:"status,attr,omitempty"` // "" (idle), "running", "hold"
 	Created string   `xml:"created,attr"`
 	Updated string   `xml:"updated,attr"`
 
 	Summary  string    `xml:"summary,omitempty"`
+	HoldInfo *HoldInfo `xml:"hold_info,omitempty"`
 	Usage    Usage     `xml:"usage"`
 	Messages []Message `xml:"messages>msg"`
+}
+
+// HoldInfo describes why a session is in "hold" state (e.g., waiting for skill install).
+type HoldInfo struct {
+	XMLName xml.Name `xml:"hold_info"`
+	Type    string   `xml:"type,attr"`             // "skill_install"
+	SkillID string   `xml:"skill_id,attr"`
+	Name    string   `xml:"name,attr"`
+	Reason  string   `xml:"reason,attr,omitempty"`
 }
 
 // Usage tracks cumulative token usage and cost for a session.

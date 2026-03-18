@@ -22,13 +22,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// KanbanUpdater 定义更新看板卡片的接口（避免循环引用 storage 包）
-type KanbanUpdater interface {
-	UpdateKanbanCardBySystem(id string, status string, progress int, result string) error
-	AppendKanbanStep(id string, step map[string]interface{}) error
-	UpdateKanbanStep(id string, toolName string, status string, result string, durationMs int64) error
-}
-
 // SkillTool represents an installed skill callable as a tool in the agent loop
 type SkillTool struct {
 	ID           string
@@ -52,18 +45,20 @@ type AgentConfig struct {
 	Prompt        string
 	Messages      []provider.Message // Optional: full conversation history (overrides Prompt if non-empty)
 	MCPServers    []MCPServerConfig  // Active MCP server connections
-	KanbanCardID  string             // Kanban card ID for progress tracking
-	KanbanUpdater KanbanUpdater      // 看板更新器（可选）
+	SessionID     string             // Session/task identifier for streaming callbacks
 	SkillTools    []SkillTool        // Installed skills as callable tools
 	ExtraTools    []ExtraBuiltinTool // Additional built-in tools (search_skills, etc.)
 	SandboxDir    string             // Sandbox directory for shell command execution (optional)
 	UserDir       string             // User persistent directory for installed tools (optional)
 	Executor      executor.Executor  // Sandbox executor (nil = use legacy functions)
 	SecretEnv     map[string]string  // Extra env vars injected into sandbox commands (skill secrets)
-	OnStreamChunk    func(cardID, delta string) // Optional: called with each content delta during streaming
-	OnToolCall       func(toolName, input, output string, durationMs int64) // Optional: called after each tool execution
-	MaxContextTokens int                                                    // 0 = auto-detect from model name
+	OnStreamChunk    func(sessionID, delta string)                              // Optional: called with each content delta during streaming
+	OnToolCall       func(toolName, input, output string, durationMs int64)    // Optional: called after each tool execution
+	MaxContextTokens int                                                       // 0 = auto-detect from model name
 	OnContextCompact func(summary string, originalTokens, compactedTokens int) // Optional: called when context is compacted
+	OnProgress       func(status string, progress int, message string)         // Generic progress update
+	OnStepStart      func(toolName, args string)                               // Generic step start
+	OnStepDone       func(toolName, result string, durationMs int64)           // Generic step done
 }
 
 type MCPServerConfig struct {
@@ -156,11 +151,11 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 		},
 	})
 
-	// Add built-in 'update_kanban' tool (if kanban card is associated)
-	if cfg.KanbanCardID != "" && cfg.KanbanUpdater != nil {
+	// Add built-in 'update_progress' tool (if progress callback is configured)
+	if cfg.OnProgress != nil {
 		allTools = append(allTools, provider.Tool{
-			Name:        "tofi_update_kanban",
-			Description: "Update the progress of the current task on the Kanban board. Use this to report your progress as you work through the task.",
+			Name:        "tofi_update_progress",
+			Description: "Update the progress of the current task. Use this to report your progress as you work through the task.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -296,7 +291,7 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 		if cfg.OnStreamChunk != nil {
 			// Streaming mode — wrap callback to filter out <think> blocks
 			filter := &thinkStreamFilter{forward: func(delta string) {
-				cfg.OnStreamChunk(cfg.KanbanCardID, delta)
+				cfg.OnStreamChunk(cfg.SessionID, delta)
 			}}
 			resp, err = cfg.Provider.ChatStream(context.Background(), req, func(delta provider.StreamDelta) {
 				if delta.Content != "" {
@@ -338,16 +333,8 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 
 			if cleanContent != "" {
 				// Record the final "Generating Result" step
-				if cfg.KanbanCardID != "" && cfg.KanbanUpdater != nil {
-					stepData := map[string]interface{}{
-						"name":   "Generating Result",
-						"status": "done",
-					}
-					if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
-						stepData["input_tokens"] = resp.Usage.InputTokens
-						stepData["output_tokens"] = resp.Usage.OutputTokens
-					}
-					cfg.KanbanUpdater.AppendKanbanStep(cfg.KanbanCardID, stepData)
+				if cfg.OnStepStart != nil {
+					cfg.OnStepStart("Generating Result", "")
 				}
 				ctx.Log("[Agent] Finished.")
 				return &AgentResult{
@@ -377,27 +364,14 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 
 			ctx.Log("<tool_call name=\" %s \">\n%s\n</tool_call>", fnName, fnArgs)
 
-			// Log step to kanban (skip internal tools like wait and update_kanban)
+			// Log step start (skip internal tools like wait and update_progress)
 			toolStartTime := time.Now()
-			if fnName != "tofi_wait" && fnName != "tofi_update_kanban" && cfg.KanbanCardID != "" && cfg.KanbanUpdater != nil {
-				stepData := map[string]interface{}{
-					"name":       fnName,
-					"status":     "running",
-					"started_at": toolStartTime.UTC().Format("2006-01-02T15:04:05Z"),
+			if fnName != "tofi_wait" && fnName != "tofi_update_progress" && cfg.OnStepStart != nil {
+				argsStr := fnArgs
+				if len(argsStr) > 1000 {
+					argsStr = argsStr[:1000] + "..."
 				}
-				// Include truncated args for display
-				if len(fnArgs) > 0 && fnArgs != "{}" {
-					argsStr := fnArgs
-					if len(argsStr) > 1000 {
-						argsStr = argsStr[:1000] + "..."
-					}
-					stepData["args"] = argsStr
-				}
-				if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
-					stepData["input_tokens"] = resp.Usage.InputTokens
-					stepData["output_tokens"] = resp.Usage.OutputTokens
-				}
-				cfg.KanbanUpdater.AppendKanbanStep(cfg.KanbanCardID, stepData)
+				cfg.OnStepStart(fnName, argsStr)
 			}
 
 			// Parse Args
@@ -417,8 +391,8 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 			// markStepDone is a helper to update the step status after tool execution
 			markStepDone := func(result string) {
 				durationMs := time.Since(toolStartTime).Milliseconds()
-				if fnName != "tofi_wait" && fnName != "tofi_update_kanban" && cfg.KanbanCardID != "" && cfg.KanbanUpdater != nil {
-					cfg.KanbanUpdater.UpdateKanbanStep(cfg.KanbanCardID, fnName, "done", result, durationMs)
+				if fnName != "tofi_wait" && fnName != "tofi_update_progress" && cfg.OnStepDone != nil {
+					cfg.OnStepDone(fnName, result, durationMs)
 				}
 				if cfg.OnToolCall != nil {
 					cfg.OnToolCall(fnName, fnArgs, result, durationMs)
@@ -443,8 +417,8 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 				continue
 			}
 
-			// Handle Built-in 'update_kanban'
-			if fnName == "tofi_update_kanban" && cfg.KanbanCardID != "" && cfg.KanbanUpdater != nil {
+			// Handle Built-in 'update_progress'
+			if fnName == "tofi_update_progress" && cfg.OnProgress != nil {
 				progress := 0
 				if p, ok := argsMap["progress"].(float64); ok {
 					progress = int(p)
@@ -458,12 +432,9 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 					message = m
 				}
 
-				err := cfg.KanbanUpdater.UpdateKanbanCardBySystem(cfg.KanbanCardID, status, progress, message)
-				resultMsg := fmt.Sprintf("Kanban card updated: status=%s, progress=%d%%", status, progress)
-				if err != nil {
-					resultMsg = fmt.Sprintf("Failed to update kanban card: %v", err)
-				}
-				ctx.Log("[Kanban] %s", resultMsg)
+				cfg.OnProgress(status, progress, message)
+				resultMsg := fmt.Sprintf("Progress updated: %d%% — %s", progress, message)
+				ctx.Log("[Progress] %s", resultMsg)
 
 				messages = append(messages, provider.Message{
 					Role:       "tool",

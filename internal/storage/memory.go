@@ -13,7 +13,7 @@ type Memory struct {
 	Content   string `json:"content"`
 	Tags      string `json:"tags"`
 	Source    string `json:"source"`  // "agent" (explicit save) or "auto" (auto-extracted)
-	CardID    string `json:"card_id"` // Associated Kanban card ID (optional)
+	CardID    string `json:"card_id"` // Associated session/card ID (optional)
 	CreatedAt string `json:"created_at"`
 }
 

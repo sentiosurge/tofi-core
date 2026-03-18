@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tofi-core/internal/apps"
+	"tofi-core/internal/chat"
 	"tofi-core/internal/storage"
 
 	"github.com/google/uuid"
@@ -157,35 +158,39 @@ func (as *AppScheduler) dispatchRun(run *storage.AppRunRecord) {
 
 	prompt := apps.ResolveFromJSON(app.Prompt, app.Parameters, app.ParameterDefs)
 
-	card := &storage.KanbanCardRecord{
-		ID:          uuid.New().String(),
-		Title:       prompt,
-		Description: fmt.Sprintf("[App: %s] %s", app.Name, app.Description),
-		Status:      "todo",
-		AppID:       app.ID,
-		AgentID:     app.ID,
-		UserID:      run.UserID,
-	}
-	if err := as.server.db.CreateKanbanCard(card); err != nil {
-		log.Printf("[app-run:%s] Failed to create kanban card: %v", run.ID[:8], err)
+	// Create a Chat Session for this app run
+	scope := chat.AgentScope("app-" + app.ID[:8])
+	sessionID := "s_" + uuid.New().String()[:12]
+
+	// Build skills string from app config
+	var skillNames []string
+	json.Unmarshal([]byte(app.Skills), &skillNames)
+	skillsStr := strings.Join(skillNames, ",")
+
+	session := chat.NewSession(sessionID, app.Model, skillsStr)
+	session.Title = fmt.Sprintf("[App: %s] %s", app.Name, app.Description)
+
+	if err := as.server.chatStore.Save(run.UserID, scope, session); err != nil {
+		log.Printf("[app-run:%s] Failed to create chat session: %v", run.ID[:8], err)
 		as.server.db.UpdateAppRunStatus(run.ID, "failed", "")
 		return
 	}
 
-	created, _ := as.server.db.GetKanbanCard(card.ID)
-	if created == nil {
-		created = card
-	}
+	// Link run to session
+	as.server.db.UpdateAppRunStatusWithSession(run.ID, "running", sessionID)
 
-	log.Printf("[app-run:%s] Executing with card %s", run.ID[:8], card.ID[:8])
-	as.server.executeWish(created, run.UserID, app.Model)
+	log.Printf("[app-run:%s] Executing with chat session %s", run.ID[:8], sessionID[:8])
+	result, err := as.server.executeChatSession(run.UserID, scope, session, prompt, nil)
 
-	finalCard, _ := as.server.db.GetKanbanCard(card.ID)
 	status := "done"
-	if finalCard != nil && finalCard.Status == "failed" {
+	if err != nil {
+		log.Printf("[app-run:%s] Chat session execution failed: %v", run.ID[:8], err)
 		status = "failed"
+	} else {
+		log.Printf("[app-run:%s] Completed (tokens: %d in / %d out, cost: $%.4f)",
+			run.ID[:8], result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalCost)
 	}
-	as.server.db.UpdateAppRunStatus(run.ID, status, card.ID)
+	as.server.db.UpdateAppRunStatusWithSession(run.ID, status, sessionID)
 }
 
 func (as *AppScheduler) checkRenewals() {

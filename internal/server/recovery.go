@@ -12,40 +12,17 @@ import (
 func (s *Server) recoverAll() {
 	log.Println("🔄 Starting unified recovery...")
 
-	// 1. Kanban zombie cards: working → failed
-	if n, err := s.db.RecoverZombieKanbanCards(); err != nil {
-		log.Printf("⚠️  Kanban zombie recovery failed: %v", err)
-	} else if n > 0 {
-		log.Printf("🔄 Recovered %d kanban zombie cards (working → failed)", n)
-	}
-
-	// 2. Hold cards: hold → failed (hold channel lost after restart)
-	s.recoverHoldCards()
-
-	// 3. App runs: running → failed (dispatchRun goroutines killed by restart)
+	// 1. App runs: running → failed (dispatchRun goroutines killed by restart)
 	if n, err := s.db.RecoverRunningAppRuns(); err != nil {
 		log.Printf("⚠️  App runs zombie recovery failed: %v", err)
 	} else if n > 0 {
 		log.Printf("🔄 Recovered %d zombie app_runs (running → failed)", n)
 	}
 
-	// 4. Workflow executions: RUNNING → resume via workerPool
+	// 2. Workflow executions: RUNNING → resume via workerPool
 	s.recoverWorkflowExecutions()
 
 	log.Println("✅ Unified recovery complete")
-}
-
-// recoverHoldCards marks orphaned hold cards as failed (channel lost after restart)
-func (s *Server) recoverHoldCards() {
-	rows, err := s.db.QueryHoldCards()
-	if err != nil {
-		log.Printf("⚠️  Hold card recovery query failed: %v", err)
-		return
-	}
-	for _, id := range rows {
-		log.Printf("🔄 Recovering hold card %s → failed", id)
-		s.db.UpdateKanbanCardStatus(id, "failed")
-	}
 }
 
 // recoverWorkflowExecutions resumes interrupted workflow executions via worker pool

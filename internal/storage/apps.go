@@ -46,6 +46,7 @@ type AppRunRecord struct {
 	Status       string `json:"status"` // pending / running / done / failed / cancelled / skipped
 	Trigger      string `json:"trigger"` // scheduled / manual
 	KanbanCardID string `json:"kanban_card_id"`
+	SessionID    string `json:"session_id,omitempty"` // chat session ID (new: replaces kanban_card_id)
 	Result       string `json:"result"`
 	UserID       string `json:"user_id"`
 	CreatedAt    string `json:"created_at"`
@@ -110,6 +111,9 @@ func (db *DB) initAppsTable() error {
 
 	// Migration: add trigger_type column for existing databases
 	db.conn.Exec(`ALTER TABLE app_runs ADD COLUMN trigger_type TEXT DEFAULT 'scheduled'`)
+
+	// Migration: add session_id column for chat-session-based app runs
+	db.conn.Exec(`ALTER TABLE app_runs ADD COLUMN session_id TEXT DEFAULT ''`)
 
 	// Enable foreign key support
 	if _, err := db.conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
@@ -319,12 +323,12 @@ func (db *DB) ListAppRuns(appID string, status string, limit int) ([]*AppRunReco
 	var args []any
 
 	if status != "" {
-		query = `SELECT id, app_id, scheduled_at, status, COALESCE(trigger_type,'scheduled'), COALESCE(kanban_card_id,''), COALESCE(result,''),
+		query = `SELECT id, app_id, scheduled_at, status, COALESCE(trigger_type,'scheduled'), COALESCE(kanban_card_id,''), COALESCE(session_id,''), COALESCE(result,''),
 			user_id, created_at, COALESCE(started_at,''), COALESCE(completed_at,'')
 			FROM app_runs WHERE app_id = ? AND status = ? ORDER BY scheduled_at ASC LIMIT ?`
 		args = []any{appID, status, limit}
 	} else {
-		query = `SELECT id, app_id, scheduled_at, status, COALESCE(trigger_type,'scheduled'), COALESCE(kanban_card_id,''), COALESCE(result,''),
+		query = `SELECT id, app_id, scheduled_at, status, COALESCE(trigger_type,'scheduled'), COALESCE(kanban_card_id,''), COALESCE(session_id,''), COALESCE(result,''),
 			user_id, created_at, COALESCE(started_at,''), COALESCE(completed_at,'')
 			FROM app_runs WHERE app_id = ? ORDER BY scheduled_at DESC LIMIT ?`
 		args = []any{appID, limit}
@@ -339,7 +343,7 @@ func (db *DB) ListAppRuns(appID string, status string, limit int) ([]*AppRunReco
 	var runs []*AppRunRecord
 	for rows.Next() {
 		var r AppRunRecord
-		if err := rows.Scan(&r.ID, &r.AppID, &r.ScheduledAt, &r.Status, &r.Trigger, &r.KanbanCardID, &r.Result,
+		if err := rows.Scan(&r.ID, &r.AppID, &r.ScheduledAt, &r.Status, &r.Trigger, &r.KanbanCardID, &r.SessionID, &r.Result,
 			&r.UserID, &r.CreatedAt, &r.StartedAt, &r.CompletedAt); err != nil {
 			return nil, err
 		}
@@ -349,7 +353,7 @@ func (db *DB) ListAppRuns(appID string, status string, limit int) ([]*AppRunReco
 }
 
 func (db *DB) GetPendingAppRunsDue(before time.Time) ([]*AppRunRecord, error) {
-	query := `SELECT r.id, r.app_id, r.scheduled_at, r.status, COALESCE(r.trigger_type,'scheduled'), COALESCE(r.kanban_card_id,''), COALESCE(r.result,''),
+	query := `SELECT r.id, r.app_id, r.scheduled_at, r.status, COALESCE(r.trigger_type,'scheduled'), COALESCE(r.kanban_card_id,''), COALESCE(r.session_id,''), COALESCE(r.result,''),
 		r.user_id, r.created_at, COALESCE(r.started_at,''), COALESCE(r.completed_at,'')
 		FROM app_runs r JOIN apps a ON r.app_id = a.id
 		WHERE r.status = 'pending' AND r.scheduled_at <= ? AND a.is_active = 1
@@ -363,7 +367,7 @@ func (db *DB) GetPendingAppRunsDue(before time.Time) ([]*AppRunRecord, error) {
 	var runs []*AppRunRecord
 	for rows.Next() {
 		var r AppRunRecord
-		if err := rows.Scan(&r.ID, &r.AppID, &r.ScheduledAt, &r.Status, &r.Trigger, &r.KanbanCardID, &r.Result,
+		if err := rows.Scan(&r.ID, &r.AppID, &r.ScheduledAt, &r.Status, &r.Trigger, &r.KanbanCardID, &r.SessionID, &r.Result,
 			&r.UserID, &r.CreatedAt, &r.StartedAt, &r.CompletedAt); err != nil {
 			return nil, err
 		}
@@ -388,6 +392,21 @@ func (db *DB) UpdateAppRunStatus(id, status, kanbanCardID string) error {
 		return err
 	default:
 		_, err := db.conn.Exec(`UPDATE app_runs SET status = ? WHERE id = ?`, status, id)
+		return err
+	}
+}
+
+// UpdateAppRunStatusWithSession updates an app run's status and links it to a chat session.
+func (db *DB) UpdateAppRunStatusWithSession(id, status, sessionID string) error {
+	switch status {
+	case "running":
+		_, err := db.conn.Exec(`UPDATE app_runs SET status = ?, session_id = ?, started_at = CURRENT_TIMESTAMP WHERE id = ?`, status, sessionID, id)
+		return err
+	case "done", "failed":
+		_, err := db.conn.Exec(`UPDATE app_runs SET status = ?, session_id = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?`, status, sessionID, id)
+		return err
+	default:
+		_, err := db.conn.Exec(`UPDATE app_runs SET status = ?, session_id = ? WHERE id = ?`, status, sessionID, id)
 		return err
 	}
 }
