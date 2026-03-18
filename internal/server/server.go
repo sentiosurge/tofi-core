@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 	"tofi-core/internal/bridge"
+	"tofi-core/internal/daemon"
 	"tofi-core/internal/chat"
 	"tofi-core/internal/crypto"
 	"tofi-core/internal/executor"
@@ -265,7 +266,14 @@ func (s *Server) Start() error {
 		return err
 	})
 	dispatcher.SetRestartFn(func() {
-		log.Println("[Server] Restart requested via Telegram, shutting down...")
+		log.Println("[Server] Restart requested via Telegram, spawning new process...")
+		daemon.RemovePID(s.config.HomeDir)
+		newPID, err := daemon.Start(s.config.HomeDir, s.config.Port, false)
+		if err != nil {
+			log.Printf("[Server] Failed to restart: %v", err)
+			return
+		}
+		log.Printf("[Server] New process started (pid %d), exiting current...", newPID)
 		os.Exit(0)
 	})
 	s.bridgeManager = bridge.NewManager(s.db, dispatcher)
