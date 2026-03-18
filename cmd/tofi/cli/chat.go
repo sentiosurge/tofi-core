@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -108,6 +109,7 @@ type streamDoneMsg struct {
 }
 type streamErrorMsg struct{ err string }
 type streamCompactMsg struct{}
+type ctrlCResetMsg struct{}
 
 // --- Slash command definitions ---
 
@@ -144,9 +146,12 @@ type chatModel struct {
 
 	program *tea.Program
 
-	streaming   bool
-	client      *apiClient
-	sessionID   string
+	streaming    bool
+	streamCancel context.CancelFunc // cancel SSE stream
+	ctrlCOnce    bool               // first Ctrl+C pressed
+	ctrlCTimer   *time.Timer        // 3s reset timer
+	client       *apiClient
+	sessionID    string
 	scope       string
 	model       string
 	skills      []string
@@ -298,9 +303,11 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendContent(m.renderUserMsg(msg))
 				m.appendContent("")
 				m.streaming = true
+				ctx, cancel := context.WithCancel(context.Background())
+				m.streamCancel = cancel
 				m.viewport.SetContent(m.viewportContent())
 				m.viewport.GotoBottom()
-				go m.streamChatMessage(msg)
+				go m.streamChatMessage(ctx, msg)
 			}
 		} else {
 			m.viewport.Width = iw
@@ -322,12 +329,34 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c":
-			return m, tea.Quit
-		case "esc":
-			if !m.streaming {
+			if m.streaming {
+				// While streaming: stop generation
+				if m.streamCancel != nil {
+					m.streamCancel()
+				}
+				return m, nil
+			}
+			if m.ctrlCOnce {
+				// Second Ctrl+C within 3s → actually quit
 				return m, tea.Quit
 			}
+			// First Ctrl+C → show warning, start 3s timer
+			m.ctrlCOnce = true
+			m.ctrlCTimer = time.NewTimer(3 * time.Second)
+			go func() {
+				<-m.ctrlCTimer.C
+				m.sendMsg(ctrlCResetMsg{})
+			}()
 			return m, nil
+		case "esc":
+			if m.streaming {
+				// Esc while streaming → stop generation
+				if m.streamCancel != nil {
+					m.streamCancel()
+				}
+				return m, nil
+			}
+			return m, tea.Quit
 		case "alt+enter":
 			// Insert newline for multi-line input
 			if !m.streaming {
@@ -357,9 +386,11 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendContent("")
 
 			m.streaming = true
+			ctx, cancel := context.WithCancel(context.Background())
+			m.streamCancel = cancel
 			m.refreshViewport()
 
-			go m.streamChatMessage(input)
+			go m.streamChatMessage(ctx, input)
 			return m, nil
 
 		case "pgup", "pgdown", "home", "end":
@@ -422,6 +453,10 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streaming = false
 		m.appendContent(m.renderError(msg.err))
 		m.appendContent("")
+		return m, nil
+
+	case ctrlCResetMsg:
+		m.ctrlCOnce = false
 		return m, nil
 	}
 
@@ -528,7 +563,15 @@ func (m *chatModel) padBorderLine(content string, iw int) string {
 }
 
 func (m *chatModel) renderStatusBar(iw int) string {
-	left := subtitleStyle.Render("/help · Esc quit")
+	var leftText string
+	if m.ctrlCOnce {
+		leftText = errorStyle.Render("Press Ctrl+C again to exit")
+	} else if m.streaming {
+		leftText = subtitleStyle.Render("Esc stop · Ctrl+C stop")
+	} else {
+		leftText = subtitleStyle.Render("/help · Esc quit")
+	}
+	left := leftText
 
 	var badges []string
 
@@ -1545,7 +1588,7 @@ func (m *chatModel) fetchAndShowSkills() {
 
 // --- SSE streaming via Session API ---
 
-func (m *chatModel) streamChatMessage(message string) {
+func (m *chatModel) streamChatMessage(ctx context.Context, message string) {
 	reqBody := map[string]string{"message": message}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -1553,7 +1596,7 @@ func (m *chatModel) streamChatMessage(message string) {
 		return
 	}
 
-	req, err := http.NewRequest("POST",
+	req, err := http.NewRequestWithContext(ctx, "POST",
 		fmt.Sprintf("http://localhost:%d/api/v1/chat/sessions/%s/messages", startPort, m.sessionID),
 		bytes.NewReader(bodyBytes))
 	if err != nil {
