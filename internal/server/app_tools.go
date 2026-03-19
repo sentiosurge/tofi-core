@@ -20,9 +20,10 @@ func (s *Server) buildAppTools(userID string) []mcp.ExtraBuiltinTool {
 		s.buildDeleteAppTool(userID),
 		s.buildRunAppTool(userID),
 		s.buildListAppRunsTool(userID),
-		s.buildActivateAppTool(userID),
+		s.buildToggleScheduleTool(userID),
 		s.buildListNotifyTargetsTool(userID),
 		s.buildSetNotifyTargetsTool(userID),
+		s.buildGetRunDetailTool(userID),
 	}
 }
 
@@ -457,13 +458,13 @@ func (s *Server) buildListAppRunsTool(userID string) mcp.ExtraBuiltinTool {
 	}
 }
 
-// ── tofi_activate_app ──
+// ── tofi_toggle_schedule ──
 
-func (s *Server) buildActivateAppTool(userID string) mcp.ExtraBuiltinTool {
+func (s *Server) buildToggleScheduleTool(userID string) mcp.ExtraBuiltinTool {
 	return mcp.ExtraBuiltinTool{
 		Schema: provider.Tool{
-			Name:        "tofi_activate_app",
-			Description: "Activate or deactivate an App's scheduled runs. When active, the app runs according to its schedule. When deactivated, pending runs are cancelled. Use when the user wants to enable/disable an automation's schedule.",
+			Name:        "tofi_toggle_schedule",
+			Description: "Enable or disable an App's automatic schedule. When enabled, the app runs according to its schedule. When disabled, pending scheduled runs are cancelled. The app itself is not deleted — it can still be run manually.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -471,17 +472,17 @@ func (s *Server) buildActivateAppTool(userID string) mcp.ExtraBuiltinTool {
 						"type":        "string",
 						"description": "The App ID",
 					},
-					"active": map[string]any{
+					"enabled": map[string]any{
 						"type":        "boolean",
-						"description": "true to activate, false to deactivate",
+						"description": "true to enable schedule, false to disable",
 					},
 				},
-				"required": []string{"app_id", "active"},
+				"required": []string{"app_id", "enabled"},
 			},
 		},
 		Handler: func(args map[string]any) (string, error) {
 			appID, _ := args["app_id"].(string)
-			active, _ := args["active"].(bool)
+			active, _ := args["enabled"].(bool)
 
 			if appID == "" {
 				return "", fmt.Errorf("app_id is required")
@@ -504,7 +505,7 @@ func (s *Server) buildActivateAppTool(userID string) mcp.ExtraBuiltinTool {
 					app.IsActive = true
 					_ = s.appScheduler.ActivateApp(app)
 				}
-				return fmt.Sprintf("App '%s' activated. It will run according to its schedule.", app.Name), nil
+				return fmt.Sprintf("Schedule enabled for '%s'. It will run according to its schedule.", app.Name), nil
 			}
 
 			// Deactivate
@@ -515,7 +516,7 @@ func (s *Server) buildActivateAppTool(userID string) mcp.ExtraBuiltinTool {
 			if s.appScheduler != nil {
 				s.appScheduler.RemoveApp(appID)
 			}
-			return fmt.Sprintf("App '%s' deactivated. %d pending runs cancelled.", app.Name, cancelled), nil
+			return fmt.Sprintf("Schedule disabled for '%s'. %d pending runs cancelled.", app.Name, cancelled), nil
 		},
 	}
 }
@@ -668,6 +669,87 @@ func (s *Server) buildSetNotifyTargetsTool(userID string) mcp.ExtraBuiltinTool {
 				return fmt.Sprintf("Cleared all notify targets for '%s'.", app.Name), nil
 			}
 			return fmt.Sprintf("Set %d notify target(s) for '%s'.", len(receiverIDs), app.Name), nil
+		},
+	}
+}
+
+// ── tofi_get_run_detail ──
+
+func (s *Server) buildGetRunDetailTool(userID string) mcp.ExtraBuiltinTool {
+	return mcp.ExtraBuiltinTool{
+		Schema: provider.Tool{
+			Name: "tofi_get_run_detail",
+			Description: `Get the full output of a specific App run — all messages, tool calls, and AI responses.
+Use the session_id from tofi_list_app_runs. Returns the complete conversation including user prompts, AI reasoning, tool calls with results, and final output.`,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"session_id": map[string]any{
+						"type":        "string",
+						"description": "The session ID associated with the run (from tofi_list_app_runs output)",
+					},
+				},
+				"required": []string{"session_id"},
+			},
+		},
+		Handler: func(args map[string]any) (string, error) {
+			sessionID, _ := args["session_id"].(string)
+			if sessionID == "" {
+				return "", fmt.Errorf("session_id is required")
+			}
+
+			// Ownership check
+			idx, err := s.chatStore.GetIndex(sessionID)
+			if err != nil {
+				return "", fmt.Errorf("session not found: %s", sessionID)
+			}
+			if idx.UserID != userID {
+				return "", fmt.Errorf("session not found: %s", sessionID)
+			}
+
+			// Load full session
+			session, err := s.chatStore.LoadByID(sessionID)
+			if err != nil {
+				return "", fmt.Errorf("failed to load session: %w", err)
+			}
+
+			// Format messages
+			var out strings.Builder
+			out.WriteString(fmt.Sprintf("Session: %s\n", sessionID))
+			if session.Title != "" {
+				out.WriteString(fmt.Sprintf("Title: %s\n", session.Title))
+			}
+			out.WriteString(fmt.Sprintf("Model: %s | Messages: %d\n", session.Model, len(session.Messages)))
+			out.WriteString("---\n\n")
+
+			for i, msg := range session.Messages {
+				switch msg.Role {
+				case "user":
+					out.WriteString(fmt.Sprintf("[%d] **User**:\n%s\n\n", i+1, truncate(msg.Content, 500)))
+
+				case "assistant":
+					out.WriteString(fmt.Sprintf("[%d] **Assistant**:\n", i+1))
+					if len(msg.ToolCalls) > 0 {
+						for _, tc := range msg.ToolCalls {
+							input := truncate(tc.Input, 200)
+							out.WriteString(fmt.Sprintf("  → Tool: %s(%s)\n", tc.Name, input))
+						}
+					}
+					if msg.Content != "" {
+						out.WriteString(truncate(msg.Content, 1000) + "\n")
+					}
+					out.WriteString("\n")
+
+				case "tool_response":
+					name := msg.Name
+					if name == "" {
+						name = "tool"
+					}
+					out.WriteString(fmt.Sprintf("[%d] **%s result**:\n%s\n\n", i+1, name, truncate(msg.Content, 500)))
+				}
+			}
+
+			return out.String(), nil
 		},
 	}
 }

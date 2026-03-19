@@ -807,7 +807,7 @@ Use the built-in tofi_* tools to manage apps:
 - tofi_delete_app — delete an app
 - tofi_run_app — trigger a manual run
 - tofi_list_app_runs — view run history
-- tofi_activate_app — enable/disable schedule
+- tofi_toggle_schedule — enable/disable schedule
 - tofi_list_notify_targets — list notification receivers
 - tofi_set_notify_targets — configure notifications
 
