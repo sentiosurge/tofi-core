@@ -425,19 +425,7 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 	if cfg.System == "" {
 		cfg.System = "You are an autonomous intelligent agent."
 	}
-	systemPrompt := cfg.System + "\n" + `
-### PROTOCOL:
-0. **CONSIDER MEMORY**: Before starting, decide whether this task could benefit from user preferences, past context, or personalization. If so, call memory_recall with relevant keywords. Examples where memory helps: tasks involving user-specific preferences (formatting, language, style), recurring topics, or building on past work. Skip recall for purely mechanical, self-contained tasks (e.g. "what time is it", simple calculations, or when the prompt already provides all needed context).
-1. **THINK FIRST**: Analyze the situation and plan your approach.
-   - **INTERNAL MONOLOGUE ONLY**: The content inside <think> is for your internal reasoning. Do NOT address the user or use conversational filler. Keep it analytical and objective.
-2. **ADAPTABILITY**: If a tool fails, analyze the error and try a different strategy. Do not repeat failed actions.
-3. **VERIFICATION**: Verify the outcome of every action.
-4. **COMPLETION**: Continue until the goal is fully achieved and the system is stable.
-5. **SAVE MEMORY**: After completing a task, if you discovered user preferences, useful patterns, or error solutions worth remembering, use memory_save. Skip if nothing noteworthy was learned.
-
-### DOMAIN KNOWLEDGE:
-- **WEB AUTOMATION**: Modern websites often use complex, non-standard input fields that confuse standard 'fill' tools. If 'fill' fails (especially with "option not found"), assume the tool is incompatible. Immediately switch to 'evaluate_script' (to set .value) or 'click' + 'press_key'.
-`
+	systemPrompt := cfg.System
 
 	// Append available skills to system prompt (name + description only)
 	if len(cfg.SkillTools) > 0 {
@@ -446,10 +434,6 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 			skillLines = append(skillLines, fmt.Sprintf("- %s: %s", skill.Name, skill.Description))
 		}
 		systemPrompt += "\n<available-skills>\n" + strings.Join(skillLines, "\n") + "\n</available-skills>\n"
-		systemPrompt += `
-## Skills — IMPORTANT
-The skills listed in <available-skills> provide specialized capabilities. To use a skill, call tofi_load_skill with the skill name to get detailed instructions BEFORE acting.
-`
 	}
 
 	// Append deferred tool names to system prompt so the LLM knows what's available
@@ -459,16 +443,20 @@ The skills listed in <available-skills> provide specialized capabilities. To use
 			deferredNames = append(deferredNames, name)
 		}
 		systemPrompt += "\n<available-deferred-tools>\n" + strings.Join(deferredNames, "\n") + "\n</available-deferred-tools>\n"
-		systemPrompt += `
-## Deferred Tools — IMPORTANT
-The tools listed in <available-deferred-tools> are available but NOT yet loaded. To use them, you MUST first call tofi_tool_search to activate them.
-`
 	}
 
-	// Unified guidance for deferred loading
+	// Guidance for on-demand loading (skills + deferred tools)
 	if len(cfg.SkillTools) > 0 || len(deferredSchemas) > 0 {
 		systemPrompt += `
-**CRITICAL**: If a user asks you to do something and you don't have a matching tool or skill loaded, you MUST call tofi_load_skill or tofi_tool_search BEFORE responding. NEVER pretend to perform an action you cannot execute. NEVER say "done" or "created" without actually calling the tool. If you cannot find a tool after searching, tell the user honestly.
+## On-Demand Loading
+You have additional skills and tools that are NOT loaded by default. They are listed above by name.
+
+- **Skills** (<available-skills>): Call tofi_load_skill to get full instructions before using.
+- **Deferred tools** (<available-deferred-tools>): Call tofi_tool_search to activate before using.
+
+**When to load**: Only when the user's request genuinely requires a capability you don't currently have. Use your judgment — if you already have the tools/context needed (e.g., from earlier in the conversation), just act directly. Do NOT load on every message.
+**When NOT to load**: Casual conversation, follow-up questions about something you already handled, or tasks achievable with your current tools.
+**Honesty rule**: Never pretend to perform an action without the corresponding tool. If you need a capability you don't have and can't find it, say so.
 `
 	}
 
