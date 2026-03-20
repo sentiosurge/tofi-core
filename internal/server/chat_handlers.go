@@ -366,12 +366,13 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	coreTools = append(coreTools, s.buildBuiltinTools(userID)...)
 	coreTools = append(coreTools, buildSessionInfoTool(session, resolvedModel, &liveUsage))
 
-	// Bundle app tools with the "apps" skill (activated when AI loads the skill)
+	// Bundle app tools with ALL app-related skills
+	// Loading any app skill (apps, app-create, app-list, etc.) activates the tools
 	appTools := s.buildAppTools(userID)
 	for i := range skillTools {
-		if skillTools[i].Name == "apps" {
+		name := skillTools[i].Name
+		if name == "apps" || strings.HasPrefix(name, "app-") {
 			skillTools[i].BundledTools = append(skillTools[i].BundledTools, appTools...)
-			break
 		}
 	}
 
