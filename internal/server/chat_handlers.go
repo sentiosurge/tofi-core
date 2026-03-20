@@ -298,16 +298,13 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	systemPrompt := s.buildChatSystemPrompt(userID, scope)
 
 	// 3. Load skills (only those explicitly set on the session)
+	// Skills are loaded in deferred mode: only name+description in system prompt,
+	// full Instructions loaded on-demand via tofi_load_skill tool.
 	var skillNames []string
 	if session.Skills != "" {
 		skillNames = strings.Split(session.Skills, ",")
 	}
-	skillTools, skillInstructions, secretEnv := s.buildSkillToolsFromNames(userID, skillNames)
-
-	// Append skill instructions to system prompt
-	for _, inst := range skillInstructions {
-		systemPrompt += "\n\n---\n\n" + inst
-	}
+	skillTools, _, secretEnv := s.buildSkillToolsFromNames(userID, skillNames)
 
 	// 4. Build provider messages from session history
 	providerMessages := chat.BuildProviderMessages(session, message, resolvedModel)

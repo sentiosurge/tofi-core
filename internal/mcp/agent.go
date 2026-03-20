@@ -181,30 +181,102 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 		})
 	}
 
-	// Register skill tools (installed skills as callable functions)
-	for _, skill := range cfg.SkillTools {
-		toolName := "run_skill__" + sanitizeToolName(skill.Name)
-		allTools = append(allTools, provider.Tool{
-			Name:        toolName,
-			Description: fmt.Sprintf("Execute the '%s' skill: %s", skill.Name, skill.Description),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"input": map[string]interface{}{
-						"type":        "string",
-						"description": "The input/request to send to this skill",
-					},
-				},
-				"required": []string{"input"},
-			},
-		})
-	}
-
 	// Register extra built-in tools and their handlers
 	extraHandlers := make(map[string]func(args map[string]interface{}) (string, error))
 	for _, et := range cfg.ExtraTools {
 		allTools = append(allTools, et.Schema)
 		extraHandlers[et.Schema.Name] = et.Handler
+	}
+
+	// Register skill tools — deferred loading pattern (like Claude Code)
+	// Skills are listed by name+description in <available-skills> section of system prompt.
+	// Full Instructions loaded on-demand via tofi_load_skill tool.
+	if len(cfg.SkillTools) > 0 {
+		// Build skill lookup map
+		skillMap := make(map[string]*SkillTool)
+		for i := range cfg.SkillTools {
+			skillMap[cfg.SkillTools[i].Name] = &cfg.SkillTools[i]
+		}
+		loadedSkills := make(map[string]bool) // track which skills have been loaded
+
+		// Register tofi_load_skill tool — returns full Instructions for a skill
+		allTools = append(allTools, provider.Tool{
+			Name: "tofi_load_skill",
+			Description: "Load the full instructions for a skill by name. " +
+				"Skills are listed in <available-skills> with name and description only. " +
+				"Call this to get detailed instructions before using the skill. " +
+				"After loading, the skill's run_skill__<name> tool becomes available if it has scripts.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Skill name (from <available-skills> list)",
+					},
+				},
+				"required": []string{"name"},
+			},
+		})
+
+		extraHandlers["tofi_load_skill"] = func(args map[string]interface{}) (string, error) {
+			name := strings.TrimSpace(fmt.Sprintf("%v", args["name"]))
+			skill, ok := skillMap[name]
+			if !ok {
+				// Try fuzzy match
+				for k, v := range skillMap {
+					if strings.EqualFold(k, name) || strings.Contains(strings.ToLower(k), strings.ToLower(name)) {
+						skill = v
+						name = k
+						ok = true
+						break
+					}
+				}
+			}
+			if !ok {
+				var available []string
+				for k, v := range skillMap {
+					available = append(available, fmt.Sprintf("- %s: %s", k, v.Description))
+				}
+				return "Skill not found: " + name + "\n\nAvailable skills:\n" + strings.Join(available, "\n"), nil
+			}
+
+			loadedSkills[name] = true
+
+			// If skill has scripts, register the run_skill tool dynamically
+			if skill.SkillDir != "" {
+				runToolName := "run_skill__" + sanitizeToolName(name)
+				// Only add if not already registered
+				alreadyRegistered := false
+				for _, t := range allTools {
+					if t.Name == runToolName {
+						alreadyRegistered = true
+						break
+					}
+				}
+				if !alreadyRegistered {
+					allTools = append(allTools, provider.Tool{
+						Name:        runToolName,
+						Description: fmt.Sprintf("Execute the '%s' skill: %s", name, skill.Description),
+						Parameters: map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"input": map[string]interface{}{
+									"type":        "string",
+									"description": "The input/request to send to this skill",
+								},
+							},
+							"required": []string{"input"},
+						},
+					})
+				}
+			}
+
+			result := fmt.Sprintf("# Skill: %s\n\n%s", name, skill.Instructions)
+			if skill.SkillDir != "" {
+				result += fmt.Sprintf("\n\n---\nThis skill has scripts. Use `run_skill__%s` to execute it, or use `tofi_shell` to run scripts directly from `skills/%s/scripts/`.", sanitizeToolName(name), name)
+			}
+			return result, nil
+		}
 	}
 
 	// Register deferred tools (not sent to LLM until activated via tofi_tool_search)
@@ -345,9 +417,9 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 		toolNames = append(toolNames, t.Name)
 	}
 	ctx.Log("[Agent] Registered %d tools: %s", len(allTools), strings.Join(toolNames, ", "))
-	ctx.Log("[Agent] Discovered %d tools across %d servers (+%d skills, +%d extra)",
-		len(allTools)-len(cfg.SkillTools)-len(cfg.ExtraTools), len(activeClients),
-		len(cfg.SkillTools), len(cfg.ExtraTools))
+	ctx.Log("[Agent] Discovered %d tools across %d servers (+%d skills[deferred], +%d extra, +%d deferred-tools)",
+		len(allTools)-len(cfg.ExtraTools), len(activeClients),
+		len(cfg.SkillTools), len(cfg.ExtraTools), len(deferredSchemas))
 
 	// 3. Prepare System Prompt
 	if cfg.System == "" {
@@ -367,21 +439,36 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 - **WEB AUTOMATION**: Modern websites often use complex, non-standard input fields that confuse standard 'fill' tools. If 'fill' fails (especially with "option not found"), assume the tool is incompatible. Immediately switch to 'evaluate_script' (to set .value) or 'click' + 'press_key'.
 `
 
+	// Append available skills to system prompt (name + description only)
+	if len(cfg.SkillTools) > 0 {
+		var skillLines []string
+		for _, skill := range cfg.SkillTools {
+			skillLines = append(skillLines, fmt.Sprintf("- %s: %s", skill.Name, skill.Description))
+		}
+		systemPrompt += "\n<available-skills>\n" + strings.Join(skillLines, "\n") + "\n</available-skills>\n"
+		systemPrompt += `
+## Skills — IMPORTANT
+The skills listed in <available-skills> provide specialized capabilities. To use a skill, call tofi_load_skill with the skill name to get detailed instructions BEFORE acting.
+`
+	}
+
 	// Append deferred tool names to system prompt so the LLM knows what's available
 	if len(deferredSchemas) > 0 {
 		var deferredNames []string
 		for name := range deferredSchemas {
 			deferredNames = append(deferredNames, name)
 		}
+		systemPrompt += "\n<available-deferred-tools>\n" + strings.Join(deferredNames, "\n") + "\n</available-deferred-tools>\n"
 		systemPrompt += `
-<available-deferred-tools>
-` + strings.Join(deferredNames, "\n") + `
-</available-deferred-tools>
-
 ## Deferred Tools — IMPORTANT
 The tools listed in <available-deferred-tools> are available but NOT yet loaded. To use them, you MUST first call tofi_tool_search to activate them.
+`
+	}
 
-**CRITICAL**: If a user asks you to do something and you don't have a matching tool in your current tool list, you MUST call tofi_tool_search BEFORE responding. NEVER pretend to perform an action you cannot execute. NEVER say "done" or "created" without actually calling the tool. If you cannot find a tool after searching, tell the user honestly.
+	// Unified guidance for deferred loading
+	if len(cfg.SkillTools) > 0 || len(deferredSchemas) > 0 {
+		systemPrompt += `
+**CRITICAL**: If a user asks you to do something and you don't have a matching tool or skill loaded, you MUST call tofi_load_skill or tofi_tool_search BEFORE responding. NEVER pretend to perform an action you cannot execute. NEVER say "done" or "created" without actually calling the tool. If you cannot find a tool after searching, tell the user honestly.
 `
 	}
 
