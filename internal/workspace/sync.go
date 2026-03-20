@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 
 	"tofi-core/internal/storage"
-
-	"github.com/google/uuid"
 )
 
 // Sync provides bidirectional sync between filesystem agents and DB index.
@@ -23,20 +21,22 @@ func NewSync(ws *Workspace, db *storage.DB) *Sync {
 }
 
 // SyncAgentToDB reads a single agent from filesystem and upserts it into the DB.
-// If the agent already exists (by name+userID), it updates; otherwise inserts.
-func (s *Sync) SyncAgentToDB(userID, agentName string) (*storage.AppRecord, error) {
-	app, err := s.ws.ReadAgent(userID, agentName)
+// The agent's ID (from config or directory name) is used as the DB primary key.
+func (s *Sync) SyncAgentToDB(userID, agentDirName string) (*storage.AppRecord, error) {
+	app, err := s.ws.ReadAgent(userID, agentDirName)
 	if err != nil {
-		return nil, fmt.Errorf("read agent %q: %w", agentName, err)
+		return nil, fmt.Errorf("read agent %q: %w", agentDirName, err)
 	}
 
 	record := AgentDefToRecord(userID, app)
+	if record.ID == "" {
+		record.ID = agentDirName
+	}
 
-	// Check if agent already exists in DB by name+userID
-	existing, err := s.db.GetAppByName(userID, agentName)
-	if err == nil && existing != nil {
-		// Update existing record
-		record.ID = existing.ID
+	// Check if agent already exists in DB by ID
+	existing, err := s.db.GetApp(record.ID)
+	if err == nil && existing != nil && existing.UserID == userID {
+		// Update existing record, preserve runtime state
 		if err := s.db.UpdateApp(record); err != nil {
 			return nil, fmt.Errorf("update agent index: %w", err)
 		}
@@ -44,7 +44,6 @@ func (s *Sync) SyncAgentToDB(userID, agentName string) (*storage.AppRecord, erro
 	}
 
 	// Insert new record
-	record.ID = uuid.New().String()
 	if err := s.db.CreateApp(record); err != nil {
 		return nil, fmt.Errorf("create agent index: %w", err)
 	}
@@ -59,12 +58,12 @@ func (s *Sync) SyncAllAgentsToDB(userID string) error {
 		return fmt.Errorf("list agents: %w", err)
 	}
 
-	// Build set of agents on disk
+	// Build set of agents on disk (directory names = IDs)
 	diskAgents := make(map[string]bool, len(names))
-	for _, name := range names {
-		diskAgents[name] = true
-		if _, err := s.SyncAgentToDB(userID, name); err != nil {
-			log.Printf("[workspace-sync] warning: failed to sync agent %q: %v", name, err)
+	for _, dirName := range names {
+		diskAgents[dirName] = true
+		if _, err := s.SyncAgentToDB(userID, dirName); err != nil {
+			log.Printf("[workspace-sync] warning: failed to sync agent %q: %v", dirName, err)
 		}
 	}
 
@@ -74,8 +73,8 @@ func (s *Sync) SyncAllAgentsToDB(userID string) error {
 		return fmt.Errorf("list db apps: %w", err)
 	}
 	for _, app := range dbApps {
-		if app.Source == "local" && !diskAgents[app.Name] {
-			log.Printf("[workspace-sync] removing orphan DB entry: %q", app.Name)
+		if app.Source == "local" && !diskAgents[app.ID] {
+			log.Printf("[workspace-sync] removing orphan DB entry: %q (id=%s)", app.Name, app.ID)
 			s.db.DeleteApp(app.ID, userID)
 		}
 	}
@@ -95,12 +94,20 @@ func (s *Sync) MigrateDBToFiles() {
 
 	migrated := 0
 	for _, record := range allApps {
-		if record.Name == "" || record.UserID == "" {
+		if record.UserID == "" {
+			continue
+		}
+		// Need either ID or Name to create directory
+		dirName := record.ID
+		if dirName == "" {
+			dirName = record.Name
+		}
+		if dirName == "" {
 			continue
 		}
 
 		// Check if agent files already exist (tofi_app.yaml is the marker)
-		agentDir := s.ws.AgentDir(record.UserID, record.Name)
+		agentDir := s.ws.AgentDir(record.UserID, dirName)
 		yamlPath := filepath.Join(agentDir, AppYAMLFile)
 		if _, err := os.Stat(yamlPath); err == nil {
 			// Files already exist — skip (files are source of truth)

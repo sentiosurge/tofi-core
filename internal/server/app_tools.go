@@ -24,6 +24,7 @@ func (s *Server) buildAppTools(userID string) []mcp.ExtraBuiltinTool {
 		s.buildListNotifyTargetsTool(userID),
 		s.buildSetNotifyTargetsTool(userID),
 		s.buildGetRunDetailTool(userID),
+		s.buildListModelsTool(userID),
 	}
 }
 
@@ -54,8 +55,12 @@ func (s *Server) buildListAppsTool(userID string) mcp.ExtraBuiltinTool {
 				if a.IsActive {
 					status = "active"
 				}
-				out.WriteString(fmt.Sprintf("- **%s** (ID: %s)\n  %s\n  Status: %s",
-					a.Name, a.ID, a.Description, status))
+				displayName := a.Name
+				if displayName == "" {
+					displayName = a.ID
+				}
+				out.WriteString(fmt.Sprintf("- **%s** [%s]\n  %s\n  Status: %s",
+					displayName, a.ID, a.Description, status))
 
 				if a.IsActive && a.ScheduleRules != "" {
 					nextTimes := ExpandSchedule(a.ScheduleRules, time.Now(), 1)
@@ -83,9 +88,13 @@ Use this when the user wants to create a new automation, scheduled task, or recu
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "App ID — kebab-case (lowercase + hyphens), e.g. 'daily-weather'. Used as the unique identifier.",
+					},
 					"name": map[string]any{
 						"type":        "string",
-						"description": "App name (kebab-case, e.g. 'daily-weather')",
+						"description": "Display name (free-form, any language), e.g. '每日天气播报'. Optional — defaults to ID if omitted.",
 					},
 					"description": map[string]any{
 						"type":        "string",
@@ -109,16 +118,23 @@ Use this when the user wants to create a new automation, scheduled task, or recu
 						"description": "Schedule rules as JSON array string, e.g. '[{\"time\":\"09:00\",\"repeat\":{\"type\":\"daily\"}}]' (optional)",
 					},
 				},
-				"required": []string{"name", "description", "prompt"},
+				"required": []string{"id", "description", "prompt"},
 			},
 		},
 		Handler: func(args map[string]any) (string, error) {
+			id, _ := args["id"].(string)
 			name, _ := args["name"].(string)
 			description, _ := args["description"].(string)
 			prompt, _ := args["prompt"].(string)
 
-			if name == "" || prompt == "" {
-				return "", fmt.Errorf("name and prompt are required")
+			if id == "" || prompt == "" {
+				return "", fmt.Errorf("id and prompt are required")
+			}
+			if !isValidAppID(id) {
+				return "", fmt.Errorf("id must be kebab-case (lowercase letters, digits, hyphens only, e.g. 'daily-weather')")
+			}
+			if name == "" {
+				name = id
 			}
 
 			model, _ := args["model"].(string)
@@ -138,7 +154,7 @@ Use this when the user wants to create a new automation, scheduled task, or recu
 			}
 
 			// Build AgentDef
-			def := requestToAgentDef(name, description, prompt, "", model,
+			def := requestToAgentDef(id, name, description, prompt, "", model,
 				skillsList, scheduleRules, nil, nil, nil, nil)
 
 			// Write to filesystem
@@ -150,15 +166,15 @@ Use this when the user wants to create a new automation, scheduled task, or recu
 
 			// Sync to DB
 			if s.workspaceSync != nil {
-				record, err := s.workspaceSync.SyncAgentToDB(userID, name)
+				record, err := s.workspaceSync.SyncAgentToDB(userID, id)
 				if err != nil {
 					return "", fmt.Errorf("failed to sync app: %w", err)
 				}
-				return fmt.Sprintf("App created successfully.\nName: %s\nID: %s\nPrompt: %s",
-					record.Name, record.ID, truncate(prompt, 100)), nil
+				return fmt.Sprintf("App created successfully.\nID: %s\nName: %s\nPrompt: %s",
+					record.ID, record.Name, truncate(prompt, 100)), nil
 			}
 
-			return fmt.Sprintf("App '%s' created successfully.", name), nil
+			return fmt.Sprintf("App '%s' created successfully.", id), nil
 		},
 	}
 }
@@ -217,8 +233,6 @@ func (s *Server) buildUpdateAppTool(userID string) mcp.ExtraBuiltinTool {
 				return "", fmt.Errorf("app not found: %s", appID)
 			}
 
-			oldName := existing.Name
-
 			if v, ok := args["name"].(string); ok && v != "" {
 				existing.Name = v
 			}
@@ -245,11 +259,8 @@ func (s *Server) buildUpdateAppTool(userID string) mcp.ExtraBuiltinTool {
 				existing.ScheduleRules = schedStr
 			}
 
-			// Write to filesystem
+			// Write to filesystem (directory = ID, never changes)
 			if s.workspace != nil {
-				if oldName != existing.Name {
-					_ = s.workspace.DeleteAgent(userID, oldName)
-				}
 				def := workspace.RecordToAgentDef(existing)
 				if err := s.workspace.WriteAgent(userID, def); err != nil {
 					return "", fmt.Errorf("failed to write app: %w", err)
@@ -258,7 +269,7 @@ func (s *Server) buildUpdateAppTool(userID string) mcp.ExtraBuiltinTool {
 
 			// Sync to DB
 			if s.workspaceSync != nil {
-				synced, err := s.workspaceSync.SyncAgentToDB(userID, existing.Name)
+				synced, err := s.workspaceSync.SyncAgentToDB(userID, existing.ID)
 				if err != nil {
 					if dbErr := s.db.UpdateApp(existing); dbErr != nil {
 						return "", fmt.Errorf("failed to update app: %w", dbErr)
@@ -317,8 +328,6 @@ func (s *Server) buildDeleteAppTool(userID string) mcp.ExtraBuiltinTool {
 				return "", fmt.Errorf("app not found: %s", appID)
 			}
 
-			name := app.Name
-
 			// Remove from scheduler
 			if s.appScheduler != nil {
 				s.appScheduler.RemoveApp(appID)
@@ -327,9 +336,9 @@ func (s *Server) buildDeleteAppTool(userID string) mcp.ExtraBuiltinTool {
 			// Cancel pending runs
 			s.db.CancelPendingAppRuns(appID)
 
-			// Delete files
+			// Delete files (directory = ID)
 			if s.workspace != nil {
-				_ = s.workspace.DeleteAgent(userID, name)
+				_ = s.workspace.DeleteAgent(userID, appID)
 			}
 
 			// Delete from DB
@@ -337,7 +346,7 @@ func (s *Server) buildDeleteAppTool(userID string) mcp.ExtraBuiltinTool {
 				return "", fmt.Errorf("failed to delete app: %w", err)
 			}
 
-			return fmt.Sprintf("App '%s' deleted successfully.", name), nil
+			return fmt.Sprintf("App '%s' (ID: %s) deleted successfully.", app.Name, appID), nil
 		},
 	}
 }
@@ -749,6 +758,48 @@ Use the session_id from tofi_list_app_runs. Returns the complete conversation in
 				}
 			}
 
+			return out.String(), nil
+		},
+	}
+}
+
+// ── tofi_list_models ──
+
+func (s *Server) buildListModelsTool(userID string) mcp.ExtraBuiltinTool {
+	return mcp.ExtraBuiltinTool{
+		Schema: provider.Tool{
+			Name:        "tofi_list_models",
+			Description: "List all available AI models that the user has enabled. Returns model name, provider, context window, and cost. Use this when selecting a model for an App.",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		Handler: func(args map[string]any) (string, error) {
+			// Get user's enabled models
+			val, _ := s.db.GetSetting("enabled_models", userID)
+			var enabledSet map[string]bool
+			if val != "" {
+				var enabledList []string
+				json.Unmarshal([]byte(val), &enabledList)
+				enabledSet = make(map[string]bool, len(enabledList))
+				for _, m := range enabledList {
+					enabledSet[m] = true
+				}
+			}
+
+			all := provider.ListAllModels()
+			var out strings.Builder
+			for name, info := range all {
+				if enabledSet != nil && !enabledSet[name] {
+					continue
+				}
+				out.WriteString(fmt.Sprintf("- %s (provider: %s, context: %dk, cost: $%.2f/$%.2f per 1M in/out)\n",
+					name, info.Provider, info.ContextWindow/1000, info.InputCostPer1M, info.OutputCostPer1M))
+			}
+			if out.Len() == 0 {
+				return "No models enabled. User needs to configure models via 'tofi config'.", nil
+			}
 			return out.String(), nil
 		},
 	}

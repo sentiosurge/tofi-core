@@ -20,8 +20,6 @@ import (
 	"tofi-core/internal/skills"
 	"tofi-core/internal/storage"
 	"tofi-core/internal/workspace"
-
-	"github.com/google/uuid"
 )
 
 // ── App CRUD Handlers ──
@@ -90,6 +88,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
 
 	var req struct {
+		ID               string           `json:"id"`
 		Name             string           `json:"name"`
 		Description      string           `json:"description"`
 		Prompt           string           `json:"prompt"`
@@ -107,13 +106,17 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+	if req.ID == "" {
+		http.Error(w, "id is required (lowercase + hyphens, e.g. 'daily-weather')", http.StatusBadRequest)
+		return
+	}
+	if !isValidAppID(req.ID) {
+		http.Error(w, "id must be kebab-case (lowercase letters, digits, hyphens only)", http.StatusBadRequest)
 		return
 	}
 
 	// Build AgentDef from request
-	def := requestToAgentDef(req.Name, req.Description, req.Prompt, req.SystemPrompt, req.Model,
+	def := requestToAgentDef(req.ID, req.Name, req.Description, req.Prompt, req.SystemPrompt, req.Model,
 		req.Skills, req.ScheduleRules, req.Capabilities, req.BufferSize, req.RenewalThreshold,
 		req.ParameterDefs)
 
@@ -128,16 +131,15 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	// Step 2: Sync to DB index
 	var record *storage.AppRecord
 	if s.workspaceSync != nil {
-		synced, err := s.workspaceSync.SyncAgentToDB(userID, req.Name)
+		synced, err := s.workspaceSync.SyncAgentToDB(userID, req.ID)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed to sync agent to index: %v", err), http.StatusInternalServerError)
 			return
 		}
 		record = synced
 	} else {
-		// Fallback: direct DB write (for backwards compatibility if workspace not initialized)
+		// Fallback: direct DB write
 		record = workspace.AgentDefToRecord(userID, def)
-		record.ID = uuid.New().String()
 		if err := s.db.CreateApp(record); err != nil {
 			http.Error(w, fmt.Sprintf("failed to create app: %v", err), http.StatusInternalServerError)
 			return
@@ -185,9 +187,6 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track original name for file rename
-	oldName := existing.Name
-
 	// Merge updates into existing record
 	if req.Name != nil {
 		existing.Name = *req.Name
@@ -227,13 +226,8 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		existing.ParameterDefs = string(*req.ParameterDefs)
 	}
 
-	// Step 1: Write updated agent files to disk
+	// Step 1: Write updated agent files to disk (directory = ID, unchanged)
 	if s.workspace != nil {
-		// If name changed, delete old agent directory first
-		if req.Name != nil && oldName != existing.Name {
-			_ = s.workspace.DeleteAgent(userID, oldName)
-		}
-
 		def := workspace.RecordToAgentDef(existing)
 		if err := s.workspace.WriteAgent(userID, def); err != nil {
 			http.Error(w, fmt.Sprintf("failed to write agent files: %v", err), http.StatusInternalServerError)
@@ -243,7 +237,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 
 	// Step 2: Sync to DB index
 	if s.workspaceSync != nil {
-		synced, err := s.workspaceSync.SyncAgentToDB(userID, existing.Name)
+		synced, err := s.workspaceSync.SyncAgentToDB(userID, existing.ID)
 		if err != nil {
 			log.Printf("[app-update] sync failed, falling back to direct DB: %v", err)
 			if err := s.db.UpdateApp(existing); err != nil {
@@ -298,10 +292,10 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		s.appScheduler.RemoveApp(id)
 	}
 
-	// Step 1: Delete agent files from disk
-	if s.workspace != nil && app.Name != "" {
-		if err := s.workspace.DeleteAgent(userID, app.Name); err != nil {
-			log.Printf("[app-delete] failed to delete agent files for %q: %v", app.Name, err)
+	// Step 1: Delete agent files from disk (directory = ID)
+	if s.workspace != nil && app.ID != "" {
+		if err := s.workspace.DeleteAgent(userID, app.ID); err != nil {
+			log.Printf("[app-delete] failed to delete agent files for %q: %v", app.ID, err)
 			// Continue to delete from DB even if file deletion fails
 		}
 	}
@@ -1091,15 +1085,30 @@ func (s *Server) buildManagerTools(userID string) []mcp.ExtraBuiltinTool {
 	}
 }
 
+// isValidAppID checks if an ID is valid kebab-case (lowercase letters, digits, hyphens).
+func isValidAppID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, r := range id {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
+			return false
+		}
+	}
+	// Must not start or end with hyphen
+	return id[0] != '-' && id[len(id)-1] != '-'
+}
+
 // requestToAgentDef converts API request fields into an AgentDef for file-based storage.
 func requestToAgentDef(
-	name, description, prompt, systemPrompt, model string,
+	id, name, description, prompt, systemPrompt, model string,
 	skillsList []string,
 	scheduleRules, capabilities *json.RawMessage,
 	bufferSize, renewalThreshold *int,
 	parameterDefs *json.RawMessage,
 ) *apps.AgentDef {
 	cfg := apps.AppConfig{
+		ID:          id,
 		Name:        name,
 		Description: description,
 		Model:       model,

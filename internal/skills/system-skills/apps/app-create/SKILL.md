@@ -10,25 +10,36 @@ When the user describes an automation they want, decompose it into a complete ap
 
 ## Step 1: Understand
 
-Ask clarifying questions ONLY if the request is too vague. Determine:
+From the user's description, determine:
 1. **What** — core purpose (what should the AI do each run?)
 2. **When** — schedule or manual-only?
 3. **Who** — notification targets? (optional)
 
+**Do NOT ask clarifying questions upfront.** If the user gave enough context, go straight to Step 2 and produce a complete plan. Present it for confirmation — the user can adjust from there. Only ask if the request is genuinely too vague to form any reasonable plan (e.g., "make me an app").
+
 ## Step 2: Decompose
 
-- **name**: kebab-case (e.g., `daily-weather-report`)
+- **id**: kebab-case (e.g., `daily-weather-report`) — unique, immutable identifier
+- **name**: display name, any language (e.g., "Daily Weather Report") — optional, defaults to id
 - **description**: one-line summary (< 80 chars)
 - **prompt**: clear, actionable instruction for the AI — include steps, output format, tone, error handling
-- **model**: match complexity to model tier:
-  - Simple tasks: `gpt-4o-mini`, `deepseek-chat`, `gemini-2.0-flash`
-  - Analysis/writing: `gpt-4o`, `claude-sonnet-4`, `gemini-2.5-flash`
-  - Deep reasoning: `claude-opus-4`, `gpt-5`, `gemini-2.5-pro`
-- **skills**: search for relevant skills if the task needs external tools (web search, etc.)
+- **model**: call `tofi_list_models` to get available models, then pick one matching the task complexity
+- **skills**:
+  1. First check user's installed skills (they are already loaded in context)
+  2. If no matching skill exists, suggest the user install one or describe what capability is needed
 - **schedule** (if timed): JSON array format
   - Daily: `[{"time":"09:00","repeat":{"type":"daily"}}]`
   - Weekdays: `[{"time":"09:00","repeat":{"type":"weekly","days":["mon","tue","wed","thu","fri"]}}]`
   - Weekly: `[{"time":"09:00","repeat":{"type":"weekly","days":["mon"]}}]`
+
+## Step 2.5: Notification targets (if user wants push)
+
+If the user mentioned notifications/push/提醒:
+1. Call `tofi_list_notify_targets` (without `app_id`) to list all available receivers
+2. Ask user which receivers to notify, or confirm "all"
+3. Record the selected `receiver_ids` for Step 4
+
+If user didn't mention notifications, skip this step.
 
 ## Step 3: Confirm
 
@@ -48,7 +59,7 @@ Wait for user confirmation.
 
 1. `tofi_create_app` with all fields
 2. If schedule provided → `tofi_toggle_schedule` with `enabled: true`
-3. If user wants notifications → use **app-manage** (notification targets section) to configure receivers
+3. If user wants notifications → `tofi_set_notify_targets` with the `receiver_ids` from Step 2.5
 4. Offer: "Want me to run it once to test?"
    - If yes → use **app-manage** (run now)
    - After test → use **app-inspect** to show the result

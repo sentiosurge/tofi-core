@@ -18,7 +18,8 @@ const (
 	appStepDetail                      // App detail + action menu
 	appStepSessions                    // App's past sessions
 	appStepCreateMode                  // Create: choose Form or Chat
-	appStepCreateName                  // Create: name input
+	appStepCreateID                    // Create: ID input (kebab-case, required)
+	appStepCreateName                  // Create: display name input
 	appStepCreateDesc                  // Create: description (skippable)
 	appStepCreatePrompt                // Create: prompt (required)
 	appStepCreateModel                 // Create: select model
@@ -113,9 +114,11 @@ type appModel struct {
 	sessions []appSessionItem
 
 	// Create form
+	idInput     textinput.Model
 	nameInput   textinput.Model
 	descInput   textinput.Model
 	promptInput textarea.Model
+	formID      string
 	formName    string
 	formDesc    string
 	formPrompt  string
@@ -145,9 +148,14 @@ type appModel struct {
 }
 
 func newAppModel(client *apiClient) *appModel {
+	ii := textinput.New()
+	ii.Placeholder = "daily-weather"
+	ii.CharLimit = 64
+	ii.Width = 50
+
 	ni := textinput.New()
-	ni.Placeholder = "my-weather-bot"
-	ni.CharLimit = 64
+	ni.Placeholder = "Display name (Enter to skip, defaults to ID)"
+	ni.CharLimit = 100
 	ni.Width = 50
 
 	di := textinput.New()
@@ -164,6 +172,7 @@ func newAppModel(client *apiClient) *appModel {
 	return &appModel{
 		client:       client,
 		step:         appStepList,
+		idInput:      ii,
 		nameInput:    ni,
 		descInput:    di,
 		promptInput:  pi,
@@ -227,6 +236,8 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateSessions(msg)
 	case appStepCreateMode:
 		return m.updateCreateMode(msg)
+	case appStepCreateID:
+		return m.updateCreateID(msg)
 	case appStepCreateName:
 		return m.updateCreateName(msg)
 	case appStepCreateDesc:
@@ -272,7 +283,7 @@ func (m *appModel) View() string {
 		return "\n" + renderTUIBox(name, m.viewSessions()) + warn + "\n"
 	case appStepCreateMode:
 		return "\n" + renderTUIBox("Create App", m.viewCreateMode()) + warn + "\n"
-	case appStepCreateName, appStepCreateDesc, appStepCreatePrompt,
+	case appStepCreateID, appStepCreateName, appStepCreateDesc, appStepCreatePrompt,
 		appStepCreateModel, appStepCreateSkills, appStepCreateSchedule,
 		appStepCreateConfirm:
 		return "\n" + renderTUIBox("Create App", m.viewCreate()) + warn + "\n"
@@ -309,6 +320,7 @@ func (m *appModel) goToList() {
 func (m *appModel) goToCreate() {
 	m.step = appStepCreateMode
 	m.cursor = 0
+	m.formID = ""
 	m.formName = ""
 	m.formDesc = ""
 	m.formPrompt = ""
@@ -316,8 +328,8 @@ func (m *appModel) goToCreate() {
 	m.formSkills = nil
 	m.formSched = ""
 	m.skillChecked = make(map[string]bool)
+	m.idInput.SetValue("")
 	m.nameInput.SetValue("")
-	m.nameInput.Focus()
 	m.descInput.SetValue("")
 	m.promptInput.SetValue("")
 }

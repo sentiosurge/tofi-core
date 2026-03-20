@@ -23,7 +23,7 @@ Show full metadata for one app. Gather from multiple tools:
 │                                                          │
 │  Status:    ● active          Model: gpt-5-mini          │
 │  Schedule:  daily at 09:00    Next:  2026-03-20 09:00    │
-│  ID:        abc12345-6789                                │
+│  Description: Check weather and push daily briefing       │
 │  Notify:    Jack (Telegram)                              │
 │                                                          │
 │  Recent runs:                                            │

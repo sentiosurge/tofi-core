@@ -22,13 +22,22 @@ const (
 	MemoryIndex  = "MEMORY.md"
 )
 
+// agentDirName returns the directory name for an agent: ID if set, otherwise Name.
+func agentDirName(cfg apps.AppConfig) string {
+	if cfg.ID != "" {
+		return cfg.ID
+	}
+	return cfg.Name
+}
+
 // WriteAgent writes an agent definition as agent.md + tofi_app.yaml.
 func (w *Workspace) WriteAgent(userID string, def *apps.AgentDef) error {
-	if def.Config.Name == "" {
-		return fmt.Errorf("agent name is required")
+	dirName := agentDirName(def.Config)
+	if dirName == "" {
+		return fmt.Errorf("agent id or name is required")
 	}
 
-	agentDir := w.AgentDir(userID, def.Config.Name)
+	agentDir := w.AgentDir(userID, dirName)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		return fmt.Errorf("create agent dir: %w", err)
 	}
@@ -87,6 +96,11 @@ func ReadAgentDir(dir string) (*apps.AgentDef, error) {
 	var config apps.AppConfig
 	if err := yaml.Unmarshal(yamlData, &config); err != nil {
 		return nil, fmt.Errorf("parse tofi_app.yaml: %w", err)
+	}
+
+	// If ID is not set in YAML, derive from directory name
+	if config.ID == "" {
+		config.ID = filepath.Base(dir)
 	}
 
 	def := &apps.AgentDef{
@@ -190,6 +204,7 @@ func AgentDefToRecord(userID string, def *apps.AgentDef) *storage.AppRecord {
 	}
 
 	return &storage.AppRecord{
+		ID:               cfg.ID,
 		Name:             cfg.Name,
 		Description:      cfg.Description,
 		Prompt:           def.AgentsMD,
@@ -213,6 +228,7 @@ func AgentDefToRecord(userID string, def *apps.AgentDef) *storage.AppRecord {
 // RecordToAgentDef converts a storage.AppRecord back to an AgentDef for writing to files.
 func RecordToAgentDef(record *storage.AppRecord) *apps.AgentDef {
 	cfg := apps.AppConfig{
+		ID:               record.ID,
 		Name:             record.Name,
 		Description:      record.Description,
 		Model:            record.Model,

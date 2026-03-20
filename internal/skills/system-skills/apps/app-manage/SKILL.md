@@ -16,13 +16,7 @@ If user refers to an app by name, use **app-list** first to get the ID.
 
 ### Edit Config
 
-Use `tofi_update_app` with the fields to change. Supported fields:
-- `name`, `description`, `prompt`, `model`, `skills`, `schedule`
-
-Workflow:
-1. Confirm what the user wants to change
-2. Call `tofi_update_app` with only the changed fields
-3. Show what was updated
+Infer what needs to change from the user's message, call `tofi_update_app` with only the changed fields, then show what was updated. ID is immutable; all other fields (`name`, `description`, `prompt`, `model`, `skills`, `schedule`) can be changed.
 
 ### Delete
 

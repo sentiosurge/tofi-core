@@ -33,8 +33,8 @@ func (m *appModel) updateCreateMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if m.cursor == 0 {
 				// Form mode
-				m.step = appStepCreateName
-				m.nameInput.Focus()
+				m.step = appStepCreateID
+				m.idInput.Focus()
 			} else {
 				// Chat mode — exit TUI, launch global chat
 				m.launchChat = true
@@ -65,6 +65,41 @@ func (m *appModel) viewCreateMode() string {
 	return s.String()
 }
 
+// ── Create: ID ──
+
+func (m *appModel) updateCreateID(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "enter":
+			val := strings.TrimSpace(m.idInput.Value())
+			if val == "" {
+				return m, nil // required
+			}
+			// Validate kebab-case
+			valid := true
+			for _, r := range val {
+				if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
+					valid = false
+					break
+				}
+			}
+			if !valid || val[0] == '-' || val[len(val)-1] == '-' {
+				return m, nil // invalid, stay on this step
+			}
+			m.formID = val
+			m.step = appStepCreateName
+			m.nameInput.Focus()
+			return m, nil
+		case "esc":
+			m.goToList()
+			return m, m.loadApps()
+		}
+	}
+	var cmd tea.Cmd
+	m.idInput, cmd = m.idInput.Update(msg)
+	return m, cmd
+}
+
 // ── Schedule presets ──
 
 var schedPresets = []struct {
@@ -85,16 +120,14 @@ func (m *appModel) updateCreateName(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch keyMsg.String() {
 		case "enter":
 			val := strings.TrimSpace(m.nameInput.Value())
-			if val == "" {
-				return m, nil // required
-			}
-			m.formName = val
+			m.formName = val // optional — empty means use ID as display name
 			m.step = appStepCreateDesc
 			m.descInput.Focus()
 			return m, nil
 		case "esc":
-			m.goToList()
-			return m, m.loadApps()
+			m.step = appStepCreateID
+			m.idInput.Focus()
+			return m, nil
 		}
 	}
 	var cmd tea.Cmd
@@ -115,7 +148,7 @@ func (m *appModel) updateCreateDesc(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.step = appStepCreateName
 			m.nameInput.Focus()
-			return m, nil
+			return m, nil // Name 可选，回退到 Name 让用户改
 		}
 	}
 	var cmd tea.Cmd
@@ -292,8 +325,13 @@ func (m *appModel) updateCreateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *appModel) submitCreate() tea.Cmd {
 	return func() tea.Msg {
+		displayName := m.formName
+		if displayName == "" {
+			displayName = m.formID
+		}
 		body := map[string]any{
-			"name":        m.formName,
+			"id":          m.formID,
+			"name":        displayName,
 			"description": m.formDesc,
 			"prompt":      m.formPrompt,
 		}
@@ -337,18 +375,24 @@ func (m *appModel) submitCreate() tea.Cmd {
 func (m *appModel) viewCreate() string {
 	var s strings.Builder
 
-	steps := []string{"Name", "Description", "Prompt", "Model", "Skills", "Schedule", "Confirm"}
-	stepIdx := int(m.step) - int(appStepCreateName) // appStepCreateName is the first form step
+	steps := []string{"ID", "Name", "Description", "Prompt", "Model", "Skills", "Schedule", "Confirm"}
+	stepIdx := int(m.step) - int(appStepCreateID) // appStepCreateID is the first form step
 	if stepIdx >= 0 && stepIdx < len(steps) {
 		progress := fmt.Sprintf("Step %d/%d: %s", stepIdx+1, len(steps), steps[stepIdx])
 		s.WriteString(subtitleStyle.Render(progress) + "\n\n")
 	}
 
 	switch m.step {
-	case appStepCreateName:
-		s.WriteString("App name " + subtitleStyle.Render("(required)") + "\n\n")
-		s.WriteString(m.nameInput.View() + "\n\n")
+	case appStepCreateID:
+		s.WriteString("App ID " + subtitleStyle.Render("(required, kebab-case: lowercase + hyphens)") + "\n\n")
+		s.WriteString(m.idInput.View() + "\n\n")
+		s.WriteString(subtitleStyle.Render("e.g. daily-weather, news-digest") + "\n\n")
 		s.WriteString(subtitleStyle.Render("enter next · esc cancel"))
+
+	case appStepCreateName:
+		s.WriteString("Display name " + subtitleStyle.Render("(enter to skip, defaults to ID)") + "\n\n")
+		s.WriteString(m.nameInput.View() + "\n\n")
+		s.WriteString(subtitleStyle.Render("enter next · esc back"))
 
 	case appStepCreateDesc:
 		s.WriteString("Description " + subtitleStyle.Render("(enter to skip)") + "\n\n")
@@ -412,7 +456,12 @@ func (m *appModel) viewCreate() string {
 
 	case appStepCreateConfirm:
 		s.WriteString("Confirm\n\n")
-		s.WriteString(fmt.Sprintf("  Name:     %s\n", accentStyle.Render(m.formName)))
+		s.WriteString(fmt.Sprintf("  ID:       %s\n", accentStyle.Render(m.formID)))
+		displayName := m.formName
+		if displayName == "" {
+			displayName = m.formID
+		}
+		s.WriteString(fmt.Sprintf("  Name:     %s\n", displayName))
 		if m.formDesc != "" {
 			s.WriteString(fmt.Sprintf("  Desc:     %s\n", m.formDesc))
 		}

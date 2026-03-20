@@ -5,7 +5,8 @@ package apps
 // Parsed via yaml.Unmarshal directly, no frontmatter splitting needed.
 type AppConfig struct {
 	// === Meta ===
-	Name        string `yaml:"name" json:"name"`
+	ID          string `yaml:"id" json:"id"`     // kebab-case identifier (lowercase + hyphens), used as directory name and DB primary key
+	Name        string `yaml:"name" json:"name"` // display name (free-form, any language)
 	Description string `yaml:"description" json:"description"`
 	Version     string `yaml:"version,omitempty" json:"version,omitempty"`
 	Author      string `yaml:"author,omitempty" json:"author,omitempty"`

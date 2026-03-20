@@ -173,7 +173,8 @@ func (m *appModel) handleDetailAction(action string) (tea.Model, tea.Cmd) {
 		m.offset = 0
 		return m, m.loadSessions(app.ID)
 	case "edit":
-		m.step = appStepCreateName
+		m.step = appStepCreateName // skip ID step (ID is immutable)
+		m.formID = app.ID
 		m.formName = app.Name
 		m.formDesc = app.Description
 		m.formPrompt = app.Prompt
