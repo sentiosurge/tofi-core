@@ -201,6 +201,55 @@ func sendViaWebhook(c *storage.Connector, channelName string, sendFn func(string
 	return []string{fmt.Sprintf("Notified via %s webhook", channelName)}, 1
 }
 
+// SendNotification sends a message through all configured connectors for an app.
+// This is called by the runtime (e.g., app scheduler) after an app run completes,
+// NOT by the AI. The AI only produces the content; delivery is handled by the platform.
+func SendNotification(userID, appID, message string, deps NotifyDeps) (int, error) {
+	if message == "" {
+		return 0, nil
+	}
+
+	var connectors []*storage.Connector
+	var err error
+
+	if appID != "" {
+		// Try app-specific connectors first
+		connectors, err = deps.ListConnectorsByApp(userID, appID)
+	}
+
+	// Fallback to all user connectors (global ones with empty app_id)
+	if err != nil || len(connectors) == 0 {
+		connectors, err = deps.ListConnectors(userID)
+	}
+
+	if err != nil || len(connectors) == 0 {
+		return 0, nil // no connectors configured — not an error
+	}
+
+	sent := 0
+	for _, c := range connectors {
+		if !c.Enabled {
+			continue
+		}
+		switch c.Type {
+		case storage.ConnectorTelegram:
+			_, n := sendViaTelegram(c, deps, nil, true, message)
+			sent += n
+		case storage.ConnectorDiscordWebhook:
+			_, n := sendViaWebhook(c, "Discord", SendDiscordWebhook, message)
+			sent += n
+		case storage.ConnectorSlackWebhook:
+			_, n := sendViaWebhook(c, "Slack", SendSlackWebhook, message)
+			sent += n
+		}
+	}
+
+	if sent > 0 {
+		log.Printf("[notify] sent %d notification(s) for app %s", sent, appID)
+	}
+	return sent, nil
+}
+
 // InjectNotifyTool 向 extraTools 注入 tofi_notify（如果有可用 connectors）
 func InjectNotifyTool(
 	extraTools []mcp.ExtraBuiltinTool,

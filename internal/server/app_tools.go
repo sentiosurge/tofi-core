@@ -25,6 +25,7 @@ func (s *Server) buildAppTools(userID string) []mcp.ExtraBuiltinTool {
 		s.buildSetNotifyTargetsTool(userID),
 		s.buildGetRunDetailTool(userID),
 		s.buildListModelsTool(userID),
+		buildDisplayAppPlanTool(),
 	}
 }
 
@@ -82,9 +83,11 @@ func (s *Server) buildCreateAppTool(userID string) mcp.ExtraBuiltinTool {
 		Schema: provider.Tool{
 			Name: "tofi_create_app",
 			Description: `Create a new App (automated AI task). The prompt is the instruction the AI will execute each run.
-Schedule format is a JSON array of rule objects, e.g. [{"time":"09:00","repeat":{"type":"daily"}}].
-Skills is an array of skill names to attach.
-Use this when the user wants to create a new automation, scheduled task, or recurring AI job.`,
+
+⚠️ IMPORTANT: You MUST call tofi_display_app_plan FIRST to show the plan to the user and get their explicit confirmation BEFORE calling this tool. NEVER call tofi_create_app without prior tofi_display_app_plan + user confirmation.
+
+Schedule format is a JSON object string with entries and timezone.
+Skills is an array of skill names to attach.`,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -115,7 +118,7 @@ Use this when the user wants to create a new automation, scheduled task, or recu
 					},
 					"schedule": map[string]any{
 						"type":        "string",
-						"description": "Schedule rules as JSON array string, e.g. '[{\"time\":\"09:00\",\"repeat\":{\"type\":\"daily\"}}]' (optional)",
+						"description": "Schedule as JSON object string with entries and timezone, e.g. '{\"entries\":[{\"time\":\"09:00\",\"repeat\":{\"type\":\"daily\"},\"enabled\":true}],\"timezone\":\"America/Los_Angeles\"}' (optional)",
 					},
 				},
 				"required": []string{"id", "description", "prompt"},
@@ -216,7 +219,7 @@ func (s *Server) buildUpdateAppTool(userID string) mcp.ExtraBuiltinTool {
 					},
 					"schedule": map[string]any{
 						"type":        "string",
-						"description": "New schedule rules as JSON array string (optional)",
+						"description": "New schedule as JSON object string with entries and timezone, e.g. '{\"entries\":[...],\"timezone\":\"America/Los_Angeles\"}' (optional)",
 					},
 				},
 				"required": []string{"app_id"},
@@ -813,4 +816,65 @@ func truncate(s string, maxRunes int) string {
 		return s
 	}
 	return string(r[:maxRunes]) + "..."
+}
+
+// ── tofi_display_app_plan ──
+
+func buildDisplayAppPlanTool() mcp.ExtraBuiltinTool {
+	return mcp.ExtraBuiltinTool{
+		Schema: provider.Tool{
+			Name: "tofi_display_app_plan",
+			Description: `⚠️ MANDATORY before tofi_create_app or tofi_update_app. Display a structured App plan to the user in a rich visual format. The TUI renders this as a formatted confirmation box. You MUST call this tool and wait for user confirmation BEFORE executing any create/update. Never skip this step. After the plan is displayed, ask: "确认创建？有需要调整的地方可以告诉我。"`,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "App ID (kebab-case)",
+					},
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Display name (optional, omit if same as id)",
+					},
+					"description": map[string]any{
+						"type":        "string",
+						"description": "One-line description",
+					},
+					"prompt": map[string]any{
+						"type":        "string",
+						"description": "The full AI instruction/prompt",
+					},
+					"model": map[string]any{
+						"type":        "string",
+						"description": "Model name",
+					},
+					"schedule": map[string]any{
+						"type":        "string",
+						"description": "Human-readable schedule (e.g. 'Daily 08:00', 'Weekdays 09:00')",
+					},
+					"timezone": map[string]any{
+						"type":        "string",
+						"description": "IANA timezone (e.g. 'America/Los_Angeles')",
+					},
+					"skills": map[string]any{
+						"type":        "string",
+						"description": "Comma-separated skill names (optional)",
+					},
+					"notify": map[string]any{
+						"type":        "string",
+						"description": "Notification targets summary (e.g. 'Jack (Telegram)')",
+					},
+				},
+				"required": []string{"id", "description", "prompt"},
+			},
+		},
+		Handler: func(args map[string]any) (string, error) {
+			// Return the plan as JSON — the TUI renders it visually
+			out, err := json.Marshal(args)
+			if err != nil {
+				return "", err
+			}
+			return string(out) + "\n\n[Plan displayed to user. WAIT for user confirmation before calling tofi_create_app. Do NOT proceed automatically.]", nil
+		},
+	}
 }

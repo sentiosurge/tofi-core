@@ -411,6 +411,22 @@ func (db *DB) UpdateAppRunStatusWithSession(id, status, sessionID string) error 
 	}
 }
 
+// UpdateAppRunResult updates status, session, and result content in one call.
+func (db *DB) UpdateAppRunResult(id, status, sessionID, result string) error {
+	switch status {
+	case "done", "failed":
+		_, err := db.conn.Exec(
+			`UPDATE app_runs SET status = ?, session_id = ?, result = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			status, sessionID, result, id)
+		return err
+	default:
+		_, err := db.conn.Exec(
+			`UPDATE app_runs SET status = ?, session_id = ?, result = ? WHERE id = ?`,
+			status, sessionID, result, id)
+		return err
+	}
+}
+
 func (db *DB) CancelPendingAppRuns(appID string) (int, error) {
 	result, err := db.conn.Exec(`UPDATE app_runs SET status = 'cancelled' WHERE app_id = ? AND status = 'pending'`, appID)
 	if err != nil {

@@ -1142,11 +1142,17 @@ func requestToAgentDef(
 		}
 	}
 
-	// Parse schedule rules JSON
+	// Parse schedule rules JSON — supports both object {"entries":[...],"timezone":"..."} and legacy array [{...}]
 	if scheduleRules != nil {
 		var schedule apps.AppConfigSchedule
 		if err := json.Unmarshal(*scheduleRules, &schedule); err == nil {
 			cfg.Schedule = &schedule
+		} else {
+			// Fallback: if it's a bare array, treat as entries with no timezone
+			var entries []apps.ScheduleEntry
+			if err2 := json.Unmarshal(*scheduleRules, &entries); err2 == nil {
+				cfg.Schedule = &apps.AppConfigSchedule{Entries: entries}
+			}
 		}
 	}
 

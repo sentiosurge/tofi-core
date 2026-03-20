@@ -16,7 +16,10 @@ If user refers to an app by name, use **app-list** first to get the ID.
 
 ### Edit Config
 
-Infer what needs to change from the user's message, call `tofi_update_app` with only the changed fields, then show what was updated. ID is immutable; all other fields (`name`, `description`, `prompt`, `model`, `skills`, `schedule`) can be changed.
+Infer what needs to change from the user's message. ID is immutable; all other fields (`name`, `description`, `prompt`, `model`, `skills`, `schedule`) can be changed.
+
+- **Single-field change** (e.g., "change model to gpt-4o"): call `tofi_update_app` directly, show what was updated.
+- **Multi-field change** (e.g., "overhaul the prompt and schedule"): call `tofi_display_app_plan` first to show the proposed changes, wait for confirmation, then execute `tofi_update_app`.
 
 ### Delete
 
@@ -39,18 +42,15 @@ When user says "rerun that failed one" or "run it again":
 ### Schedule Management
 
 To change schedule:
-- `tofi_update_app` with `schedule` field (JSON array format)
-- Example: `[{"time":"09:00","repeat":{"type":"daily"}}]`
+- `tofi_update_app` with `schedule` field (JSON object with entries + timezone)
+- Call `tofi_get_time` to get user's local timezone if not already known
+- Example: `{"entries":[{"time":"09:00","repeat":{"type":"daily"},"enabled":true}],"timezone":"America/Los_Angeles"}`
 
 To activate/deactivate:
 - `tofi_toggle_schedule` with `enabled: true/false`
 - Deactivating cancels pending runs
 
-Common schedule patterns to suggest:
-- Daily: `[{"time":"09:00","repeat":{"type":"daily"}}]`
-- Weekdays: `[{"time":"09:00","repeat":{"type":"weekly","days":["mon","tue","wed","thu","fri"]}}]`
-- Weekly: `[{"time":"09:00","repeat":{"type":"weekly","days":["mon"]}}]`
-- Hourly: `[{"time":"00:00","repeat":{"type":"hourly"}}]`
+Common repeat types: `daily`, `weekly` (with `days`), `monthly` (with `day_of_month`)
 
 ### Notification Targets
 

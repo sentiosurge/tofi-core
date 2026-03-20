@@ -48,6 +48,7 @@ type AgentConfig struct {
 	SessionID     string             // Session/task identifier for streaming callbacks
 	SkillTools    []SkillTool        // Installed skills as callable tools
 	ExtraTools    []ExtraBuiltinTool // Additional built-in tools (search_skills, etc.)
+	DeferredTools []ExtraBuiltinTool // Tools listed by name only; activated via tofi_tool_search
 	SandboxDir    string             // Sandbox directory for shell command execution (optional)
 	UserDir       string             // User persistent directory for installed tools (optional)
 	Executor      executor.Executor  // Sandbox executor (nil = use legacy functions)
@@ -206,6 +207,103 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 		extraHandlers[et.Schema.Name] = et.Handler
 	}
 
+	// Register deferred tools (not sent to LLM until activated via tofi_tool_search)
+	deferredSchemas := make(map[string]provider.Tool)
+	deferredHandlers := make(map[string]func(map[string]interface{}) (string, error))
+	for _, dt := range cfg.DeferredTools {
+		deferredSchemas[dt.Schema.Name] = dt.Schema
+		deferredHandlers[dt.Schema.Name] = dt.Handler
+	}
+
+	if len(deferredSchemas) > 0 {
+		// Build the name→description index for search
+		type deferredEntry struct {
+			Name string
+			Desc string
+		}
+		var deferredIndex []deferredEntry
+		for _, dt := range cfg.DeferredTools {
+			deferredIndex = append(deferredIndex, deferredEntry{dt.Schema.Name, dt.Schema.Description})
+		}
+
+		allTools = append(allTools, provider.Tool{
+			Name: "tofi_tool_search",
+			Description: "Search for and activate additional tools by keyword. " +
+				"Some tools are not loaded by default to keep the context clean. " +
+				"Use this to find tools when you need capabilities beyond the currently available ones. " +
+				"Once activated, the tools become callable on subsequent turns.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{
+						"type":        "string",
+						"description": "Search query — keyword to match against tool names and descriptions",
+					},
+				},
+				"required": []string{"query"},
+			},
+		})
+
+		extraHandlers["tofi_tool_search"] = func(args map[string]interface{}) (string, error) {
+			queryRaw := strings.ToLower(fmt.Sprintf("%v", args["query"]))
+			// Split query into words for flexible matching
+			queryWords := strings.Fields(queryRaw)
+			var activated []string
+			var results []string
+
+			for _, entry := range deferredIndex {
+				// Skip already-activated tools
+				if _, still := deferredSchemas[entry.Name]; !still {
+					continue
+				}
+
+				nameLower := strings.ToLower(entry.Name)
+				descLower := strings.ToLower(entry.Desc)
+				searchText := nameLower + " " + descLower
+
+				// Match if ANY query word is found in name or description
+				matched := false
+				for _, word := range queryWords {
+					if strings.Contains(searchText, word) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+
+				// Activate: move from deferred to active
+				schema := deferredSchemas[entry.Name]
+				handler := deferredHandlers[entry.Name]
+				allTools = append(allTools, schema)
+				extraHandlers[entry.Name] = handler
+				delete(deferredSchemas, entry.Name)
+
+				activated = append(activated, entry.Name)
+				schemaJSON, _ := json.Marshal(schema)
+				results = append(results, string(schemaJSON))
+			}
+
+			if len(activated) == 0 {
+				// List all remaining deferred tools
+				var available []string
+				for _, entry := range deferredIndex {
+					if _, still := deferredSchemas[entry.Name]; still {
+						available = append(available, fmt.Sprintf("- %s: %s", entry.Name, entry.Desc))
+					}
+				}
+				if len(available) == 0 {
+					return "All tools are already activated.", nil
+				}
+				return "No tools matched query \"" + queryRaw + "\". Available deferred tools:\n" + strings.Join(available, "\n"), nil
+			}
+
+			return fmt.Sprintf("Activated %d tool(s): %s\n\nThese tools are now callable. Use them directly.",
+				len(activated), strings.Join(activated, ", ")), nil
+		}
+	}
+
 	// Register tofi_shell + file tools (if sandbox is configured)
 	if cfg.SandboxDir != "" {
 		allTools = append(allTools, provider.Tool{
@@ -268,6 +366,24 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 ### DOMAIN KNOWLEDGE:
 - **WEB AUTOMATION**: Modern websites often use complex, non-standard input fields that confuse standard 'fill' tools. If 'fill' fails (especially with "option not found"), assume the tool is incompatible. Immediately switch to 'evaluate_script' (to set .value) or 'click' + 'press_key'.
 `
+
+	// Append deferred tool names to system prompt so the LLM knows what's available
+	if len(deferredSchemas) > 0 {
+		var deferredNames []string
+		for name := range deferredSchemas {
+			deferredNames = append(deferredNames, name)
+		}
+		systemPrompt += `
+<available-deferred-tools>
+` + strings.Join(deferredNames, "\n") + `
+</available-deferred-tools>
+
+## Deferred Tools — IMPORTANT
+The tools listed in <available-deferred-tools> are available but NOT yet loaded. To use them, you MUST first call tofi_tool_search to activate them.
+
+**CRITICAL**: If a user asks you to do something and you don't have a matching tool in your current tool list, you MUST call tofi_tool_search BEFORE responding. NEVER pretend to perform an action you cannot execute. NEVER say "done" or "created" without actually calling the tool. If you cannot find a tool after searching, tell the user honestly.
+`
+	}
 
 	// Build messages
 	var messages []provider.Message

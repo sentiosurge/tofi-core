@@ -10,6 +10,7 @@ import (
 
 	"tofi-core/internal/apps"
 	"tofi-core/internal/chat"
+	"tofi-core/internal/connect"
 	"tofi-core/internal/storage"
 
 	"github.com/google/uuid"
@@ -189,8 +190,31 @@ func (as *AppScheduler) dispatchRun(run *storage.AppRunRecord) {
 	} else {
 		log.Printf("[app-run:%s] Completed (tokens: %d in / %d out, cost: $%.4f)",
 			run.ID[:8], result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalCost)
+
+		// Auto-notify: send AI output to configured notify targets
+		if result.Content != "" {
+			sent, notifyErr := connect.SendNotification(run.UserID, app.ID, result.Content, connect.NotifyDeps{
+				ListConnectorsByApp:    as.server.db.ListConnectorsByApp,
+				ListConnectors:         as.server.db.ListConnectors,
+				ListConnectorReceivers: as.server.db.ListConnectorReceivers,
+			})
+			if notifyErr != nil {
+				log.Printf("[app-run:%s] Notification error: %v", run.ID[:8], notifyErr)
+			} else if sent > 0 {
+				log.Printf("[app-run:%s] Auto-notified %d receiver(s)", run.ID[:8], sent)
+			} else {
+				log.Printf("[app-run:%s] No receivers found for notifications", run.ID[:8])
+			}
+		} else {
+			log.Printf("[app-run:%s] No content to notify (empty result)", run.ID[:8])
+		}
 	}
-	as.server.db.UpdateAppRunStatusWithSession(run.ID, status, sessionID)
+	// Save result content to DB for historical queries
+	resultContent := ""
+	if result != nil && result.Content != "" {
+		resultContent = result.Content
+	}
+	as.server.db.UpdateAppRunResult(run.ID, status, sessionID, resultContent)
 }
 
 func (as *AppScheduler) checkRenewals() {

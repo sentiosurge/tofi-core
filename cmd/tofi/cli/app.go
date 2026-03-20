@@ -38,6 +38,18 @@ func runAppTUI(cmd *cobra.Command, args []string) error {
 			// scope is "agent:xxx", chatAgentName expects just "xxx"
 			chatAgentName = strings.TrimPrefix(scope, "agent:")
 		}
+		// If no specific session to resume, force a new session
+		if chatSessionID == "" {
+			chatForceNew = true
+		}
+		// Pass initial message if set (e.g. from Edit action)
+		if model.launchChatMessage != "" {
+			chatInitMessage = model.launchChatMessage
+		}
+		// Pass skills to pre-load into the session
+		if len(model.launchChatSkills) > 0 {
+			chatInitSkills = model.launchChatSkills
+		}
 		return runChat(cmd, nil)
 	}
 

@@ -23,8 +23,11 @@ import (
 )
 
 var (
-	chatSessionID string
-	chatAgentName string
+	chatSessionID   string
+	chatAgentName   string
+	chatForceNew    bool     // skip auto-resume, always create a new session
+	chatInitMessage string   // auto-send this message when chat starts
+	chatInitSkills  []string // pre-load skills into new session
 )
 
 var chatCmd = &cobra.Command{
@@ -55,6 +58,7 @@ func init() {
 type sseChunk struct{ Delta string `json:"delta"` }
 type sseToolCall struct {
 	Tool       string `json:"tool"`
+	Output     string `json:"output"`
 	DurationMs int    `json:"duration_ms"`
 }
 type sseDone struct {
@@ -99,6 +103,7 @@ type streamChunkMsg struct{ delta string }
 type streamThinkingMsg struct{ delta string }
 type streamToolMsg struct {
 	tool       string
+	output     string
 	durationMs int
 }
 type streamDoneMsg struct {
@@ -244,12 +249,26 @@ func newChatModel(client *apiClient) *chatModel {
 		glamour.WithWordWrap(0), // we'll set width dynamically
 	)
 
-	return &chatModel{
+	m := &chatModel{
 		textarea:   ta,
 		client:     client,
 		scope:      scope,
 		mdRenderer: renderer,
 	}
+
+	// Pick up initial message (e.g. from App TUI "Chat with AI")
+	if chatInitMessage != "" {
+		m.initialMessage = chatInitMessage
+		chatInitMessage = "" // reset
+	}
+
+	// Pick up pre-loaded skills (e.g. app skills from TUI)
+	if len(chatInitSkills) > 0 {
+		m.skills = chatInitSkills
+		chatInitSkills = nil // reset
+	}
+
+	return m
 }
 
 // headerTitle returns the styled header with session title.
@@ -393,9 +412,9 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.streamCancel != nil {
 					m.streamCancel()
 				}
-				return m, nil
 			}
-			return m, tea.Quit
+			// Esc when idle → do nothing (use Ctrl+C twice to quit)
+			return m, nil
 		case "alt+enter":
 			// Insert newline for multi-line input
 			if !m.streaming {
@@ -510,7 +529,11 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.thinkingDone = true
 		}
 		m.finalizeStreamBlock()
-		m.appendContent(m.renderToolCall(msg.tool, msg.durationMs))
+		if msg.tool == "tofi_display_app_plan" && msg.output != "" {
+			m.appendContent(m.renderAppPlan(msg.output))
+		} else {
+			m.appendContent(m.renderToolCall(msg.tool, msg.durationMs))
+		}
 		m.appendContent("") // blank line after tool call
 		return m, nil
 
@@ -1299,6 +1322,90 @@ func (m *chatModel) renderToolCall(tool string, durationMs int) string {
 	return " " + icon + " " + name + dur
 }
 
+func (m *chatModel) renderAppPlan(output string) string {
+	// Extract JSON portion — handler may append non-JSON text after the object
+	jsonStr := output
+	if idx := strings.Index(output, "\n\n["); idx > 0 {
+		jsonStr = output[:idx]
+	}
+
+	var plan struct {
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		Description  string `json:"description"`
+		Prompt       string `json:"prompt"`
+		Model        string `json:"model"`
+		Schedule     string `json:"schedule"`
+		Timezone     string `json:"timezone"`
+		Skills       string `json:"skills"`
+		Notify       string `json:"notify"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
+		return " " + subtitleStyle.Render("(failed to parse app plan)")
+	}
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e")).Width(10).Align(lipgloss.Right)
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc"))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#484f58"))
+
+	row := func(label, value string) string {
+		if value == "" {
+			return ""
+		}
+		return labelStyle.Render(label) + "  " + valueStyle.Render(value)
+	}
+
+	var rows []string
+	rows = append(rows, row("ID", plan.ID))
+	if plan.Name != "" && plan.Name != plan.ID {
+		rows = append(rows, row("Name", plan.Name))
+	}
+	rows = append(rows, row("Desc", plan.Description))
+	rows = append(rows, row("Model", plan.Model))
+
+	// Prompt — truncate for display
+	prompt := plan.Prompt
+	if len(prompt) > 120 {
+		prompt = prompt[:120] + "..."
+	}
+	rows = append(rows, row("Prompt", prompt))
+
+	if plan.Schedule != "" {
+		sched := plan.Schedule
+		if plan.Timezone != "" {
+			sched += " (" + plan.Timezone + ")"
+		}
+		rows = append(rows, row("Schedule", sched))
+	}
+	if plan.Skills != "" {
+		rows = append(rows, row("Skills", plan.Skills))
+	}
+	if plan.Notify != "" {
+		rows = append(rows, row("Notify", plan.Notify))
+	}
+
+	// Filter empty rows
+	var nonEmpty []string
+	for _, r := range rows {
+		if r != "" {
+			nonEmpty = append(nonEmpty, r)
+		}
+	}
+
+	contentWidth := max(40, m.innerWidth()-6)
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#30363d")).
+		Padding(0, 2).
+		Width(contentWidth)
+
+	header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7b72")).Render("App Plan")
+	sep := dimStyle.Render(strings.Repeat("─", contentWidth-6))
+	content := header + "\n" + sep + "\n" + strings.Join(nonEmpty, "\n")
+
+	return " " + box.Render(content)
+}
+
 func (m *chatModel) renderError(errMsg string) string {
 	return " " + errorStyle.Render("✗ "+errMsg)
 }
@@ -1332,6 +1439,12 @@ func (m *chatModel) ensureSession() error {
 			}
 		}
 		return m.loadSessionInfo()
+	}
+
+	// When chatForceNew is set (e.g. TUI "Chat with AI"), skip auto-resume
+	if chatForceNew {
+		chatForceNew = false // reset for future calls
+		return m.createNewSession()
 	}
 
 	var sessions []sessionIndex
@@ -1900,7 +2013,7 @@ func (m *chatModel) streamChatMessage(ctx context.Context, message string) {
 		case "tool_call":
 			var tc sseToolCall
 			if json.Unmarshal([]byte(dataStr), &tc) == nil {
-				m.sendMsg(streamToolMsg{tool: tc.Tool, durationMs: tc.DurationMs})
+				m.sendMsg(streamToolMsg{tool: tc.Tool, output: tc.Output, durationMs: tc.DurationMs})
 			}
 		case "context_compact":
 			m.sendMsg(streamCompactMsg{})

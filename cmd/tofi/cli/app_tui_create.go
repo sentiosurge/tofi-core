@@ -36,8 +36,9 @@ func (m *appModel) updateCreateMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.step = appStepCreateID
 				m.idInput.Focus()
 			} else {
-				// Chat mode — exit TUI, launch global chat
+				// Chat mode — exit TUI, launch chat with all app skills loaded
 				m.launchChat = true
+				m.launchChatSkills = []string{"apps", "app-create", "app-list", "app-inspect", "app-manage"}
 				m.quitting = true
 				return m, tea.Quit
 			}

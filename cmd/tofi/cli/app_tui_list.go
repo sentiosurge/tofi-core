@@ -122,7 +122,7 @@ func (m *appModel) buildDetailActions() {
 	m.actions = []appAction{
 		{id: "run", label: "Run Now", desc: "Trigger a manual run"},
 		{id: "sessions", label: "Sessions", desc: "View past sessions"},
-		{id: "edit", label: "Edit", desc: "Modify configuration"},
+		{id: "edit", label: "Edit", desc: "Chat with AI to modify"},
 	}
 	if m.selectedApp.IsActive {
 		m.actions = append(m.actions, appAction{id: "deactivate", label: "Deactivate", desc: "Stop scheduled runs"})
@@ -173,17 +173,14 @@ func (m *appModel) handleDetailAction(action string) (tea.Model, tea.Cmd) {
 		m.offset = 0
 		return m, m.loadSessions(app.ID)
 	case "edit":
-		m.step = appStepCreateName // skip ID step (ID is immutable)
-		m.formID = app.ID
-		m.formName = app.Name
-		m.formDesc = app.Description
-		m.formPrompt = app.Prompt
-		m.formModel = app.Model
-		m.nameInput.SetValue(app.Name)
-		m.nameInput.Focus()
-		m.descInput.SetValue(app.Description)
-		m.promptInput.SetValue(app.Prompt)
-		return m, nil
+		// Exit TUI, launch AI chat scoped to this app for editing
+		scope := "agent:app-" + app.ID
+		m.launchChat = true
+		m.launchChatScope = scope
+		m.launchChatSkills = []string{"apps", "app-create", "app-list", "app-inspect", "app-manage"}
+		m.launchChatMessage = "Show me the current config of app \"" + app.ID + "\" and ask what I'd like to change."
+		m.quitting = true
+		return m, tea.Quit
 	case "activate":
 		return m, m.activateApp(app.ID, app.Name, true)
 	case "deactivate":

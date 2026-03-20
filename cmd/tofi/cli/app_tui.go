@@ -142,9 +142,11 @@ type appModel struct {
 	ctrlCOnce bool
 
 	// Post-exit action: launch chat
-	launchChat        bool   // true = exit TUI and enter chat
-	launchChatScope   string // e.g. "" for global, "agent:app-xxx" for app scope
-	launchChatSession string // optional session ID to resume
+	launchChat        bool     // true = exit TUI and enter chat
+	launchChatScope   string   // e.g. "" for global, "agent:app-xxx" for app scope
+	launchChatSession string   // optional session ID to resume
+	launchChatMessage string   // initial message to auto-send
+	launchChatSkills  []string // skills to pre-load into the session
 }
 
 func newAppModel(client *apiClient) *appModel {

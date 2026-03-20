@@ -297,14 +297,10 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	// 2. Build system prompt based on scope
 	systemPrompt := s.buildChatSystemPrompt(userID, scope)
 
-	// 3. Load skills (session skills + system skills)
+	// 3. Load skills (only those explicitly set on the session)
 	var skillNames []string
 	if session.Skills != "" {
 		skillNames = strings.Split(session.Skills, ",")
-	}
-	// Always include system skills for user-scope sessions
-	if scope == chat.ScopeUser {
-		skillNames = appendSystemSkills(skillNames, s.db)
 	}
 	skillTools, skillInstructions, secretEnv := s.buildSkillToolsFromNames(userID, skillNames)
 
@@ -344,34 +340,60 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 		log.Printf("⚠️  [chat:%s] failed to save running state: %v", sessionID[:8], err)
 	}
 
-	// 8. Build AgentConfig
+	// 8. Build AgentConfig — split tools into core (always available) and deferred (on-demand)
 	var liveUsage provider.Usage // real-time usage updated during agent loop
-	agentCfg := mcp.AgentConfig{
-		System:     systemPrompt,
-		Messages:   providerMessages,
-		MCPServers: capMCPServers,
-		SkillTools: skillTools,
-		ExtraTools: func() []mcp.ExtraBuiltinTool {
-			tools := append(extraTools, s.buildChatWishTools(userID, sessionID, session, scope)...)
-			tools = append(tools, s.buildMemoryTools(userID, "")...)
-			tools = append(tools, s.buildBuiltinTools(userID)...)
-			tools = append(tools, s.buildAppTools(userID)...)
-			tools = append(tools, buildSessionInfoTool(session, resolvedModel, &liveUsage))
-			// Inject tofi_notify if connectors are available
-			notifyAppID := ""
-			if agentName, ok := strings.CutPrefix(scope, chat.ScopeAgentPrefix); ok {
-				// For agent scope, resolve the app ID
-				if app, err := s.db.GetAppByName(userID, agentName); err == nil {
-					notifyAppID = app.ID
+
+	// Core tools: always available in every chat session
+	coreTools := append(extraTools)
+	// Skill search/install tools only in interactive chat — App runs must not pause for user input
+	isAppRun := strings.HasPrefix(scope, chat.ScopeAgentPrefix+"app-")
+	if !isAppRun {
+		coreTools = append(coreTools, s.buildChatWishTools(userID, sessionID, session, scope)...)
+	}
+	coreTools = append(coreTools, s.buildMemoryTools(userID, "")...)
+	coreTools = append(coreTools, s.buildBuiltinTools(userID)...)
+	coreTools = append(coreTools, buildSessionInfoTool(session, resolvedModel, &liveUsage))
+
+	// Deferred tools: only activated via tofi_tool_search
+	deferredTools := s.buildAppTools(userID)
+
+	// Resolve app ID from agent scope (e.g. "agent:app-daily-ip" → find matching app)
+	notifyAppID := ""
+	if agentName, ok := strings.CutPrefix(scope, chat.ScopeAgentPrefix); ok {
+		// Agent scope format: "app-{id_prefix}" — try to find matching app
+		if appIDPrefix, ok := strings.CutPrefix(agentName, "app-"); ok {
+			// Try exact match first, then prefix match
+			if app, err := s.db.GetApp(appIDPrefix); err == nil {
+				notifyAppID = app.ID
+			} else {
+				// Prefix match: scheduler truncates ID to 8 chars
+				apps, _ := s.db.ListApps(userID)
+				for _, a := range apps {
+					if strings.HasPrefix(a.ID, appIDPrefix) {
+						notifyAppID = a.ID
+						break
+					}
 				}
 			}
-			tools = connect.InjectNotifyTool(tools, userID, notifyAppID, connect.NotifyDeps{
-				ListConnectorsByApp:    s.db.ListConnectorsByApp,
-				ListConnectors:         s.db.ListConnectors,
-				ListConnectorReceivers: s.db.ListConnectorReceivers,
-			})
-			return tools
-		}(),
+		}
+	}
+
+	// Inject tofi_notify into deferred tools (for interactive chat use)
+	// App runs don't need this — the runtime auto-sends notifications after completion
+	notifyDeps := connect.NotifyDeps{
+		ListConnectorsByApp:    s.db.ListConnectorsByApp,
+		ListConnectors:         s.db.ListConnectors,
+		ListConnectorReceivers: s.db.ListConnectorReceivers,
+	}
+	deferredTools = connect.InjectNotifyTool(deferredTools, userID, notifyAppID, notifyDeps)
+
+	agentCfg := mcp.AgentConfig{
+		System:        systemPrompt,
+		Messages:      providerMessages,
+		MCPServers:    capMCPServers,
+		SkillTools:    skillTools,
+		ExtraTools:    coreTools,
+		DeferredTools: deferredTools,
 		LiveUsage:  &liveUsage,
 		SandboxDir: sandboxDir,
 		UserDir:    userID,
@@ -508,6 +530,16 @@ func (s *Server) buildChatSystemPrompt(userID, scope string) string {
 			// Add operational instructions from AGENTS.md
 			if agentDef.AgentsMD != "" {
 				prompt += "\n\n## Operational Instructions\n" + agentDef.AgentsMD
+			}
+			// App runs: AI output IS the deliverable — runtime handles notification delivery
+			if strings.HasPrefix(agentName, "app-") {
+				prompt += `
+
+## Output Rules
+Your text output is your ONLY deliverable. The platform runtime captures your final output and automatically delivers it to the configured notification channels (Telegram, Slack, Email, etc.).
+- Do NOT mention or reference any notification channel (Telegram, Slack, etc.) in your output.
+- Do NOT say "sending to..." or "delivered to...". Just produce the content.
+- Write your output as if it will be read directly by the user — clean, concise, ready to consume.`
 			}
 			prompt += "\n\nCurrent time: " + time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
 			return prompt

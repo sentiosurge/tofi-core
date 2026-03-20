@@ -34,6 +34,7 @@ Route to the appropriate sub-skill based on the user's intent. If unclear, use *
 | `tofi_list_notify_targets` | List notification receivers |
 | `tofi_set_notify_targets` | Set who gets notified on completion |
 | `tofi_list_models` | List available AI models (for selecting app model) |
+| `tofi_display_app_plan` | Display app plan in rich TUI format (use for create/edit confirmation) |
 
 ## General Rules
 
