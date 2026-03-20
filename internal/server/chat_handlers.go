@@ -297,13 +297,28 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	// 2. Build system prompt based on scope
 	systemPrompt := s.buildChatSystemPrompt(userID, scope)
 
-	// 3. Load skills (only those explicitly set on the session)
-	// Skills are loaded in deferred mode: only name+description in system prompt,
+	// 3. Load skills — system skills always available, session skills added on top
+	// All skills are deferred: only name+description in system prompt,
 	// full Instructions loaded on-demand via tofi_load_skill tool.
-	var skillNames []string
+	skillNames := s.getSystemSkillNames()
 	if session.Skills != "" {
-		skillNames = strings.Split(session.Skills, ",")
+		for _, name := range strings.Split(session.Skills, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				skillNames = append(skillNames, name)
+			}
+		}
 	}
+	// Deduplicate
+	seen := make(map[string]bool)
+	deduped := skillNames[:0]
+	for _, name := range skillNames {
+		if !seen[name] {
+			seen[name] = true
+			deduped = append(deduped, name)
+		}
+	}
+	skillNames = deduped
 	skillTools, _, secretEnv := s.buildSkillToolsFromNames(userID, skillNames)
 
 	// 4. Build provider messages from session history
@@ -551,6 +566,21 @@ Think before acting. If a tool fails, try a different approach. Always deliver r
 Current time: %s`, time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
 
 	return prompt
+}
+
+// getSystemSkillNames returns the names of all system-scope skills from the database.
+// These are always available in every chat session (as deferred/on-demand skills).
+func (s *Server) getSystemSkillNames() []string {
+	records, err := s.db.ListSystemSkills()
+	if err != nil {
+		log.Printf("[chat] failed to list system skills: %v", err)
+		return nil
+	}
+	var names []string
+	for _, r := range records {
+		names = append(names, r.Name)
+	}
+	return names
 }
 
 // appendSystemSkills adds system skill names to the list, avoiding duplicates.
