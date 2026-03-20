@@ -240,6 +240,10 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 				return "Skill not found: " + name + "\n\nAvailable skills:\n" + strings.Join(available, "\n"), nil
 			}
 
+			// Already loaded — return short confirmation instead of full instructions
+			if loadedSkills[name] {
+				return fmt.Sprintf("Skill '%s' is already loaded. Its tools are available — use them directly.", name), nil
+			}
 			loadedSkills[name] = true
 
 			// Activate bundled tools (if any)
