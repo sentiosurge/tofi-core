@@ -58,6 +58,7 @@ func init() {
 type sseChunk struct{ Delta string `json:"delta"` }
 type sseToolCall struct {
 	Tool       string `json:"tool"`
+	Input      string `json:"input"`
 	Output     string `json:"output"`
 	DurationMs int    `json:"duration_ms"`
 }
@@ -103,6 +104,7 @@ type streamChunkMsg struct{ delta string }
 type streamThinkingMsg struct{ delta string }
 type streamToolMsg struct {
 	tool       string
+	input      string
 	output     string
 	durationMs int
 }
@@ -532,7 +534,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.tool == "tofi_display_app_plan" && msg.output != "" {
 			m.appendContent(m.renderAppPlan(msg.output))
 		} else {
-			m.appendContent(m.renderToolCall(msg.tool, msg.durationMs))
+			m.appendContent(m.renderToolCall(msg.tool, msg.input, msg.durationMs))
 		}
 		m.appendContent("") // blank line after tool call
 		return m, nil
@@ -1308,7 +1310,7 @@ var toolDisplayName = map[string]string{
 	"auto_compact":         "Auto Compact",
 }
 
-func (m *chatModel) renderToolCall(tool string, durationMs int) string {
+func (m *chatModel) renderToolCall(tool, input string, durationMs int) string {
 	display := tool
 	if friendly, ok := toolDisplayName[tool]; ok {
 		display = friendly
@@ -1319,7 +1321,83 @@ func (m *chatModel) renderToolCall(tool string, durationMs int) string {
 	if durationMs > 0 {
 		dur = subtitleStyle.Render(fmt.Sprintf(" (%dms)", durationMs))
 	}
-	return " " + icon + " " + name + dur
+
+	// Extract a brief context hint from the input JSON
+	hint := toolCallHint(tool, input)
+	hintStr := ""
+	if hint != "" {
+		hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6e7681"))
+		// Truncate to ~60 chars
+		if len(hint) > 60 {
+			hint = hint[:57] + "..."
+		}
+		hintStr = "  " + hintStyle.Render(hint)
+	}
+
+	return " " + icon + " " + name + dur + hintStr
+}
+
+// toolCallHint extracts a short context string from tool input for display.
+func toolCallHint(tool, input string) string {
+	if input == "" {
+		return ""
+	}
+
+	// Parse input as JSON
+	var args map[string]interface{}
+	if json.Unmarshal([]byte(input), &args) != nil {
+		return ""
+	}
+
+	// Tool-specific hint extraction
+	switch {
+	case tool == "tofi_shell":
+		if cmd, ok := args["command"].(string); ok {
+			return cmd
+		}
+	case tool == "tofi_load_skill":
+		if name, ok := args["name"].(string); ok {
+			return name
+		}
+	case tool == "tofi_read":
+		if path, ok := args["path"].(string); ok {
+			return path
+		}
+	case tool == "tofi_write":
+		if path, ok := args["path"].(string); ok {
+			return path
+		}
+	case strings.HasPrefix(tool, "tofi_") && strings.Contains(tool, "app"):
+		// App tools: show app_id or name
+		if id, ok := args["app_id"].(string); ok {
+			return id
+		}
+		if id, ok := args["id"].(string); ok {
+			return id
+		}
+		if name, ok := args["name"].(string); ok {
+			return name
+		}
+	case tool == "tofi_recall_memory" || tool == "tofi_save_memory":
+		if q, ok := args["query"].(string); ok {
+			return q
+		}
+		if tags, ok := args["tags"].(string); ok {
+			return tags
+		}
+	case strings.HasPrefix(tool, "run_skill__"):
+		if inp, ok := args["input"].(string); ok {
+			return inp
+		}
+	}
+
+	// Fallback: try common field names
+	for _, key := range []string{"query", "name", "command", "path", "id", "message", "input"} {
+		if v, ok := args[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (m *chatModel) renderAppPlan(output string) string {
@@ -2013,7 +2091,7 @@ func (m *chatModel) streamChatMessage(ctx context.Context, message string) {
 		case "tool_call":
 			var tc sseToolCall
 			if json.Unmarshal([]byte(dataStr), &tc) == nil {
-				m.sendMsg(streamToolMsg{tool: tc.Tool, output: tc.Output, durationMs: tc.DurationMs})
+				m.sendMsg(streamToolMsg{tool: tc.Tool, input: tc.Input, output: tc.Output, durationMs: tc.DurationMs})
 			}
 		case "context_compact":
 			m.sendMsg(streamCompactMsg{})
