@@ -356,7 +356,8 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	var liveUsage provider.Usage // real-time usage updated during agent loop
 
 	// Core tools: always available in every chat session
-	coreTools := append(extraTools)
+	coreTools := make([]mcp.ExtraBuiltinTool, len(extraTools))
+	copy(coreTools, extraTools)
 	// Skill search/install tools only in interactive chat — App runs must not pause for user input
 	isAppRun := strings.HasPrefix(scope, chat.ScopeAgentPrefix+"app-")
 	if !isAppRun {
@@ -396,7 +397,7 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 			}
 		}
 		notifyDeps := connect.NotifyDeps{
-			ListConnectorsByApp:    s.db.ListConnectorsByApp,
+			ListConnectorsForApp:   s.db.ListConnectorsForApp,
 			ListConnectors:         s.db.ListConnectors,
 			ListConnectorReceivers: s.db.ListConnectorReceivers,
 		}
@@ -410,17 +411,29 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 		})
 	}
 
+	// Parse previously loaded skills from session for pre-activation
+	var preloadedSkills []string
+	if session.LoadedSkills != "" {
+		for _, name := range strings.Split(session.LoadedSkills, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				preloadedSkills = append(preloadedSkills, name)
+			}
+		}
+	}
+
 	agentCfg := mcp.AgentConfig{
-		System:     systemPrompt,
-		Messages:   providerMessages,
-		MCPServers: capMCPServers,
-		SkillTools: skillTools,
-		ExtraTools: coreTools,
-		LiveUsage:  &liveUsage,
-		SandboxDir: sandboxDir,
-		UserDir:    userID,
-		Executor:   s.executor,
-		SecretEnv:  secretEnv,
+		System:          systemPrompt,
+		Messages:        providerMessages,
+		MCPServers:      capMCPServers,
+		SkillTools:      skillTools,
+		PreloadedSkills: preloadedSkills,
+		ExtraTools:      coreTools,
+		LiveUsage:       &liveUsage,
+		SandboxDir:      sandboxDir,
+		UserDir:         userID,
+		Executor:        s.executor,
+		SecretEnv:       secretEnv,
 	}
 
 	// Configure agent callbacks
@@ -526,6 +539,28 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	// Update model if it was auto-resolved
 	if session.Model == "" {
 		session.Model = resolvedModel
+	}
+
+	// Persist loaded skills for next turn pre-activation
+	if len(agentResult.LoadedSkills) > 0 {
+		// Merge with existing loaded skills (dedup)
+		existing := make(map[string]bool)
+		if session.LoadedSkills != "" {
+			for _, name := range strings.Split(session.LoadedSkills, ",") {
+				name = strings.TrimSpace(name)
+				if name != "" {
+					existing[name] = true
+				}
+			}
+		}
+		for _, name := range agentResult.LoadedSkills {
+			existing[name] = true
+		}
+		var allNames []string
+		for name := range existing {
+			allNames = append(allNames, name)
+		}
+		session.LoadedSkills = strings.Join(allNames, ",")
 	}
 
 	// Mark session as idle

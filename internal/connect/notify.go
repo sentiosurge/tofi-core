@@ -12,7 +12,7 @@ import (
 
 // NotifyDeps 依赖注入：tofi_notify 工具需要的 DB 操作
 type NotifyDeps struct {
-	ListConnectorsByApp    func(userID, appID string) ([]*storage.Connector, error)
+	ListConnectorsForApp   func(userID, appID string) ([]*storage.Connector, error)
 	ListConnectors         func(userID string) ([]*storage.Connector, error)
 	ListConnectorReceivers func(connectorID string) ([]*storage.ConnectorReceiver, error)
 }
@@ -213,12 +213,9 @@ func SendNotification(userID, appID, message string, deps NotifyDeps) (int, erro
 	var err error
 
 	if appID != "" {
-		// Try app-specific connectors first
-		connectors, err = deps.ListConnectorsByApp(userID, appID)
-	}
-
-	// Fallback to all user connectors (global ones with empty app_id)
-	if err != nil || len(connectors) == 0 {
+		// Scope-based: returns both global:* and app:{appID} connectors
+		connectors, err = deps.ListConnectorsForApp(userID, appID)
+	} else {
 		connectors, err = deps.ListConnectors(userID)
 	}
 
@@ -260,7 +257,7 @@ func InjectNotifyTool(
 	var err error
 
 	if appID != "" {
-		connectors, err = deps.ListConnectorsByApp(userID, appID)
+		connectors, err = deps.ListConnectorsForApp(userID, appID)
 	} else {
 		connectors, err = deps.ListConnectors(userID)
 	}

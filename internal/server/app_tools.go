@@ -841,7 +841,7 @@ func buildDisplayAppPlanTool() mcp.ExtraBuiltinTool {
 	return mcp.ExtraBuiltinTool{
 		Schema: provider.Tool{
 			Name: "tofi_display_app_plan",
-			Description: `⚠️ MANDATORY before tofi_create_app or tofi_update_app. Display a structured App plan to the user in a rich visual format. The TUI renders this as a formatted confirmation box. You MUST call this tool and wait for user confirmation BEFORE executing any create/update. Never skip this step. After the plan is displayed, ask: "确认创建？有需要调整的地方可以告诉我。"`,
+			Description: `Display a structured App plan to the user. The TUI renders a rich visual box showing all details. After calling this, just ask "确认创建？" — do NOT repeat or summarize the plan fields in text, the user already sees everything in the box.`,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -886,12 +886,8 @@ func buildDisplayAppPlanTool() mcp.ExtraBuiltinTool {
 			},
 		},
 		Handler: func(args map[string]any) (string, error) {
-			// Return the plan as JSON — the TUI renders it visually
-			out, err := json.Marshal(args)
-			if err != nil {
-				return "", err
-			}
-			return string(out) + "\n\n[Plan displayed to user. WAIT for user confirmation before calling tofi_create_app. Do NOT proceed automatically.]", nil
+			// Return minimal confirmation — the TUI renders the full plan visually
+			return "[Plan displayed to user in a rich visual box. The user can already see ALL details (ID, name, prompt, schedule, notify, etc.) — do NOT repeat or summarize them. Just ask: \"确认创建？\" and wait.]", nil
 		},
 	}
 }

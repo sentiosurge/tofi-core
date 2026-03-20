@@ -43,9 +43,9 @@ func (s *Server) handleListConnectors(w http.ResponseWriter, r *http.Request) {
 			ReceiverCount: len(receivers),
 			CanReceive:    c.Type.CanReceive(),
 		}
-		// 查 app name
-		if c.AppID != "" {
-			app, _ := s.db.GetApp(c.AppID)
+		// 查 app name from scope
+		if appID := c.ScopeAppID(); appID != "" {
+			app, _ := s.db.GetApp(appID)
 			if app != nil {
 				item.AppName = app.Name
 			}
@@ -62,9 +62,10 @@ func (s *Server) handleCreateConnector(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
 
 	var req struct {
-		Type   string `json:"type"`
-		Name   string `json:"name"`
-		AppID  string `json:"app_id"`
+		Type   string          `json:"type"`
+		Name   string          `json:"name"`
+		Scope  string          `json:"scope"`  // "global:*" or "app:{appID}"
+		AppID  string          `json:"app_id"` // legacy — auto-converts to scope
 		Config json.RawMessage `json:"config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -129,15 +130,19 @@ func (s *Server) handleCreateConnector(w http.ResponseWriter, r *http.Request) {
 		configStr = string(req.Config)
 	}
 
-	connector, err := s.db.CreateConnector(userID, req.AppID, ctype, req.Name, configStr)
+	// Determine scope: explicit scope > legacy app_id > global
+	scope := req.Scope
+	if scope == "" && req.AppID != "" {
+		scope = storage.ScopeApp(req.AppID)
+	}
+	if scope == "" {
+		scope = storage.ScopeGlobal
+	}
+
+	connector, err := s.db.CreateConnector(userID, scope, ctype, req.Name, configStr)
 	if err != nil {
 		http.Error(w, `{"error":"failed to create connector"}`, http.StatusInternalServerError)
 		return
-	}
-
-	// 如果指定了 app_id，自动创建 app_connector 关联
-	if req.AppID != "" {
-		s.db.LinkAppConnector(req.AppID, connector.ID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -589,7 +594,7 @@ func (s *Server) handleListAppConnectors(w http.ResponseWriter, r *http.Request)
 	userID := r.Context().Value(UserContextKey).(string)
 	appID := r.PathValue("id")
 
-	connectors, err := s.db.ListConnectorsByApp(userID, appID)
+	connectors, err := s.db.ListConnectorsForApp(userID, appID)
 	if err != nil {
 		http.Error(w, `{"error":"failed to list"}`, http.StatusInternalServerError)
 		return

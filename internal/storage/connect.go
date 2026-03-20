@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,16 +33,37 @@ func (t ConnectorType) CanReceive() bool {
 	}
 }
 
+// Connector Scope constants
+const (
+	ScopeGlobal = "global:*" // available to all apps
+)
+
+// ScopeApp returns the scope string for an app-specific connector.
+func ScopeApp(appID string) string { return "app:" + appID }
+
 // Connector 一个渠道实例
 type Connector struct {
 	ID        string        `json:"id"`
 	UserID    string        `json:"user_id"`
-	AppID     string        `json:"app_id,omitempty"` // 空 = global, 非空 = app 专属
+	Scope     string        `json:"scope"`          // "global:*" or "app:{appID}"
 	Type      ConnectorType `json:"type"`
 	Name      string        `json:"name,omitempty"` // app 专属时有意义
 	Config    string        `json:"config"`         // JSON，按 type 不同结构
 	Enabled   bool          `json:"enabled"`
 	CreatedAt string        `json:"created_at"`
+}
+
+// IsGlobal returns true if the connector is available to all apps.
+func (c *Connector) IsGlobal() bool {
+	return c.Scope == ScopeGlobal || c.Scope == ""
+}
+
+// ScopeAppID extracts the app ID from an app-scoped connector. Returns "" for global.
+func (c *Connector) ScopeAppID() string {
+	if strings.HasPrefix(c.Scope, "app:") {
+		return c.Scope[4:]
+	}
+	return ""
 }
 
 // ConnectorReceiver 渠道下的接收者
@@ -132,6 +154,7 @@ func (db *DB) initConnectorsTable() error {
 		id TEXT PRIMARY KEY,
 		user_id TEXT NOT NULL,
 		app_id TEXT NOT NULL DEFAULT '',
+		scope TEXT NOT NULL DEFAULT 'global:*',
 		type TEXT NOT NULL,
 		name TEXT NOT NULL DEFAULT '',
 		config TEXT NOT NULL DEFAULT '{}',
@@ -139,9 +162,33 @@ func (db *DB) initConnectorsTable() error {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_connectors_user ON connectors(user_id);
-	CREATE INDEX IF NOT EXISTS idx_connectors_app ON connectors(app_id);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: add scope column if missing (must run BEFORE scope index)
+	db.migrateConnectorScope()
+
+	// Now safe to create scope index
+	db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_connectors_scope ON connectors(scope)`)
+	return nil
+}
+
+// migrateConnectorScope adds scope column and populates it from legacy app_id.
+func (db *DB) migrateConnectorScope() {
+	// Check if scope column exists
+	var count int
+	err := db.conn.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('connectors') WHERE name='scope'`).Scan(&count)
+	if err != nil || count == 0 {
+		// Column doesn't exist — add it
+		db.conn.Exec(`ALTER TABLE connectors ADD COLUMN scope TEXT NOT NULL DEFAULT 'global:*'`)
+	}
+
+	// Migrate: app_id != '' → scope = 'app:' + app_id
+	db.conn.Exec(`UPDATE connectors SET scope = 'app:' || app_id WHERE app_id != '' AND (scope = '' OR scope = 'global:*')`)
+	// Ensure empty scope gets default
+	db.conn.Exec(`UPDATE connectors SET scope = 'global:*' WHERE scope = ''`)
 }
 
 func (db *DB) initConnectorReceiversTable() error {
@@ -307,7 +354,7 @@ func (db *DB) migrateOldTelegramToConnectors() {
 
 		connID := uuid.New().String()
 		_, err = db.conn.Exec(
-			`INSERT INTO connectors (id, user_id, type, config, enabled) VALUES (?, ?, 'telegram', ?, ?)`,
+			`INSERT INTO connectors (id, user_id, scope, type, config, enabled) VALUES (?, ?, 'global:*', 'telegram', ?, ?)`,
 			connID, userID, string(cfgJSON), oldCfg.Enabled,
 		)
 		if err != nil {
@@ -331,14 +378,17 @@ func (db *DB) migrateOldTelegramToConnectors() {
 // ===================== Connector CRUD =====================
 
 // CreateConnector 创建新 connector
-func (db *DB) CreateConnector(userID string, appID string, ctype ConnectorType, name string, config string) (*Connector, error) {
+func (db *DB) CreateConnector(userID string, scope string, ctype ConnectorType, name string, config string) (*Connector, error) {
 	id := uuid.New().String()
 	now := time.Now().Format("2006-01-02 15:04:05")
+	if scope == "" {
+		scope = ScopeGlobal
+	}
 
 	_, err := db.conn.Exec(
-		`INSERT INTO connectors (id, user_id, app_id, type, name, config, enabled, created_at)
+		`INSERT INTO connectors (id, user_id, scope, type, name, config, enabled, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
-		id, userID, appID, string(ctype), name, config, now,
+		id, userID, scope, string(ctype), name, config, now,
 	)
 	if err != nil {
 		return nil, err
@@ -347,7 +397,7 @@ func (db *DB) CreateConnector(userID string, appID string, ctype ConnectorType, 
 	return &Connector{
 		ID:        id,
 		UserID:    userID,
-		AppID:     appID,
+		Scope:     scope,
 		Type:      ctype,
 		Name:      name,
 		Config:    config,
@@ -360,10 +410,10 @@ func (db *DB) CreateConnector(userID string, appID string, ctype ConnectorType, 
 func (db *DB) GetConnector(connectorID, userID string) (*Connector, error) {
 	c := &Connector{}
 	err := db.conn.QueryRow(
-		`SELECT id, user_id, app_id, type, name, config, enabled, created_at
+		`SELECT id, user_id, scope, type, name, config, enabled, created_at
 		 FROM connectors WHERE id = ? AND user_id = ?`,
 		connectorID, userID,
-	).Scan(&c.ID, &c.UserID, &c.AppID, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt)
+	).Scan(&c.ID, &c.UserID, &c.Scope, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -373,7 +423,7 @@ func (db *DB) GetConnector(connectorID, userID string) (*Connector, error) {
 // ListConnectors 列出用户的所有 connectors
 func (db *DB) ListConnectors(userID string) ([]*Connector, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, user_id, app_id, type, name, config, enabled, created_at
+		`SELECT id, user_id, scope, type, name, config, enabled, created_at
 		 FROM connectors WHERE user_id = ? ORDER BY created_at`,
 		userID,
 	)
@@ -385,7 +435,7 @@ func (db *DB) ListConnectors(userID string) ([]*Connector, error) {
 	var connectors []*Connector
 	for rows.Next() {
 		c := &Connector{}
-		if err := rows.Scan(&c.ID, &c.UserID, &c.AppID, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Scope, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt); err != nil {
 			continue
 		}
 		connectors = append(connectors, c)
@@ -393,15 +443,14 @@ func (db *DB) ListConnectors(userID string) ([]*Connector, error) {
 	return connectors, nil
 }
 
-// ListConnectorsByApp 列出 app 可用的 connectors（自身专属 + 通过 app_connectors 绑定的）
-func (db *DB) ListConnectorsByApp(userID, appID string) ([]*Connector, error) {
+// ListConnectorsForApp 列出 app 可用的 connectors：global + app 专属
+func (db *DB) ListConnectorsForApp(userID, appID string) ([]*Connector, error) {
 	rows, err := db.conn.Query(
-		`SELECT DISTINCT c.id, c.user_id, c.app_id, c.type, c.name, c.config, c.enabled, c.created_at
-		 FROM connectors c
-		 LEFT JOIN app_connectors ac ON ac.connector_id = c.id
-		 WHERE c.user_id = ? AND (c.app_id = ? OR ac.app_id = ?)
-		 ORDER BY c.created_at`,
-		userID, appID, appID,
+		`SELECT id, user_id, scope, type, name, config, enabled, created_at
+		 FROM connectors
+		 WHERE user_id = ? AND (scope = 'global:*' OR scope = ?)
+		 ORDER BY created_at`,
+		userID, ScopeApp(appID),
 	)
 	if err != nil {
 		return nil, err
@@ -411,7 +460,7 @@ func (db *DB) ListConnectorsByApp(userID, appID string) ([]*Connector, error) {
 	var connectors []*Connector
 	for rows.Next() {
 		c := &Connector{}
-		if err := rows.Scan(&c.ID, &c.UserID, &c.AppID, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Scope, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt); err != nil {
 			continue
 		}
 		connectors = append(connectors, c)
@@ -565,14 +614,14 @@ func (db *DB) ListAppConnectorIDs(appID string) ([]string, error) {
 	return ids, nil
 }
 
-// FindConnectorByType 按用户+类型查找 connector（用于 global bot 查找等）
+// FindConnectorByType 按用户+类型查找 global connector
 func (db *DB) FindConnectorByType(userID string, ctype ConnectorType) (*Connector, error) {
 	c := &Connector{}
 	err := db.conn.QueryRow(
-		`SELECT id, user_id, app_id, type, name, config, enabled, created_at
-		 FROM connectors WHERE user_id = ? AND type = ? AND app_id = '' LIMIT 1`,
+		`SELECT id, user_id, scope, type, name, config, enabled, created_at
+		 FROM connectors WHERE user_id = ? AND type = ? AND scope = 'global:*' LIMIT 1`,
 		userID, string(ctype),
-	).Scan(&c.ID, &c.UserID, &c.AppID, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt)
+	).Scan(&c.ID, &c.UserID, &c.Scope, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -586,10 +635,10 @@ func (db *DB) FindConnectorByType(userID string, ctype ConnectorType) (*Connecto
 func (db *DB) GetConnectorByID(connectorID string) (*Connector, error) {
 	c := &Connector{}
 	err := db.conn.QueryRow(
-		`SELECT id, user_id, app_id, type, name, config, enabled, created_at
+		`SELECT id, user_id, scope, type, name, config, enabled, created_at
 		 FROM connectors WHERE id = ?`,
 		connectorID,
-	).Scan(&c.ID, &c.UserID, &c.AppID, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt)
+	).Scan(&c.ID, &c.UserID, &c.Scope, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -602,7 +651,7 @@ func (db *DB) GetConnectorByID(connectorID string) (*Connector, error) {
 // ListAllConnectorsByType 查询所有启用的指定类型 Connector（跨用户）
 func (db *DB) ListAllConnectorsByType(ctype ConnectorType) ([]*Connector, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, user_id, app_id, type, name, config, enabled, created_at
+		`SELECT id, user_id, scope, type, name, config, enabled, created_at
 		 FROM connectors WHERE type = ? AND enabled = 1 ORDER BY created_at`,
 		string(ctype),
 	)
@@ -614,7 +663,7 @@ func (db *DB) ListAllConnectorsByType(ctype ConnectorType) ([]*Connector, error)
 	var connectors []*Connector
 	for rows.Next() {
 		c := &Connector{}
-		if err := rows.Scan(&c.ID, &c.UserID, &c.AppID, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Scope, &c.Type, &c.Name, &c.Config, &c.Enabled, &c.CreatedAt); err != nil {
 			continue
 		}
 		connectors = append(connectors, c)

@@ -91,14 +91,7 @@ func (d *ChatBridgeDispatcher) HandleMessage(msg IncomingMessage) {
 	}
 
 	// 6. Determine scope
-	scope := chat.ScopeUser // ""
-	if connector.AppID != "" {
-		appPrefix := connector.AppID
-		if len(appPrefix) > 8 {
-			appPrefix = appPrefix[:8]
-		}
-		scope = chat.AgentScope("app-" + appPrefix)
-	}
+	scope := connectorScope(connector)
 
 	// 7. Find or create session
 	sessionID, err := d.db.GetBridgeSession(msg.ConnectorID, msg.ChatID)
@@ -263,14 +256,7 @@ func (d *ChatBridgeDispatcher) handleCommand(
 			_ = b.SendMessage(msg.ChatID, "当前没有活跃对话。发消息即可开始。")
 			return
 		}
-		scope := chat.ScopeUser
-		if connector.AppID != "" {
-			appPrefix := connector.AppID
-			if len(appPrefix) > 8 {
-				appPrefix = appPrefix[:8]
-			}
-			scope = chat.AgentScope("app-" + appPrefix)
-		}
+		scope := connectorScope(connector)
 		session, err := d.chatStore.Load(userID, scope, sessionID)
 		if err != nil {
 			_ = b.SendMessage(msg.ChatID, fmt.Sprintf("Session: %s\n状态: 未知", sessionID))
@@ -328,14 +314,7 @@ func (d *ChatBridgeDispatcher) handleCommand(
 func (d *ChatBridgeDispatcher) sendSessionHistory(
 	connector *storage.Connector, b ChatBridge, chatID, userID string,
 ) {
-	scope := chat.ScopeUser
-	if connector.AppID != "" {
-		appPrefix := connector.AppID
-		if len(appPrefix) > 8 {
-			appPrefix = appPrefix[:8]
-		}
-		scope = chat.AgentScope("app-" + appPrefix)
-	}
+	scope := connectorScope(connector)
 
 	sessions, err := d.db.ListChatSessions(userID, scope, 10)
 	if err != nil {
@@ -407,14 +386,7 @@ func (d *ChatBridgeDispatcher) HandleCallback(connectorID, chatID, senderID, dat
 		}
 
 		// Load session to show title
-		scope := chat.ScopeUser
-		if connector.AppID != "" {
-			appPrefix := connector.AppID
-			if len(appPrefix) > 8 {
-				appPrefix = appPrefix[:8]
-			}
-			scope = chat.AgentScope("app-" + appPrefix)
-		}
+		scope := connectorScope(connector)
 		session, loadErr := d.chatStore.Load(connector.UserID, scope, sessionID)
 		title := sessionID[:10]
 		if loadErr == nil && session.Title != "" {
@@ -463,4 +435,16 @@ func truncateStr(s string, n int) string {
 		return s[:n] + "..."
 	}
 	return s
+}
+
+// connectorScope derives the chat scope from a connector's scope field.
+func connectorScope(c *storage.Connector) string {
+	if appID := c.ScopeAppID(); appID != "" {
+		prefix := appID
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
+		return chat.AgentScope("app-" + prefix)
+	}
+	return chat.ScopeUser
 }

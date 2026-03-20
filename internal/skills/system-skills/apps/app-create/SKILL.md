@@ -54,9 +54,7 @@ If user didn't mention notifications, skip this step. The platform will still au
 
 ## Step 3: Show Plan → Confirm → Execute (ONE PASS)
 
-**You MUST call `tofi_display_app_plan` before creating the app. NEVER skip this step.**
-
-Call `tofi_display_app_plan` with all fields:
+Call `tofi_display_app_plan` **exactly once** with all fields:
 - `id`, `name` (if different from id), `description`, `prompt` (full text), `model`
 - `schedule` — human-readable (e.g., "Daily 08:00", "Weekdays 09:00")
 - `timezone` — from Step 2
@@ -64,17 +62,23 @@ Call `tofi_display_app_plan` with all fields:
 
 The TUI will render a formatted box. Then ask the user to confirm or adjust.
 
+⚠️ **CRITICAL RULES:**
+- Call `tofi_display_app_plan` **only ONCE**. Never call it twice for the same plan.
+- If you auto-corrected something (e.g., invalid time "7:65" → "8:05"), just note it in your message. Do NOT re-display the plan.
+- After displaying the plan, wait for ONE confirmation. Then go directly to Step 4.
+- NEVER say "按系统规则需要再确认" or ask for re-confirmation. That is WRONG behavior.
+
 ### Recognizing Confirmation
 
-The user may confirm in many ways. ALL of the following count as explicit confirmation — **do NOT ask again**:
+The user may confirm in many ways. ALL of the following count as explicit confirmation — **proceed to Step 4 immediately**:
 - Direct: "确认", "创建", "好", "OK", "yes", "对", "行", "可以", "没问题"
 - Enthusiastic: "冲", "搞", "干", "上", "走", "开搞", "just do it"
 - Dialect: "中" (河南话=确认), "得" (四川话=好), "成" (=OK)
 - Implied: "好的", "就这样", "不用改了", "直接创建"
 
-**When the user confirms, IMMEDIATELY execute Step 4. Do NOT show the plan again. Do NOT ask for re-confirmation. ONE confirmation is enough.**
+**When the user confirms → IMMEDIATELY execute Step 4. No second plan. No second confirmation.**
 
-If the user wants changes, apply them and show the updated plan once more.
+If the user wants changes, apply them and show the updated plan once more (still only one re-display).
 
 ## Step 4: Execute
 

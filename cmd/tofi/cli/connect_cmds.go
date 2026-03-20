@@ -30,7 +30,7 @@ func runConnList(cmd *cobra.Command, args []string) error {
 		ID            string `json:"id"`
 		Type          string `json:"type"`
 		Name          string `json:"name"`
-		AppID         string `json:"app_id"`
+		Scope         string `json:"scope"`
 		AppName       string `json:"app_name"`
 		Enabled       bool   `json:"enabled"`
 		ReceiverCount int    `json:"receiver_count"`
@@ -55,12 +55,12 @@ func runConnList(cmd *cobra.Command, args []string) error {
 	for _, c := range connectors {
 		icon := connectorIcon(c.Type)
 		scope := subtitleStyle.Render("(global)")
-		if c.AppID != "" {
-			appLabel := c.AppID[:8]
+		if c.Scope != "" && c.Scope != "global:*" {
+			appLabel := c.Scope
 			if c.AppName != "" {
-				appLabel = c.AppName
+				appLabel = "app: " + c.AppName
 			}
-			scope = titleStyle.Render("(app: " + appLabel + ")")
+			scope = titleStyle.Render("(" + appLabel + ")")
 		}
 
 		status := successStyle.Render("●")
@@ -137,14 +137,16 @@ func runConnAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unsupported type: %s\nSupported: telegram, slack_webhook, slack_app, discord_webhook, discord_bot, email", ctype)
 	}
 
-	// 解析 app（可以传 name 或 id）
-	appID := connAddAppID
-	if connAddAppName != "" && appID == "" {
+	// 解析 scope（可以传 app name 或 id → scope）
+	scope := "global:*"
+	if connAddAppID != "" {
+		scope = "app:" + connAddAppID
+	} else if connAddAppName != "" {
 		resolvedID, err := resolveAppID(client, connAddAppName)
 		if err != nil {
 			return fmt.Errorf("app not found: %s", connAddAppName)
 		}
-		appID = resolvedID
+		scope = "app:" + resolvedID
 	}
 
 	configJSON, _ := json.Marshal(config)
@@ -152,7 +154,7 @@ func runConnAdd(cmd *cobra.Command, args []string) error {
 	body := map[string]any{
 		"type":   ctype,
 		"name":   connAddName,
-		"app_id": appID,
+		"scope":  scope,
 		"config": json.RawMessage(configJSON),
 	}
 	bodyJSON, _ := json.Marshal(body)
@@ -172,9 +174,7 @@ func runConnAdd(cmd *cobra.Command, args []string) error {
 	fmt.Println(successStyle.Render("  ✓ Connector created"))
 	fmt.Println(subtitleStyle.Render("    ID: " + result.ID))
 	fmt.Println(subtitleStyle.Render("    Type: " + ctype))
-	if appID != "" {
-		fmt.Println(subtitleStyle.Render("    App: " + appID))
-	}
+	fmt.Println(subtitleStyle.Render("    Scope: " + scope))
 	fmt.Println()
 	fmt.Println(subtitleStyle.Render("  Next: add receivers with ") + accentStyle.Render("tofi connect verify "+result.ID))
 	fmt.Println()
@@ -492,8 +492,8 @@ func connectorIcon(ctype string) string {
 func init() {
 	connAddCmd.Flags().StringVar(&connAddToken, "token", "", "bot token (telegram, slack_app, discord_bot)")
 	connAddCmd.Flags().StringVar(&connAddWebhook, "webhook", "", "webhook URL (slack_webhook, discord_webhook)")
-	connAddCmd.Flags().StringVar(&connAddAppID, "app-id", "", "bind to specific app (by ID)")
-	connAddCmd.Flags().StringVar(&connAddAppName, "app", "", "bind to specific app (by name)")
+	connAddCmd.Flags().StringVar(&connAddAppID, "app-id", "", "scope to specific app (by ID)")
+	connAddCmd.Flags().StringVar(&connAddAppName, "app", "", "scope to specific app (by name)")
 	connAddCmd.Flags().StringVar(&connAddName, "name", "", "connector display name")
 
 	connLinkCmd.Flags().StringVar(&connLinkApp, "app", "", "app name")

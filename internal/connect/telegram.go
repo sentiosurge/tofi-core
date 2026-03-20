@@ -89,10 +89,22 @@ func GetBotInfo(botToken string) (*BotInfo, error) {
 
 // SendMessage 发送 Telegram 消息（Markdown 格式）
 func SendMessage(botToken, chatID, text string) error {
+	// Try Markdown first, fallback to plain text if parse fails
+	err := sendTelegramMessage(botToken, chatID, text, "Markdown")
+	if err != nil && strings.Contains(err.Error(), "can't parse entities") {
+		log.Printf("[telegram] Markdown parse failed, retrying as plain text")
+		return sendTelegramMessage(botToken, chatID, text, "")
+	}
+	return err
+}
+
+func sendTelegramMessage(botToken, chatID, text, parseMode string) error {
 	data := url.Values{
-		"chat_id":    {chatID},
-		"text":       {text},
-		"parse_mode": {"Markdown"},
+		"chat_id": {chatID},
+		"text":    {text},
+	}
+	if parseMode != "" {
+		data.Set("parse_mode", parseMode)
 	}
 
 	resp, err := http.Post(

@@ -35,7 +35,8 @@ type Session struct {
 	ID      string   `xml:"id,attr"`
 	Title   string   `xml:"title,attr,omitempty"`
 	Model   string   `xml:"model,attr,omitempty"`
-	Skills  string   `xml:"skills,attr,omitempty"` // comma-separated skill names
+	Skills       string `xml:"skills,attr,omitempty"`        // comma-separated skill names
+	LoadedSkills string `xml:"loaded_skills,attr,omitempty"` // skills activated during conversation (persisted across turns)
 	Status  string   `xml:"status,attr,omitempty"` // "" (idle), "running", "hold"
 	Created string   `xml:"created,attr"`
 	Updated string   `xml:"updated,attr"`

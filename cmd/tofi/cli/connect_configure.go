@@ -73,7 +73,7 @@ type existingConnector struct {
 	ID            string `json:"id"`
 	Type          string `json:"type"`
 	Name          string `json:"name"`
-	AppID         string `json:"app_id"`
+	Scope         string `json:"scope"`
 	AppName       string `json:"app_name"`
 	Enabled       bool   `json:"enabled"`
 	ReceiverCount int    `json:"receiver_count"`
@@ -879,14 +879,14 @@ func (m connConfigModel) createConnector() tea.Cmd {
 		}
 
 		configJSON, _ := json.Marshal(config)
-		appID := ""
+		scope := "global:*"
 		if m.selectedApp != nil {
-			appID = m.selectedApp.ID
+			scope = "app:" + m.selectedApp.ID
 		}
 
 		body := map[string]any{
-			"type":   m.connType.id,
-			"app_id": appID,
+			"type":  m.connType.id,
+			"scope": scope,
 			"config": json.RawMessage(configJSON),
 		}
 		bodyJSON, _ := json.Marshal(body)
@@ -973,8 +973,8 @@ func (m connConfigModel) View() string {
 			scope := subtitleStyle.Render("global")
 			if c.AppName != "" {
 				scope = titleStyle.Render("app: " + c.AppName)
-			} else if c.AppID != "" {
-				scope = titleStyle.Render("app: " + c.AppID[:8])
+			} else if c.Scope != "" && c.Scope != "global:*" {
+				scope = titleStyle.Render(c.Scope)
 			}
 			receivers := subtitleStyle.Render(fmt.Sprintf("%d users", c.ReceiverCount))
 			s.WriteString("  " + cursor + icon + " " + nameStyle.Render(c.Type) + "  " + scope + "  " + receivers + "\n")
@@ -998,8 +998,8 @@ func (m connConfigModel) View() string {
 		scope := "global"
 		if c.AppName != "" {
 			scope = "app: " + c.AppName
-		} else if c.AppID != "" {
-			scope = "app: " + c.AppID[:8]
+		} else if c.Scope != "" && c.Scope != "global:*" {
+			scope = c.Scope
 		}
 		s.WriteString(subtitleStyle.Render("  Managing: ") + icon + " " + accentStyle.Render(c.Type) + " " + subtitleStyle.Render("("+scope+")") + "\n")
 		s.WriteString(subtitleStyle.Render("  ID: "+c.ID) + "\n\n")

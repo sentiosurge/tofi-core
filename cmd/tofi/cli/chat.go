@@ -531,8 +531,8 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.thinkingDone = true
 		}
 		m.finalizeStreamBlock()
-		if msg.tool == "tofi_display_app_plan" && msg.output != "" {
-			m.appendContent(m.renderAppPlan(msg.output))
+		if msg.tool == "tofi_display_app_plan" && msg.input != "" {
+			m.appendContent(m.renderAppPlan(msg.input))
 		} else {
 			m.appendContent(m.renderToolCall(msg.tool, msg.input, msg.durationMs))
 		}

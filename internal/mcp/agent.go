@@ -47,8 +47,9 @@ type AgentConfig struct {
 	Messages      []provider.Message // Optional: full conversation history (overrides Prompt if non-empty)
 	MCPServers    []MCPServerConfig  // Active MCP server connections
 	SessionID     string             // Session/task identifier for streaming callbacks
-	SkillTools    []SkillTool        // Installed skills (deferred — loaded on-demand via tofi_load_skill)
-	ExtraTools    []ExtraBuiltinTool // Core built-in tools (always available)
+	SkillTools      []SkillTool        // Installed skills (deferred — loaded on-demand via tofi_load_skill)
+	PreloadedSkills []string           // Skills to pre-activate at start (from previous turns in same session)
+	ExtraTools      []ExtraBuiltinTool // Core built-in tools (always available)
 	SandboxDir    string             // Sandbox directory for shell command execution (optional)
 	UserDir       string             // User persistent directory for installed tools (optional)
 	Executor      executor.Executor  // Sandbox executor (nil = use legacy functions)
@@ -73,11 +74,12 @@ type MCPServerConfig struct {
 
 // AgentResult holds the result of an agent loop execution.
 type AgentResult struct {
-	Content    string
-	TotalUsage provider.Usage
-	TotalCost  float64
-	Model      string
-	LLMCalls   int
+	Content      string
+	TotalUsage   provider.Usage
+	TotalCost    float64
+	Model        string
+	LLMCalls     int
+	LoadedSkills []string // Skills that were loaded during this agent loop (for persistence)
 }
 
 // RunAgentLoop executes the autonomous agent loop (ReAct)
@@ -188,6 +190,9 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 		extraHandlers[et.Schema.Name] = et.Handler
 	}
 
+	// Track which skills have been loaded (persisted across turns via session)
+	loadedSkills := make(map[string]bool)
+
 	// Register skill tools — deferred loading pattern (like Claude Code)
 	// Skills are listed by name+description in <available-skills> section of system prompt.
 	// Full Instructions loaded on-demand via tofi_load_skill tool.
@@ -197,7 +202,28 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 		for i := range cfg.SkillTools {
 			skillMap[cfg.SkillTools[i].Name] = &cfg.SkillTools[i]
 		}
-		loadedSkills := make(map[string]bool) // track which skills have been loaded
+
+		// Pre-activate skills from previous turns in the same session
+		for _, preloadName := range cfg.PreloadedSkills {
+			if skill, ok := skillMap[preloadName]; ok && !loadedSkills[preloadName] {
+				loadedSkills[preloadName] = true
+				// Activate bundled tools silently (AI already saw instructions in previous turns)
+				for _, bt := range skill.BundledTools {
+					alreadyRegistered := false
+					for _, t := range allTools {
+						if t.Name == bt.Schema.Name {
+							alreadyRegistered = true
+							break
+						}
+					}
+					if !alreadyRegistered {
+						allTools = append(allTools, bt.Schema)
+						extraHandlers[bt.Schema.Name] = bt.Handler
+					}
+				}
+				log.Printf("[chat] [Agent] Pre-activated skill '%s' (%d tools)", preloadName, len(skill.BundledTools))
+			}
+		}
 
 		// Register tofi_load_skill tool — returns full Instructions for a skill
 		allTools = append(allTools, provider.Tool{
@@ -446,11 +472,12 @@ You have skills listed in <available-skills>. Call tofi_load_skill with the skil
 				}
 				ctx.Log("[Agent] Finished.")
 				return &AgentResult{
-					Content:    cleanContent,
-					TotalUsage: totalUsage,
-					TotalCost:  provider.CalculateCost(cfg.Model, totalUsage),
-					Model:      cfg.Model,
-					LLMCalls:   llmCalls,
+					Content:      cleanContent,
+					TotalUsage:   totalUsage,
+					TotalCost:    provider.CalculateCost(cfg.Model, totalUsage),
+					Model:        cfg.Model,
+					LLMCalls:     llmCalls,
+					LoadedSkills: mapKeys(loadedSkills),
 				}, nil
 			}
 
@@ -814,11 +841,12 @@ You have skills listed in <available-skills>. Call tofi_load_skill with the skil
 	if lastContent != "" {
 		ctx.Log("[Agent] Max steps reached. Returning partial result.")
 		return &AgentResult{
-			Content:    lastContent,
-			TotalUsage: totalUsage,
-			TotalCost:  provider.CalculateCost(cfg.Model, totalUsage),
-			Model:      cfg.Model,
-			LLMCalls:   llmCalls,
+			Content:      lastContent,
+			TotalUsage:   totalUsage,
+			TotalCost:    provider.CalculateCost(cfg.Model, totalUsage),
+			Model:        cfg.Model,
+			LLMCalls:     llmCalls,
+			LoadedSkills: mapKeys(loadedSkills),
 		}, nil
 	}
 
@@ -1104,6 +1132,14 @@ func truncate(s string, n int) string {
 }
 
 // sanitizeToolName converts a skill name to a valid tool function name
+func mapKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func sanitizeToolName(name string) string {
 	result := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
