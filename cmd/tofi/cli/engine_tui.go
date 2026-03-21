@@ -165,9 +165,12 @@ func (m *engineModel) executeAction(action string) tea.Cmd {
 				return engineActionDoneMsg{msg: "Engine stopped"}
 			case "restart":
 				if running {
-					if err := daemon.Stop(homeDir, false); err != nil {
+					// Use force kill for restart — graceful stop can hang 30s
+					if err := daemon.Stop(homeDir, true); err != nil {
 						return engineActionErrMsg{err: err}
 					}
+					// Wait for port to be released
+					time.Sleep(1 * time.Second)
 				}
 				if _, err := daemon.Start(homeDir, port, false); err != nil {
 					return engineActionErrMsg{err: err}
