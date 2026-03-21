@@ -99,7 +99,8 @@ type appModel struct {
 	step     appStep
 	cursor   int
 	offset   int // scroll offset
-	quitting bool
+	quitting   bool
+	exitReason tuiExitReason
 
 	// List
 	apps      []appRecord
@@ -192,6 +193,7 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			if m.ctrlCOnce {
 				m.quitting = true
+				m.exitReason = exitQuit
 				return m, tea.Quit
 			}
 			m.ctrlCOnce = true

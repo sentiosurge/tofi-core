@@ -42,6 +42,7 @@ func (m *appModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case "esc", "q":
 		m.quitting = true
+		m.exitReason = exitToMenu
 		return m, tea.Quit
 	}
 	return m, nil

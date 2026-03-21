@@ -11,7 +11,12 @@ var connectCmd = &cobra.Command{
 	Use:     "connect",
 	Aliases: []string{"conn"},
 	Short:   "Manage notification connectors (Telegram, Slack, Discord, Email)",
-	RunE:    runConnConfigure,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := runConnConfigure(cmd, args); err != nil {
+			fmt.Println(errorStyle.Render("  ✗ " + err.Error()))
+		}
+		return runMainMenuLoop(cmd)
+	},
 }
 
 var connectHelpCmd = &cobra.Command{

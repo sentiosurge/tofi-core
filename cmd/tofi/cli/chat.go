@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -44,7 +45,16 @@ var chatCmd = &cobra.Command{
   tofi chat model [name]       View or set model
   tofi chat new                Create new session`,
 	Args: cobra.ArbitraryArgs,
-	RunE: runChat,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		reason, err := runChatSection(cmd, args)
+		if err != nil {
+			return err
+		}
+		if reason == exitToMenu {
+			return runMainMenuLoop(cmd)
+		}
+		return nil
+	},
 }
 
 func init() {
@@ -106,6 +116,11 @@ type thinkingBlock struct {
 }
 
 const thinkingBlockMarker = "%%THINKING_BLOCK_%d%%"
+
+// ansiRe strips ANSI escape sequences for text matching.
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+func stripAnsi(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 // --- Bubble Tea messages ---
 
@@ -170,6 +185,7 @@ type chatModel struct {
 	streamCancel context.CancelFunc // cancel SSE stream
 	ctrlCOnce    bool               // first Ctrl+C pressed
 	ctrlCTimer   *time.Timer        // 3s reset timer
+	exitReason   tuiExitReason      // why the TUI exited
 	inputHistory []string // user message history
 	historyIdx   int     // -1 = not browsing, 0..len-1 = browsing
 	client       *apiClient
@@ -411,6 +427,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.ctrlCOnce {
 				// Second Ctrl+C within 3s → actually quit
+				m.exitReason = exitQuit
 				return m, tea.Quit
 			}
 			// First Ctrl+C → show warning, start 3s timer
@@ -427,9 +444,11 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.streamCancel != nil {
 					m.streamCancel()
 				}
+				return m, nil
 			}
-			// Esc when idle → do nothing (use Ctrl+C twice to quit)
-			return m, nil
+			// Esc when idle → return to main menu
+			m.exitReason = exitToMenu
+			return m, tea.Quit
 		case "alt+enter":
 			// Insert newline for multi-line input
 			if !m.streaming {
@@ -519,15 +538,17 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseMsg:
 		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionRelease {
-			// Check if clicked on a thinking block header line
-			viewContent := m.viewportContent()
-			lines := strings.Split(viewContent, "\n")
-			absLine := m.viewport.YOffset + msg.Y - 1 // -1 for header
-			if absLine >= 0 && absLine < len(lines) {
-				line := lines[absLine]
-				if strings.Contains(line, "💭 thought for") {
+			// Check if clicked on a thinking block header line.
+			// msg.Y is relative to the terminal; viewport starts at Y=2 (blank line + top border).
+			// Use the viewport's rendered output lines for reliable ANSI-aware matching.
+			vpRendered := m.viewport.View()
+			vpLines := strings.Split(vpRendered, "\n")
+			clickedLine := msg.Y - 2 // 2 = blank line + top border row
+			if clickedLine >= 0 && clickedLine < len(vpLines) {
+				plain := stripAnsi(vpLines[clickedLine])
+				if strings.Contains(plain, "💭 thought for") {
 					for i := range m.thinkingBlocks {
-						if strings.Contains(line, m.thinkingBlocks[i].duration) {
+						if strings.Contains(plain, m.thinkingBlocks[i].duration) {
 							m.thinkingBlocks[i].expanded = !m.thinkingBlocks[i].expanded
 							m.refreshViewport()
 							return m, nil
@@ -789,7 +810,7 @@ func (m *chatModel) renderStatusBar(iw int) string {
 	} else if m.streaming {
 		leftText = subtitleStyle.Render("Esc stop · Ctrl+C stop · " + selectKey + "+drag select")
 	} else {
-		leftText = subtitleStyle.Render("/help · Esc quit · " + selectKey + "+drag select")
+		leftText = subtitleStyle.Render("/help · Esc menu · " + selectKey + "+drag select")
 	}
 	left := leftText
 
@@ -1202,22 +1223,19 @@ func (m *chatModel) renderThinkingBlock(idx int, tb thinkingBlock) string {
 		PaddingLeft(1)
 
 	if tb.expanded {
-		// Expanded: show header + full content
-		header := thinkStyle.Render(fmt.Sprintf("💭 thought for %s ▼", tb.duration))
-		iw := m.innerWidth() - 2
-		var lines []string
-		for _, line := range strings.Split(tb.content, "\n") {
-			r := []rune(line)
-			if len(r) > iw {
-				r = r[:iw]
-			}
-			lines = append(lines, thinkStyle.Render(string(r)))
-		}
-		return header + "\n" + strings.Join(lines, "\n")
+		// Expanded: show header + full content with word wrap
+		header := thinkStyle.Render(fmt.Sprintf("💭 thought for %s ▼ (click to collapse)", tb.duration))
+		iw := m.innerWidth() - 4 // padding + border
+		contentStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6e7681")).
+			Italic(true).
+			PaddingLeft(2).
+			Width(iw)
+		return header + "\n" + contentStyle.Render(tb.content)
 	}
 
-	// Collapsed: just the header
-	return thinkStyle.Render(fmt.Sprintf("💭 thought for %s ▶", tb.duration))
+	// Collapsed: header with hint to click
+	return thinkStyle.Render(fmt.Sprintf("💭 thought for %s ▶ (click to expand)", tb.duration))
 }
 
 func (m *chatModel) renderStreamingBlock() string {
@@ -1231,9 +1249,9 @@ func (m *chatModel) renderStreamingBlock() string {
 			PaddingLeft(1)
 
 		if m.thinkingDone {
-			// Collapsed: show duration only
+			// Collapsed: show duration only + blank line before content
 			dur := time.Since(m.thinkingStart).Truncate(time.Millisecond)
-			out.WriteString(thinkStyle.Render(fmt.Sprintf("💭 thought for %s", dur)) + "\n")
+			out.WriteString(thinkStyle.Render(fmt.Sprintf("💭 thought for %s", dur)) + "\n\n")
 		} else {
 			// In progress: show ALL thinking content as gray text
 			iw := m.innerWidth() - 2
@@ -2232,6 +2250,22 @@ func formatTokens(n int) string {
 
 // --- Entry point ---
 
+// runChatSection runs the Chat TUI and returns its exit reason.
+func runChatSection(cmd *cobra.Command, args []string) (tuiExitReason, error) {
+	// Non-interactive mode should not return to menu
+	if chatPrintMode && len(args) > 0 {
+		return exitQuit, runChat(cmd, args)
+	}
+	err := runChat(cmd, args)
+	if err != nil {
+		return exitQuit, err
+	}
+	return chatLastExitReason, nil
+}
+
+// chatLastExitReason stores the exit reason from the last Chat TUI run.
+var chatLastExitReason tuiExitReason
+
 func runChat(cmd *cobra.Command, args []string) error {
 	// Non-interactive mode: -p "message" or positional args with -p
 	if chatPrintMode && len(args) > 0 {
@@ -2267,5 +2301,6 @@ func runChat(cmd *cobra.Command, args []string) error {
 	model.program = p
 
 	_, err := p.Run()
+	chatLastExitReason = model.exitReason
 	return err
 }

@@ -12,22 +12,32 @@ var appCmd = &cobra.Command{
 	Use:   "app",
 	Short: "Manage AI apps",
 	Long:  "Interactive app management. Run without subcommands for the TUI.",
-	RunE:  runAppTUI,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		reason, err := runAppSection(cmd)
+		if err != nil {
+			return err
+		}
+		if reason == exitToMenu {
+			return runMainMenuLoop(cmd)
+		}
+		return nil
+	},
 }
 
-func runAppTUI(cmd *cobra.Command, args []string) error {
+// runAppSection runs the App TUI and returns its exit reason.
+func runAppSection(cmd *cobra.Command) (tuiExitReason, error) {
 	client := newAPIClient()
 	if err := client.ensureRunning(); err != nil {
 		fmt.Println()
 		fmt.Println(errorStyle.Render("  ✗ " + err.Error()))
 		fmt.Println()
-		return err
+		return exitQuit, err
 	}
 
 	model := newAppModel(client)
 	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {
-		return err
+		return exitQuit, err
 	}
 
 	// Post-exit: launch chat if requested
@@ -50,10 +60,10 @@ func runAppTUI(cmd *cobra.Command, args []string) error {
 		if len(model.launchChatSkills) > 0 {
 			chatInitSkills = model.launchChatSkills
 		}
-		return runChat(cmd, nil)
+		return runChatSection(cmd, nil)
 	}
 
-	return nil
+	return model.exitReason, nil
 }
 
 func init() {

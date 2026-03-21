@@ -102,6 +102,7 @@ type cfgModel struct {
 
 	// Navigation
 	returnStep cfgStep // where to go after key setup (from enabled models flow)
+	startStep  cfgStep // initial step (for direct navigation from Settings)
 
 	// Result
 	resultMsg string
@@ -166,6 +167,13 @@ func newCfgModel(client *apiClient) cfgModel {
 }
 
 func (m cfgModel) Init() tea.Cmd {
+	// When launched at a specific step (from Settings menu), load data
+	switch m.startStep {
+	case cfgStepKeys:
+		return m.loadKeys()
+	case cfgStepModels:
+		return m.loadModels()
+	}
 	return nil
 }
 
@@ -256,6 +264,11 @@ func (m cfgModel) handleEsc() (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case cfgStepKeys, cfgStepModels, cfgStepAutoStart:
+		// If launched directly at this step (from Settings), ESC exits
+		if m.startStep == m.step {
+			m.quitting = true
+			return m, tea.Quit
+		}
 		m.step = cfgStepMenu
 		m.cursor = 0
 		return m, nil

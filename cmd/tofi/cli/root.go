@@ -71,30 +71,22 @@ var tuiSelectedRow = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("#0d1117")).
 	Bold(true)
 
+// --- Shared TUI navigation types ---
+
+// tuiExitReason indicates why a TUI section exited.
+type tuiExitReason int
+
+const (
+	exitToMenu tuiExitReason = iota // ESC — return to parent menu
+	exitQuit                        // Ctrl+C×2 — quit program entirely
+)
+
 var rootCmd = &cobra.Command{
 	Use:   "tofi",
 	Short: "Tofi — AI App Engine",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// ./tofi with no args → branded quick-reference
-		cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc"))
-		content := "\n" +
-			subtitleStyle.Render("Create, manage, and run AI agents") + "\n" +
-			subtitleStyle.Render("with skills, scheduling, and memory.") + "\n\n" +
-			titleStyle.Render("Quick start") + "\n" +
-			"  " + cmdStyle.Render("tofi chat") + subtitleStyle.Render("          Start chatting with AI") + "\n" +
-			"  " + cmdStyle.Render("tofi chat --agent") + subtitleStyle.Render("   Chat with a specific agent") + "\n\n" +
-			titleStyle.Render("Engine") + "\n" +
-			"  " + cmdStyle.Render("tofi start") + subtitleStyle.Render("        Launch the engine") + "\n" +
-			"  " + cmdStyle.Render("tofi stop") + subtitleStyle.Render("         Stop the engine") + "\n" +
-			"  " + cmdStyle.Render("tofi restart") + subtitleStyle.Render("      Restart the engine") + "\n" +
-			"  " + cmdStyle.Render("tofi status") + subtitleStyle.Render("       Show engine status") + "\n\n" +
-			titleStyle.Render("More") + "\n" +
-			"  " + cmdStyle.Render("tofi app") + subtitleStyle.Render("          Manage AI agents") + "\n" +
-			"  " + cmdStyle.Render("tofi connect") + subtitleStyle.Render("      Set up notifications") + "\n" +
-			"  " + cmdStyle.Render("tofi help") + subtitleStyle.Render("         All commands")
-		fmt.Println("\n" + renderBox(content))
-		fmt.Println()
-		return nil
+		// ./tofi with no args → main menu TUI
+		return runMainMenuLoop(cmd)
 	},
 	SilenceUsage:  true,
 	SilenceErrors: true,

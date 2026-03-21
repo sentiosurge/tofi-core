@@ -412,7 +412,8 @@ func (o *openaiResponses) parseStream(body io.Reader, onDelta func(StreamDelta))
 			}
 
 		case "response.output_item.done":
-			// Check for reasoning item with summary
+			// Check for reasoning item with summary — only use as fallback
+			// if we didn't already receive reasoning via streaming deltas.
 			var ev struct {
 				Item json.RawMessage `json:"item"`
 			}
@@ -425,11 +426,14 @@ func (o *openaiResponses) parseStream(body io.Reader, onDelta func(StreamDelta))
 					} `json:"summary"`
 				}
 				if json.Unmarshal(ev.Item, &item) == nil && item.Type == "reasoning" {
-					for _, s := range item.Summary {
-						if s.Text != "" {
-							reasoningBuf.WriteString(s.Text)
-							if onDelta != nil {
-								onDelta(StreamDelta{Reasoning: s.Text})
+					// Only use summary from done event if no streaming deltas were received
+					if reasoningBuf.Len() == 0 {
+						for _, s := range item.Summary {
+							if s.Text != "" {
+								reasoningBuf.WriteString(s.Text)
+								if onDelta != nil {
+									onDelta(StreamDelta{Reasoning: s.Text})
+								}
 							}
 						}
 					}

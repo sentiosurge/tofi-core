@@ -14,7 +14,16 @@ var configCmd = &cobra.Command{
 	Use:     "config",
 	Aliases: []string{"cfg"},
 	Short:   "Manage configuration (interactive wizard)",
-	RunE:    runConfigWizard,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		reason, err := runSettingsLoop(cmd)
+		if err != nil {
+			return err
+		}
+		if reason == exitToMenu {
+			return runMainMenuLoop(cmd)
+		}
+		return nil
+	},
 }
 
 var configHelpCmd = &cobra.Command{
