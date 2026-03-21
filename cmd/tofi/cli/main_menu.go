@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -44,14 +43,12 @@ type mainMenuModel struct {
 	cursor     int
 	selected   string
 	exitReason tuiExitReason
-	ctrlCOnce  bool
+	ctrlC      ctrlCGuard
 }
 
 func newMainMenuModel() *mainMenuModel {
 	return &mainMenuModel{}
 }
-
-type menuCtrlCResetMsg struct{}
 
 func (m *mainMenuModel) Init() tea.Cmd {
 	return nil
@@ -62,12 +59,12 @@ func (m *mainMenuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			if m.ctrlCOnce {
+			if quit, cmd := m.ctrlC.HandleCtrlC(); quit {
 				m.exitReason = exitQuit
 				return m, tea.Quit
+			} else {
+				return m, cmd
 			}
-			m.ctrlCOnce = true
-			return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return menuCtrlCResetMsg{} })
 		case "esc", "q":
 			m.exitReason = exitQuit
 			return m, tea.Quit
@@ -82,13 +79,11 @@ func (m *mainMenuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.selected = mainMenuItems[m.cursor].id
 			return m, tea.Quit
+		default:
+			m.ctrlC.HandleReset()
 		}
-		// Any non-ctrl+c key resets the double-press
-		if msg.String() != "ctrl+c" && m.ctrlCOnce {
-			m.ctrlCOnce = false
-		}
-	case menuCtrlCResetMsg:
-		m.ctrlCOnce = false
+	case ctrlCResetMsg:
+		m.ctrlC.HandleReset()
 		return m, nil
 	}
 	return m, nil
@@ -113,8 +108,8 @@ func (m *mainMenuModel) View() string {
 	content := header + "\n" + version + "\n\n" + items + "\n" + footer
 
 	warn := ""
-	if m.ctrlCOnce {
-		warn = "\n" + errorStyle.Render("Press Ctrl+C again to quit")
+	if m.ctrlC.IsArmed() {
+		warn = "\n" + m.ctrlC.RenderWarning()
 	}
 
 	return "\n" + tuiBoxStyle.Render(content) + warn + "\n"
@@ -184,10 +179,8 @@ type settingsMenuModel struct {
 	cursor     int
 	selected   string
 	exitReason tuiExitReason
-	ctrlCOnce  bool
+	ctrlC      ctrlCGuard
 }
-
-type settingsCtrlCResetMsg struct{}
 
 func newSettingsMenuModel() *settingsMenuModel {
 	return &settingsMenuModel{}
@@ -202,12 +195,12 @@ func (m *settingsMenuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			if m.ctrlCOnce {
+			if quit, cmd := m.ctrlC.HandleCtrlC(); quit {
 				m.exitReason = exitQuit
 				return m, tea.Quit
+			} else {
+				return m, cmd
 			}
-			m.ctrlCOnce = true
-			return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return settingsCtrlCResetMsg{} })
 		case "esc":
 			m.exitReason = exitToMenu
 			return m, tea.Quit
@@ -222,12 +215,11 @@ func (m *settingsMenuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.selected = settingsMenuItems[m.cursor].id
 			return m, tea.Quit
+		default:
+			m.ctrlC.HandleReset()
 		}
-		if msg.String() != "ctrl+c" && m.ctrlCOnce {
-			m.ctrlCOnce = false
-		}
-	case settingsCtrlCResetMsg:
-		m.ctrlCOnce = false
+	case ctrlCResetMsg:
+		m.ctrlC.HandleReset()
 		return m, nil
 	}
 	return m, nil
@@ -249,8 +241,8 @@ func (m *settingsMenuModel) View() string {
 	content := items + "\n" + footer
 
 	warn := ""
-	if m.ctrlCOnce {
-		warn = "\n" + errorStyle.Render("Press Ctrl+C again to quit")
+	if m.ctrlC.IsArmed() {
+		warn = "\n" + m.ctrlC.RenderWarning()
 	}
 
 	return "\n" + renderTUIBox("Settings", content) + warn + "\n"

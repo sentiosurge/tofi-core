@@ -144,7 +144,6 @@ type streamDoneMsg struct {
 }
 type streamErrorMsg struct{ err string }
 type streamCompactMsg struct{}
-type ctrlCResetMsg struct{}
 type titlePollMsg struct{} // poll server for AI-generated title
 type resumeDoneMsg struct{ title string } // restore header after "Resuming" flash
 
@@ -184,8 +183,7 @@ type chatModel struct {
 
 	streaming    bool
 	streamCancel context.CancelFunc // cancel SSE stream
-	ctrlCOnce    bool               // first Ctrl+C pressed
-	ctrlCTimer   *time.Timer        // 3s reset timer
+	ctrlC        ctrlCGuard         // double-press Ctrl+C to quit
 	exitReason   tuiExitReason      // why the TUI exited
 	inputHistory []string // user message history
 	historyIdx   int     // -1 = not browsing, 0..len-1 = browsing
@@ -422,19 +420,12 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			if m.ctrlCOnce {
-				// Second Ctrl+C within 3s → actually quit
+			if quit, cmd := m.ctrlC.HandleCtrlC(); quit {
 				m.exitReason = exitQuit
 				return m, tea.Quit
+			} else {
+				return m, cmd
 			}
-			// First Ctrl+C → show warning, start 3s timer
-			m.ctrlCOnce = true
-			m.ctrlCTimer = time.NewTimer(3 * time.Second)
-			go func() {
-				<-m.ctrlCTimer.C
-				m.sendMsg(ctrlCResetMsg{})
-			}()
-			return m, nil
 		case "esc":
 			if m.streaming {
 				// Esc while streaming → stop generation
@@ -634,7 +625,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ctrlCResetMsg:
-		m.ctrlCOnce = false
+		m.ctrlC.HandleReset()
 		return m, nil
 
 	case resumeDoneMsg:
@@ -775,7 +766,7 @@ func (m *chatModel) renderStatusBar(iw int) string {
 	if runtime.GOOS != "darwin" {
 		selectKey = "Shift"
 	}
-	if m.ctrlCOnce {
+	if m.ctrlC.IsArmed() {
 		leftText = errorStyle.Render("Press Ctrl+C again to exit")
 	} else if m.streaming {
 		leftText = subtitleStyle.Render("Esc stop · Ctrl+C stop · " + selectKey + "+drag select")

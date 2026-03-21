@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -49,7 +48,6 @@ type appSkillsLoadedMsg struct {
 type appSessionsLoadedMsg struct {
 	sessions []appSessionItem
 }
-type appCtrlCResetMsg struct{}
 
 // --- Data types ---
 
@@ -140,7 +138,7 @@ type appModel struct {
 	resultOK  bool
 
 	// Ctrl+C double-press
-	ctrlCOnce bool
+	ctrlC ctrlCGuard
 
 	// Post-exit action: launch chat
 	launchChat        bool     // true = exit TUI and enter chat
@@ -191,20 +189,17 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
-			if m.ctrlCOnce {
+			if quit, cmd := m.ctrlC.HandleCtrlC(); quit {
 				m.quitting = true
 				m.exitReason = exitQuit
 				return m, tea.Quit
+			} else {
+				return m, cmd
 			}
-			m.ctrlCOnce = true
-			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return appCtrlCResetMsg{} })
 		}
-		// Any other key resets ctrl+c state
-		if m.ctrlCOnce {
-			m.ctrlCOnce = false
-		}
-	case appCtrlCResetMsg:
-		m.ctrlCOnce = false
+		m.ctrlC.HandleReset()
+	case ctrlCResetMsg:
+		m.ctrlC.HandleReset()
 		return m, nil
 	case appLoadedMsg:
 		m.apps = msg.apps
@@ -339,8 +334,8 @@ func (m *appModel) goToCreate() {
 }
 
 func (m *appModel) ctrlCWarning() string {
-	if m.ctrlCOnce {
-		return "\n" + errorStyle.Render("Press Ctrl+C again to quit")
+	if m.ctrlC.IsArmed() {
+		return "\n" + m.ctrlC.RenderWarning()
 	}
 	return ""
 }

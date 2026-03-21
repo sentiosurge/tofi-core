@@ -45,10 +45,8 @@ type engineModel struct {
 	cursor     int
 	statusMsg  string // transient status like "Restarting..."
 	exitReason tuiExitReason
-	ctrlCOnce  bool
+	ctrlC      ctrlCGuard
 }
-
-type engineCtrlCResetMsg struct{}
 type engineActionStartMsg struct{ label string }
 type engineActionDoneMsg struct{ msg string }
 type engineActionErrMsg struct{ err error }
@@ -87,12 +85,12 @@ func (m *engineModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			if m.ctrlCOnce {
+			if quit, cmd := m.ctrlC.HandleCtrlC(); quit {
 				m.exitReason = exitQuit
 				return m, tea.Quit
+			} else {
+				return m, cmd
 			}
-			m.ctrlCOnce = true
-			return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return engineCtrlCResetMsg{} })
 		case "esc":
 			m.exitReason = exitToMenu
 			return m, tea.Quit
@@ -110,12 +108,11 @@ func (m *engineModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			action := m.actions[m.cursor].id
 			return m, m.executeAction(action)
+		default:
+			m.ctrlC.HandleReset()
 		}
-		if msg.String() != "ctrl+c" && m.ctrlCOnce {
-			m.ctrlCOnce = false
-		}
-	case engineCtrlCResetMsg:
-		m.ctrlCOnce = false
+	case ctrlCResetMsg:
+		m.ctrlC.HandleReset()
 		return m, nil
 	case engineActionStartMsg:
 		m.statusMsg = msg.label
@@ -216,8 +213,8 @@ func (m *engineModel) View() string {
 	content := status + "\n" + actions + "\n" + footer
 
 	warn := ""
-	if m.ctrlCOnce {
-		warn = "\n" + errorStyle.Render("Press Ctrl+C again to quit")
+	if m.ctrlC.IsArmed() {
+		warn = "\n" + m.ctrlC.RenderWarning()
 	}
 
 	return "\n" + renderTUIBox("Engine", content) + warn + "\n"
