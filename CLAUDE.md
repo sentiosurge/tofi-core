@@ -65,14 +65,16 @@ Tofi is a lightweight, distributed workflow engine designed for multi-tenancy an
 - **Docs**: [docs/VERSIONING_GUIDE.md](docs/VERSIONING_GUIDE.md)
 
 ### 5. Compute Sandboxing
-- **Problem**: `shell` nodes run directly on the host machine.
-- **Task**: Implement a Docker-based executor for `shell` tasks to provide true resource and security isolation.
+- **Current**: DirectExecutor with 3-layer software isolation (command blocklist + safe PATH + macOS seatbelt)
+- **Future**: Linux namespaces + chroot for production multi-tenant isolation (no Docker dependency)
 
 ---
 
 ## 📖 Useful Commands
-- `./tofi server -port 8080 -workers 10`: Start API server with 10 concurrent workers.
-- `./tofi token -user jack`: Generate a test JWT token.
-- `./tofi run -workflow workflows/upload_test.yaml`: Run a workflow locally.
-- `curl http://localhost:8080/api/v1/stats`: Check worker pool statistics.
-- `curl -H "Authorization: Bearer <TOKEN>" ...`: Access protected API.
+- `./tofi init`: Initialize workspace, configure AI provider and auth.
+- `./tofi start`: Start the engine as a background daemon (default port 8321).
+- `./tofi start -p 9000 -w 5`: Start on port 9000 with 5 max concurrent workers.
+- `./tofi stop`: Stop the engine.
+- `./tofi`: Launch the interactive TUI.
+- `curl http://localhost:8321/api/v1/stats`: Check worker pool statistics.
+- `curl http://localhost:8321/docs`: API documentation.

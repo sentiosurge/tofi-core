@@ -319,7 +319,7 @@ func (m initModel) updateStartEngine(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
 		case "y", "Y", "enter":
-			pid, err := daemon.Start(m.homeDir, daemon.DefaultPort, false)
+			pid, err := daemon.Start(m.homeDir, daemon.GetDefaultPort(), false)
 			if err != nil {
 				m.engineStartErr = err
 			} else {
@@ -602,7 +602,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// Force reinit: check if engine is running and ask to stop
 	if initForce {
-		status := daemon.GetStatus(homeDir, daemon.DefaultPort)
+		status := daemon.GetStatus(homeDir, daemon.GetDefaultPort())
 		if status.Running {
 			fmt.Println()
 			fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("#d29922")).Render(

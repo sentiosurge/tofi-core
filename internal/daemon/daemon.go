@@ -18,12 +18,21 @@ import (
 
 const (
 	PIDFile      = "tofi.pid"
-	DefaultPort  = 8321
 	HealthPath   = "/health"
 	StatsPath    = "/api/v1/stats"
 	StartTimeout = 10 * time.Second
 	StopTimeout  = 30 * time.Second
 )
+
+// GetDefaultPort returns the default port from TOFI_PORT env var, or 8321.
+func GetDefaultPort() int {
+	if p := os.Getenv("TOFI_PORT"); p != "" {
+		if port, err := strconv.Atoi(p); err == nil && port > 0 {
+			return port
+		}
+	}
+	return 8321
+}
 
 // Status represents the current engine state.
 type Status struct {

@@ -19,7 +19,7 @@ info:
     4. Check the result: `GET /api/v1/apps/{id}/runs/{runId}`
 
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:8321
     description: Local development
   - url: https://your-domain.com
     description: Production

@@ -30,7 +30,7 @@ var startCmd = &cobra.Command{
 }
 
 func init() {
-	startCmd.Flags().IntVarP(&startPort, "port", "p", daemon.DefaultPort, "HTTP API port")
+	startCmd.Flags().IntVarP(&startPort, "port", "p", daemon.GetDefaultPort(), "HTTP API port")
 	startCmd.Flags().BoolVar(&startForeground, "foreground", false, "run in foreground (don't daemonize)")
 	startCmd.Flags().IntVarP(&startWorkers, "workers", "w", 10, "max concurrent workers")
 	rootCmd.AddCommand(startCmd)

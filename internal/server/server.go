@@ -23,11 +23,8 @@ import (
 	"tofi-core/internal/workspace"
 )
 
-// DeployMode constants
-const (
-	ModeSelfHosted = "self-hosted" // Single-user local deployment
-	ModeSaaS       = "saas"        // Multi-user cloud deployment
-)
+// DeployMode constant
+const ModeSelfHosted = "self-hosted"
 
 type Config struct {
 	Port                   int
@@ -83,9 +80,6 @@ type Server struct {
 	accessToken string
 }
 
-// IsSaaS returns true if running in SaaS (multi-user cloud) mode.
-func (s *Server) IsSaaS() bool { return s.config.Mode == ModeSaaS }
-
 // IsSelfHosted returns true if running in self-hosted (local) mode.
 func (s *Server) IsSelfHosted() bool { return s.config.Mode == ModeSelfHosted }
 
@@ -113,8 +107,8 @@ func NewServer(config Config) (*Server, error) {
 	if config.Mode == "" {
 		config.Mode = ModeSelfHosted
 	}
-	if config.Mode != ModeSelfHosted && config.Mode != ModeSaaS {
-		return nil, fmt.Errorf("invalid TOFI_MODE: %q (must be 'self-hosted' or 'saas')", config.Mode)
+	if config.Mode != ModeSelfHosted {
+		config.Mode = ModeSelfHosted
 	}
 	log.Printf("🏷️  Deploy mode: %s", config.Mode)
 
@@ -126,21 +120,8 @@ func NewServer(config Config) (*Server, error) {
 	registry := NewExecutionRegistry()
 	workerPool := NewWorkerPool(config.MaxConcurrentWorkflows, registry)
 
-	// Initialize sandbox executor based on deploy mode
-	// SaaS → Docker sandbox (isolated); self-hosted → direct (trust the user)
-	var exec executor.Executor
-	if config.Mode == ModeSaaS {
-		dockerExec, err := executor.NewDockerExecutor(config.HomeDir, "tofi-sandbox:latest")
-		if err != nil {
-			log.Printf("⚠️  Docker executor failed: %v, falling back to direct mode", err)
-			exec = executor.NewDirectExecutor(config.HomeDir)
-		} else {
-			exec = dockerExec
-			log.Println("🐳 SaaS mode: Docker sandbox enabled")
-		}
-	} else {
-		exec = executor.NewDirectExecutor(config.HomeDir)
-	}
+	// Initialize sandbox executor (direct execution with software-level isolation)
+	exec := executor.NewDirectExecutor(config.HomeDir)
 
 	return &Server{
 		config:          config,
