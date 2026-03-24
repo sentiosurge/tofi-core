@@ -20,17 +20,17 @@ info:
 
     ## Login Example
     ```bash
-    curl -X POST https://your-domain.com/api/v1/auth/login \
+    curl -X POST https://tofi.sentiosurge.com/api/v1/auth/login \
       -H "Content-Type: application/json" \
       -d '{"username": "your-username", "password": "your-password"}'
     ```
     Response: `{"token": "eyJ...", "username": "your-username", "role": "user"}`
 
 servers:
+  - url: https://tofi.sentiosurge.com
+    description: Production
   - url: http://localhost:8321
     description: Local development
-  - url: https://your-domain.com
-    description: Production
 
 security:
   - bearerAuth: []
