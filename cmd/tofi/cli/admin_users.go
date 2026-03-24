@@ -38,8 +38,7 @@ type usersModel struct {
 	// Create form
 	createUser  textinput.Model
 	createPass  textinput.Model
-	createRole  string // "user" or "admin"
-	createFocus int    // 0=user, 1=pass, 2=role
+	createFocus int // 0=user, 1=pass
 
 	// Delete confirm
 	deleteTarget *userRecord
@@ -68,7 +67,6 @@ func newUsersModel() *usersModel {
 		loading:    true,
 		createUser: u,
 		createPass: p,
-		createRole: "user",
 	}
 }
 
@@ -172,7 +170,6 @@ func (m *usersModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = usersViewCreate
 		m.createUser.SetValue("")
 		m.createPass.SetValue("")
-		m.createRole = "user"
 		m.createFocus = 0
 		m.createUser.Focus()
 		m.createPass.Blur()
@@ -194,36 +191,22 @@ func (m *usersModel) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = usersViewList
 		return m, nil
 	case "enter":
-		switch m.createFocus {
-		case 0: // Username → next
+		if m.createFocus == 0 {
+			// Username → Password
 			m.createFocus = 1
 			m.createUser.Blur()
 			m.createPass.Focus()
 			return m, nil
-		case 1: // Password → next
-			m.createFocus = 2
-			m.createPass.Blur()
-			return m, nil
-		case 2: // Role → submit
-			return m, m.submitCreate()
 		}
-	case "tab", "shift+tab":
-		if m.createFocus == 2 {
-			// Toggle role when focused on role field
-			if m.createRole == "user" {
-				m.createRole = "admin"
-			} else {
-				m.createRole = "user"
-			}
-		}
-		return m, nil
+		// Password → Submit
+		return m, m.submitCreate()
 	}
 
 	// Pass character input to focused textinput
 	var cmd tea.Cmd
 	if m.createFocus == 0 {
 		m.createUser, cmd = m.createUser.Update(msg)
-	} else if m.createFocus == 1 {
+	} else {
 		m.createPass, cmd = m.createPass.Update(msg)
 	}
 	return m, cmd
@@ -236,13 +219,12 @@ func (m *usersModel) submitCreate() tea.Cmd {
 		m.errMsg = "Username required, password min 6 chars"
 		return nil
 	}
-	role := m.createRole
 	return func() tea.Msg {
 		client := newAPIClient()
 		body, _ := json.Marshal(map[string]string{
 			"username": user,
 			"password": pass,
-			"role":     role,
+			"role":     "user",
 		})
 		var resp map[string]string
 		err := client.post("/api/v1/admin/users", bytes.NewReader(body), &resp)
@@ -325,22 +307,16 @@ func (m *usersModel) viewList() string {
 }
 
 func (m *usersModel) viewCreate() string {
-	roleDisplay := m.createRole
-	if m.createFocus == 2 {
-		roleDisplay = tuiSelectedRow.Render(" " + roleDisplay + " ")
-	}
-
 	fields := ""
 	fields += "  Username: " + m.createUser.View() + "\n"
 	fields += "  Password: " + m.createPass.View() + "\n"
-	fields += "  Role:     " + roleDisplay + "\n"
 
 	errLine := ""
 	if m.errMsg != "" {
 		errLine = "\n" + errorStyle.Render("  ✗ "+m.errMsg)
 	}
 
-	footer := subtitleStyle.Render("Enter next/submit · Tab toggle role · Esc cancel")
+	footer := subtitleStyle.Render("Enter next/submit · Esc cancel")
 	content := fields + errLine + "\n\n" + footer
 
 	return "\n" + renderTUIBox("Create User", content) + "\n"

@@ -4,12 +4,40 @@
   <title>Tofi API Reference</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    /* Remove the gradient header and use flat dark background */
+    .dark-mode .section-header,
+    .dark-mode .scalar-api-reference__header {
+      background: #0d1117 !important;
+      background-image: none !important;
+    }
+    .section-header,
+    .scalar-api-reference__header {
+      background: #0d1117 !important;
+      background-image: none !important;
+    }
+    /* Match tofi brand colors */
+    :root {
+      --scalar-color-1: #f0f6fc;
+      --scalar-color-accent: #ff7b72;
+      --scalar-background-1: #0d1117;
+      --scalar-background-2: #161b22;
+      --scalar-background-3: #21262d;
+      --scalar-border-color: #30363d;
+    }
+  </style>
 </head>
 <body>
   <script
     id="api-reference"
     data-url="/docs/openapi.yaml"
-    data-configuration='{"theme":"kepler","layout":"modern","hideDownloadButton":true}'
+    data-configuration='{
+      "theme": "none",
+      "darkMode": true,
+      "layout": "modern",
+      "hideDownloadButton": true,
+      "customCss": ".introduction-card { background: #0d1117 !important; background-image: none !important; } .darklight-reference-promo { display: none !important; }"
+    }'
   ></script>
   <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
 </body>
