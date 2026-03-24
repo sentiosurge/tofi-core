@@ -45,9 +45,10 @@ func GenerateToken(username string, role string) (string, error) {
 type contextKey string
 
 const UserContextKey contextKey = "user"
+const RoleContextKey contextKey = "role"
 
-// parseJWT parses and validates a JWT token, returning the user ID.
-func parseJWT(tokenString string) (string, error) {
+// parseJWT parses and validates a JWT token, returning the username and role.
+func parseJWT(tokenString string) (string, string, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -55,20 +56,22 @@ func parseJWT(tokenString string) (string, error) {
 		return jwtSecret, nil
 	})
 	if err != nil || !token.Valid {
-		return "", fmt.Errorf("invalid or expired token")
+		return "", "", fmt.Errorf("invalid or expired token")
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		return "", fmt.Errorf("invalid token claims")
+		return "", "", fmt.Errorf("invalid token claims")
 	}
 
 	user, ok := claims["sub"].(string)
 	if !ok || user == "" {
-		return "", fmt.Errorf("token missing 'sub' claim")
+		return "", "", fmt.Errorf("token missing 'sub' claim")
 	}
 
-	return user, nil
+	role, _ := claims["role"].(string)
+
+	return user, role, nil
 }
 
 // AuthMiddleware validates auth token and injects user into context.
@@ -100,13 +103,14 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Otherwise try JWT
-		user, err := parseJWT(tokenStr)
+		user, role, err := parseJWT(tokenStr)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), UserContextKey, user)
+		ctx = context.WithValue(ctx, RoleContextKey, role)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
@@ -114,17 +118,23 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 // AdminMiddleware validates that the user is an admin.
 func (s *Server) AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return s.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		username := r.Context().Value(UserContextKey).(string)
-
 		// Token-mode admin is always admin
+		username := r.Context().Value(UserContextKey).(string)
 		if username == "admin" && s.accessToken != "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
+		// Check JWT role claim first (covers TUI-generated JWTs)
+		if role, ok := r.Context().Value(RoleContextKey).(string); ok && role == "admin" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Fallback: check DB for user role
 		user, err := s.db.GetUser(username)
 		if err != nil {
-			http.Error(w, "User not found", http.StatusUnauthorized)
+			http.Error(w, "Admin access required", http.StatusForbidden)
 			return
 		}
 		if user.Role != "admin" {

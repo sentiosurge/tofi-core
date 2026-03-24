@@ -225,7 +225,15 @@ func (m *usersModel) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+s":
 		return m, m.submitCreate()
 	}
-	return m, nil
+
+	// Pass character input to focused textinput
+	var cmd tea.Cmd
+	if m.createFocus == 0 {
+		m.createUser, cmd = m.createUser.Update(msg)
+	} else if m.createFocus == 1 {
+		m.createPass, cmd = m.createPass.Update(msg)
+	}
+	return m, cmd
 }
 
 func (m *usersModel) submitCreate() tea.Cmd {
