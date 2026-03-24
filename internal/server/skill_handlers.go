@@ -56,24 +56,49 @@ func (s *Server) handleListSystemSkills(w http.ResponseWriter, r *http.Request) 
 
 // --- Skill API Handlers ---
 
-// handleListSkills GET /api/v1/skills — 列出用户可见的所有 Skills（私有 + 公共）
+// handleListSkills GET /api/v1/skills — 列出用户可见的所有 Skills
+// Filesystem is the single source of truth: user skills from disk, system skills from embed FS.
 func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
-
 	keyword := r.URL.Query().Get("q")
+	keywordLower := strings.ToLower(keyword)
 
 	var records []*storage.SkillRecord
-	var err error
 
-	if keyword != "" {
-		records, err = s.db.SearchSkills(userID, keyword)
-	} else {
-		records, err = s.db.ListSkills(userID)
+	// User skills from filesystem
+	localStore := skills.NewLocalStore(s.config.HomeDir)
+	if userSkills, err := localStore.ListUserSkills(userID); err == nil {
+		for _, sk := range userSkills {
+			if keyword != "" && !strings.Contains(strings.ToLower(sk.Name), keywordLower) && !strings.Contains(strings.ToLower(sk.Desc), keywordLower) {
+				continue
+			}
+			records = append(records, &storage.SkillRecord{
+				ID:          "user/" + sk.Name,
+				Name:        sk.Name,
+				Description: sk.Desc,
+				Version:     sk.Version,
+				Scope:       sk.Scope,
+				Source:       "local",
+				UserID:      userID,
+			})
+		}
 	}
 
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	// System skills from embed FS
+	systemSkills := skills.LoadAllSystemSkills()
+	for _, sf := range systemSkills {
+		if keyword != "" && !strings.Contains(strings.ToLower(sf.Manifest.Name), keywordLower) && !strings.Contains(strings.ToLower(sf.Manifest.Description), keywordLower) {
+			continue
+		}
+		records = append(records, &storage.SkillRecord{
+			ID:          "system/" + sf.Manifest.Name,
+			Name:        sf.Manifest.Name,
+			Description: sf.Manifest.Description,
+			Version:     sf.Manifest.Version,
+			Scope:       "system",
+			Source:       "builtin",
+			UserID:      "system",
+		})
 	}
 
 	if records == nil {

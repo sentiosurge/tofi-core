@@ -91,6 +91,83 @@ func (s *Server) buildSkillToolsFromNames(userID string, skillNames []string) ([
 	return skillTools, skillInstructions, secretEnv
 }
 
+// buildSkillTools loads skills from embed FS (system) and filesystem (user).
+// Does not query the database — filesystem is the single source of truth.
+// Returns skillTools, skillInstructions, and secretEnv.
+func (s *Server) buildSkillTools(userID string, skillNames []string) ([]mcp.SkillTool, []string, map[string]string) {
+	localStore := skills.NewLocalStore(s.config.HomeDir)
+	systemSkills := skills.LoadAllSystemSkills()
+
+	var skillTools []mcp.SkillTool
+	var skillInstructions []string
+	secretEnv := make(map[string]string)
+
+	for _, name := range skillNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+
+		var st mcp.SkillTool
+		var requiredSecrets []string
+
+		if sf, ok := systemSkills[name]; ok {
+			// System skill — from embed FS
+			st = mcp.SkillTool{
+				ID:           "system/" + name,
+				Name:         sf.Manifest.Name,
+				Description:  sf.Manifest.Description,
+				Instructions: sf.Body,
+			}
+			if len(sf.ScriptDirs) > 0 {
+				// Scripts are copied to disk by InstallSystemSkills()
+				st.SkillDir = skills.SystemSkillScriptsDir(s.config.HomeDir, name)
+			}
+			requiredSecrets = sf.Manifest.RequiredSecrets
+		} else {
+			// User skill — from filesystem
+			sf, err := localStore.LoadSkill(userID, name)
+			if err != nil {
+				log.Printf("[chat] skill %q not found: %v", name, err)
+				continue
+			}
+			st = mcp.SkillTool{
+				ID:           "user/" + name,
+				Name:         sf.Manifest.Name,
+				Description:  sf.Manifest.Description,
+				Instructions: sf.Body,
+			}
+			if len(sf.ScriptDirs) > 0 {
+				st.SkillDir = sf.Dir
+			}
+			requiredSecrets = sf.Manifest.RequiredSecrets
+		}
+
+		skillTools = append(skillTools, st)
+		if st.Instructions != "" {
+			skillInstructions = append(skillInstructions, st.Instructions)
+		}
+
+		// Resolve secrets from DB (encrypted storage)
+		for _, secretName := range requiredSecrets {
+			if _, ok := secretEnv[secretName]; ok {
+				continue
+			}
+			secretRec, err := s.db.GetSecret(userID, secretName)
+			if err != nil {
+				continue
+			}
+			val, err := crypto.Decrypt(secretRec.EncryptedValue)
+			if err != nil {
+				continue
+			}
+			secretEnv[secretName] = val
+		}
+	}
+
+	return skillTools, skillInstructions, secretEnv
+}
+
 // buildCapabilitiesFromJSON parses capabilities JSON and returns MCP servers + extra tools.
 func (s *Server) buildCapabilitiesFromJSON(userID, capsJSON string) ([]mcp.MCPServerConfig, []mcp.ExtraBuiltinTool) {
 	caps, err := capability.Parse(capsJSON)

@@ -303,10 +303,23 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	// 2. Build system prompt based on scope
 	systemPrompt := s.buildChatSystemPrompt(userID, scope)
 
-	// 3. Load skills — system skills always available, session skills added on top
-	// All skills are deferred: only name+description in system prompt,
+	// 3. Load skills — filesystem is the single source of truth.
+	// System skills from embed FS, user skills from filesystem.
+	// All skills are deferred: name+description in system prompt,
 	// full Instructions loaded on-demand via tofi_load_skill tool.
-	skillNames := s.getSystemSkillNames()
+	skillNames := skills.ListSystemSkillNames()
+
+	// Global chat: auto-import all user-installed skills
+	if !strings.HasPrefix(scope, chat.ScopeAgentPrefix) {
+		localStore := skills.NewLocalStore(s.config.HomeDir)
+		if userSkills, err := localStore.ListUserSkills(userID); err == nil {
+			for _, sk := range userSkills {
+				skillNames = append(skillNames, sk.Name)
+			}
+		}
+	}
+
+	// App/agent scope: add session-specified skills
 	if session.Skills != "" {
 		for _, name := range strings.Split(session.Skills, ",") {
 			name = strings.TrimSpace(name)
@@ -315,6 +328,7 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 			}
 		}
 	}
+
 	// Deduplicate
 	seen := make(map[string]bool)
 	deduped := skillNames[:0]
@@ -325,7 +339,7 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 		}
 	}
 	skillNames = deduped
-	skillTools, _, secretEnv := s.buildSkillToolsFromNames(userID, skillNames)
+	skillTools, _, secretEnv := s.buildSkillTools(userID, skillNames)
 
 	// 4. Build provider messages from session history
 	providerMessages := chat.BuildProviderMessages(session, message, resolvedModel)
