@@ -39,7 +39,9 @@ func (db *DB) initChatSessionsTable() error {
 		updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_scope
-		ON chat_sessions(user_id, scope, updated_at DESC);`
+		ON chat_sessions(user_id, scope, updated_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_chat_sessions_created
+		ON chat_sessions(created_at);`
 	_, err := db.conn.Exec(query)
 	return err
 }
@@ -126,4 +128,76 @@ func (db *DB) GetChatSessionIndex(id string) (*ChatSessionIndex, error) {
 func (db *DB) DeleteChatSessionIndex(id string) error {
 	_, err := db.conn.Exec(`DELETE FROM chat_sessions WHERE id = ?`, id)
 	return err
+}
+
+// ModelUsage holds aggregated usage statistics for a single model.
+type ModelUsage struct {
+	Model        string  `json:"model"`
+	Sessions     int     `json:"sessions"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	TotalCost    float64 `json:"total_cost"`
+}
+
+// GetUsageByModel returns usage statistics grouped by model.
+// userID="" means all users. startDate/endDate="" means no date filter.
+func (db *DB) GetUsageByModel(userID, startDate, endDate string) ([]ModelUsage, error) {
+	var query string
+	var args []any
+
+	if startDate != "" && endDate != "" && userID != "" {
+		query = `SELECT COALESCE(NULLIF(model, ''), '(unknown)') as model,
+			COUNT(*) as sessions,
+			COALESCE(SUM(total_input_tokens), 0) as input_tokens,
+			COALESCE(SUM(total_output_tokens), 0) as output_tokens,
+			COALESCE(SUM(total_cost), 0) as total_cost
+			FROM chat_sessions
+			WHERE created_at >= ? AND created_at < ? AND user_id = ?
+			GROUP BY model ORDER BY total_cost DESC`
+		args = []any{startDate, endDate, userID}
+	} else if startDate != "" && endDate != "" {
+		query = `SELECT COALESCE(NULLIF(model, ''), '(unknown)') as model,
+			COUNT(*) as sessions,
+			COALESCE(SUM(total_input_tokens), 0) as input_tokens,
+			COALESCE(SUM(total_output_tokens), 0) as output_tokens,
+			COALESCE(SUM(total_cost), 0) as total_cost
+			FROM chat_sessions
+			WHERE created_at >= ? AND created_at < ?
+			GROUP BY model ORDER BY total_cost DESC`
+		args = []any{startDate, endDate}
+	} else if userID != "" {
+		query = `SELECT COALESCE(NULLIF(model, ''), '(unknown)') as model,
+			COUNT(*) as sessions,
+			COALESCE(SUM(total_input_tokens), 0) as input_tokens,
+			COALESCE(SUM(total_output_tokens), 0) as output_tokens,
+			COALESCE(SUM(total_cost), 0) as total_cost
+			FROM chat_sessions
+			WHERE user_id = ?
+			GROUP BY model ORDER BY total_cost DESC`
+		args = []any{userID}
+	} else {
+		query = `SELECT COALESCE(NULLIF(model, ''), '(unknown)') as model,
+			COUNT(*) as sessions,
+			COALESCE(SUM(total_input_tokens), 0) as input_tokens,
+			COALESCE(SUM(total_output_tokens), 0) as output_tokens,
+			COALESCE(SUM(total_cost), 0) as total_cost
+			FROM chat_sessions
+			GROUP BY model ORDER BY total_cost DESC`
+	}
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []ModelUsage
+	for rows.Next() {
+		var m ModelUsage
+		if err := rows.Scan(&m.Model, &m.Sessions, &m.InputTokens, &m.OutputTokens, &m.TotalCost); err != nil {
+			continue
+		}
+		results = append(results, m)
+	}
+	return results, nil
 }

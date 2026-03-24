@@ -15,6 +15,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// sessionToken holds the JWT obtained via interactive login.
+// When set, loadToken() returns this instead of generating from config.
+var sessionToken string
+
 // apiClient is a lightweight HTTP client for talking to the Tofi daemon.
 type apiClient struct {
 	baseURL string
@@ -42,6 +46,9 @@ type cliConfig struct {
 // Token mode: use access_token directly.
 // Password mode: generate JWT from jwt_secret.
 func (c *apiClient) loadToken() string {
+	if sessionToken != "" {
+		return sessionToken
+	}
 	configPath := filepath.Join(homeDir, "config.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -192,4 +199,15 @@ func (c *apiClient) patch(path string, body io.Reader, dest any) error {
 		return json.NewDecoder(resp.Body).Decode(dest)
 	}
 	return nil
+}
+
+// postRaw performs a POST and returns the raw response body and status code.
+func (c *apiClient) postRaw(path string, body io.Reader) ([]byte, int, error) {
+	resp, err := c.doRequest("POST", path, body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot connect to engine: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	return data, resp.StatusCode, nil
 }

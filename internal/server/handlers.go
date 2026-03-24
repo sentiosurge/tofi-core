@@ -201,7 +201,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": token})
+	json.NewEncoder(w).Encode(map[string]string{
+		"token":    token,
+		"username": user.Username,
+		"role":     user.Role,
+	})
 }
 
 func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {

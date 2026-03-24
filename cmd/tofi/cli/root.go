@@ -94,7 +94,9 @@ var rootCmd = &cobra.Command{
 	Use:   "tofi",
 	Short: "Tofi — AI App Engine",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// ./tofi with no args → main menu TUI
+		if !runAdminLogin() {
+			return nil
+		}
 		return runMainMenuLoop(cmd)
 	},
 	SilenceUsage:  true,

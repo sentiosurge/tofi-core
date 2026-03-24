@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
@@ -114,8 +115,35 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.db.DeleteUser(id); err != nil {
+	// Cannot delete self
+	currentUser := r.Context().Value(UserContextKey).(string)
+	targetUser, err := s.db.GetUserByID(id)
+	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+	if targetUser.Username == currentUser {
+		http.Error(w, "Cannot delete your own account", http.StatusForbidden)
+		return
+	}
+
+	// Cannot delete last admin
+	if targetUser.Role == "admin" {
+		users, _ := s.db.ListAllUsers()
+		adminCount := 0
+		for _, u := range users {
+			if u.Role == "admin" {
+				adminCount++
+			}
+		}
+		if adminCount <= 1 {
+			http.Error(w, "Cannot delete the last admin account", http.StatusForbidden)
+			return
+		}
+	}
+
+	if err := s.db.DeleteUser(id); err != nil {
+		http.Error(w, "Failed to delete user", http.StatusInternalServerError)
 		return
 	}
 
@@ -210,6 +238,39 @@ func (s *Server) handleAdminListWorkflows(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(workflows)
+}
+
+// handleAdminGetUsage returns usage statistics grouped by model
+func (s *Server) handleAdminGetUsage(w http.ResponseWriter, r *http.Request) {
+	month := r.URL.Query().Get("month")   // e.g., "2026-03"
+	userID := r.URL.Query().Get("user_id") // optional
+
+	var startDate, endDate string
+	if month != "" {
+		// Parse "YYYY-MM" into date range
+		startDate = month + "-01"
+		// Calculate next month
+		parts := strings.SplitN(month, "-", 2)
+		if len(parts) == 2 {
+			year, _ := strconv.Atoi(parts[0])
+			mon, _ := strconv.Atoi(parts[1])
+			mon++
+			if mon > 12 {
+				mon = 1
+				year++
+			}
+			endDate = fmt.Sprintf("%04d-%02d-01", year, mon)
+		}
+	}
+
+	usage, err := s.db.GetUsageByModel(userID, startDate, endDate)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(usage)
 }
 
 // --- Admin Secrets Handlers ---

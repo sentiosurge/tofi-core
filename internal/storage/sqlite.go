@@ -277,6 +277,16 @@ func (db *DB) GetUser(username string) (*UserRecord, error) {
 	return &u, nil
 }
 
+// GetUserByID returns a user record by ID.
+func (db *DB) GetUserByID(id string) (*UserRecord, error) {
+	row := db.conn.QueryRow(`SELECT id, username, password_hash, role, created_at FROM users WHERE id = ?`, id)
+	var u UserRecord
+	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 func (db *DB) CountUsers() (int, error) {
 	var count int
 	err := db.conn.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)

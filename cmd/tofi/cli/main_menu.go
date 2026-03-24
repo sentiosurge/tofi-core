@@ -37,6 +37,7 @@ var mainMenuItems = []menuItem{
 	{"skills", "Skills", "Install, create, manage skills", false},
 	{"settings", "Settings", "Keys, models, connections", true},
 	{"engine", "Engine", "Status, start, stop, restart", false},
+	{"admin", "Admin", "Users, usage statistics", true},
 }
 
 // --- Model ---
@@ -163,6 +164,8 @@ func runSection(cmd *cobra.Command, section string) (tuiExitReason, error) {
 		return runSettingsLoop(cmd)
 	case "engine":
 		return runEngineSection(cmd)
+	case "admin":
+		return runAdminSection(cmd)
 	default:
 		return exitToMenu, nil
 	}
