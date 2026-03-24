@@ -84,6 +84,151 @@ paths:
         '401':
           description: Invalid username or password
 
+  /api/v1/skills:
+    get:
+      summary: List Skills
+      description: Returns all skills installed by the authenticated user.
+      operationId: listSkills
+      tags: [Skills]
+      parameters:
+        - name: q
+          in: query
+          description: Search filter
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Array of skills
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Skill'
+
+  /api/v1/skills/install:
+    post:
+      summary: Install Skill
+      description: |
+        Install a skill from Git URL, registry reference, or raw SKILL.md content.
+
+        **From Git URL:** `{"source": "git", "url": "github.com/user/repo"}`
+        **From content:** `{"source": "local", "content": "---\nname: my-skill\n..."}`
+        **Two-phase (preview):** `{"mode": "preview", "url": "github.com/user/repo"}`
+        **Two-phase (confirm):** `{"mode": "confirm", "session_id": "xxx", "skill_names": ["skill1"]}`
+      operationId: installSkill
+      tags: [Skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source:
+                  type: string
+                  enum: [local, git]
+                content:
+                  type: string
+                  description: SKILL.md content (source=local)
+                url:
+                  type: string
+                  description: Git URL or owner/repo (source=git)
+                mode:
+                  type: string
+                  enum: [preview, confirm]
+                session_id:
+                  type: string
+                skill_names:
+                  type: array
+                  items:
+                    type: string
+            examples:
+              fromGit:
+                summary: Install from GitHub
+                value:
+                  source: "git"
+                  url: "github.com/user/skills-repo"
+              fromContent:
+                summary: Install from SKILL.md content
+                value:
+                  source: "local"
+                  content: "---\nname: my-skill\ndescription: My custom skill\n---\nYou are a helpful assistant."
+      responses:
+        '201':
+          description: Skill installed
+        '400':
+          description: Invalid request
+
+  /api/v1/skills/install-zip:
+    post:
+      summary: Install Skill from ZIP
+      description: Upload a ZIP file containing one or more SKILL.md files.
+      operationId: installSkillZip
+      tags: [Skills]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: ZIP file (max 50MB)
+      responses:
+        '201':
+          description: Skills installed
+        '400':
+          description: Invalid file
+
+  /api/v1/skills/{id}:
+    delete:
+      summary: Delete Skill
+      description: Remove a skill from your workspace.
+      operationId: deleteSkill
+      tags: [Skills]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Skill deleted
+        '404':
+          description: Skill not found
+
+  /api/v1/registry/search:
+    get:
+      summary: Search Skill Registry
+      description: Search skills.sh for available skills to install.
+      operationId: searchRegistry
+      tags: [Skills]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Search query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skills:
+                    type: array
+                    items:
+                      type: object
+                  total:
+                    type: integer
+
   /api/v1/apps:
     get:
       summary: List Apps
@@ -346,5 +491,25 @@ components:
           type: string
           format: date-time
         completed_at:
+          type: string
+          format: date-time
+
+    Skill:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        scope:
+          type: string
+          enum: [public, private]
+        source:
+          type: string
+        installed_at:
           type: string
           format: date-time

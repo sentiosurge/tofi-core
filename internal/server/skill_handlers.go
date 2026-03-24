@@ -191,11 +191,11 @@ func (s *Server) handleCreateSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 同时保存到本地文件系统
+	// 保存到用户目录
 	localStore := skills.NewLocalStore(s.config.HomeDir)
 	content := buildSkillMDFromRecord(record)
-	if err := localStore.SaveLocal(req.Name, content); err != nil {
-		log.Printf("[skills] warning: failed to save to local store: %v", err)
+	if err := localStore.SaveUserLocal(userID, req.Name, content); err != nil {
+		log.Printf("[skills] warning: failed to save to user store: %v", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -440,10 +440,10 @@ func (s *Server) installFromContent(w http.ResponseWriter, userID, content, sour
 		return
 	}
 
-	// 保存到本地文件系统
+	// 保存到用户目录（私有 skill）
 	localStore := skills.NewLocalStore(s.config.HomeDir)
-	if err := localStore.SaveLocal(skillFile.Manifest.Name, content); err != nil {
-		log.Printf("[skills] warning: failed to save to local store: %v", err)
+	if err := localStore.SaveUserLocal(userID, skillFile.Manifest.Name, content); err != nil {
+		log.Printf("[skills] warning: failed to save to user store: %v", err)
 	}
 
 	// 保存到数据库（私有）
@@ -481,6 +481,7 @@ func (s *Server) installFromSource(w http.ResponseWriter, userID, source string)
 	}
 
 	// Git 安装的 Skills 进入公共池（scope=public, user_id=system）
+	// 同时为请求用户创建 symlink
 	var records []*storage.SkillRecord
 	for _, sf := range result.Skills {
 		record := s.buildSkillRecord("system", sf, string(result.Source.Type), result.Source.DisplayURL(), "public")
@@ -489,6 +490,11 @@ func (s *Server) installFromSource(w http.ResponseWriter, userID, source string)
 			continue
 		}
 		records = append(records, record)
+
+		// Create symlink for the requesting user
+		if err := localStore.ActivateGlobalSkill(userID, sf.Manifest.Name, sf.Manifest.Name); err != nil {
+			log.Printf("[skills] warning: failed to activate %s for user %s: %v", sf.Manifest.Name, userID, err)
+		}
 	}
 
 	if len(records) == 0 {
@@ -552,11 +558,13 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 先获取 skill 信息（用于清理本地文件）
+	// 清理用户目录（symlink 或真实目录）+ GC 全局
 	skill, err := s.db.GetSkill(id)
 	if err == nil && skill != nil {
 		localStore := skills.NewLocalStore(s.config.HomeDir)
-		localStore.Remove(skill.Name) // 清理本地文件，忽略错误
+		if deactErr := localStore.DeactivateSkill(userID, skill.Name); deactErr != nil {
+			log.Printf("[skills] warning: deactivate %s for user %s: %v", skill.Name, userID, deactErr)
+		}
 	}
 
 	if err := s.db.DeleteSkill(id, userID); err != nil {
@@ -1256,10 +1264,6 @@ func (s *Server) installConfirm(w http.ResponseWriter, userID, sessionID string,
 
 	var records []*storage.SkillRecord
 	for _, sf := range toInstall {
-		if err := installer.InstallOne(sf); err != nil {
-			log.Printf("[skills] warning: failed to install %s to local: %v", sf.Manifest.Name, err)
-		}
-
 		// Use session scope/userID if set (zip upload = private), else default to public/system (git)
 		scope := "public"
 		recordUserID := "system"
@@ -1274,6 +1278,23 @@ func (s *Server) installConfirm(w http.ResponseWriter, userID, sessionID string,
 			sourceType = string(session.Source.Type)
 			sourceURL = session.Source.DisplayURL()
 		}
+
+		if scope == "private" {
+			// User upload → save directly to user dir
+			content, _ := os.ReadFile(filepath.Join(sf.Dir, "SKILL.md"))
+			if err := localStore.SaveUserLocal(userID, sf.Manifest.Name, string(content)); err != nil {
+				log.Printf("[skills] warning: failed to save %s to user dir: %v", sf.Manifest.Name, err)
+			}
+		} else {
+			// Git install → global dir + symlink for user
+			if err := installer.InstallOne(sf); err != nil {
+				log.Printf("[skills] warning: failed to install %s to global: %v", sf.Manifest.Name, err)
+			}
+			if err := localStore.ActivateGlobalSkill(userID, sf.Manifest.Name, sf.Manifest.Name); err != nil {
+				log.Printf("[skills] warning: failed to activate %s for user %s: %v", sf.Manifest.Name, userID, err)
+			}
+		}
+
 		record := s.buildSkillRecord(recordUserID, sf, sourceType, sourceURL, scope)
 		if err := s.db.SaveSkill(record); err != nil {
 			log.Printf("[skills] warning: failed to save skill %s: %v", sf.Manifest.Name, err)
@@ -1473,11 +1494,13 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 先获取 collection 中的所有 skill，清理本地文件
+	// 清理用户 symlink/目录 + GC 全局
 	records, _ := s.db.ListSkillsBySourceURL(sourceURL)
 	localStore := skills.NewLocalStore(s.config.HomeDir)
 	for _, skill := range records {
-		localStore.Remove(skill.Name)
+		if err := localStore.DeactivateSkill(userID, skill.Name); err != nil {
+			log.Printf("[skills] warning: deactivate %s: %v", skill.Name, err)
+		}
 	}
 
 	count, err := s.db.DeleteSkillsBySourceURL(sourceURL, userID)

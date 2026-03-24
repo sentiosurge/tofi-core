@@ -176,7 +176,7 @@ func (si *SkillInstaller) InstallForUser(source, userID string, selectedNames []
 
 	// Create symlinks for the user
 	for _, skill := range result.Skills {
-		if err := si.store.ActivateGlobalSkill(userID, skill.Manifest.Name); err != nil {
+		if err := si.store.ActivateGlobalSkill(userID, skill.Manifest.Name, skill.Manifest.Name); err != nil {
 			log.Printf("[skills] warning: failed to activate %s for user %s: %v", skill.Manifest.Name, userID, err)
 		}
 	}

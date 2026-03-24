@@ -131,8 +131,10 @@ func (s *LocalStore) UserSkillDir(userID string) string {
 	return filepath.Join(s.homeDir, ".tofi", "users", userID, "skills")
 }
 
-// ActivateGlobalSkill creates a symlink from user's skills dir to the global copy.
-func (s *LocalStore) ActivateGlobalSkill(userID, skillName string) error {
+// ActivateGlobalSkill creates a symlink from user's skills dir to a global skill directory.
+// globalDirName is the directory name in the global store (e.g., "stock-analysis" or "stock-analysis-a1b2c3").
+// The symlink is named by skillName (without hash) so the user sees a clean name.
+func (s *LocalStore) ActivateGlobalSkill(userID, skillName, globalDirName string) error {
 	userDir := s.UserSkillDir(userID)
 	if err := os.MkdirAll(userDir, 0755); err != nil {
 		return fmt.Errorf("create user skills dir: %w", err)
@@ -140,13 +142,76 @@ func (s *LocalStore) ActivateGlobalSkill(userID, skillName string) error {
 
 	link := filepath.Join(userDir, skillName)
 
-	// If already exists (symlink or real dir), skip
-	if _, err := os.Lstat(link); err == nil {
-		return nil
+	// If already exists, remove old symlink to update to new version
+	if fi, err := os.Lstat(link); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			os.Remove(link) // remove old symlink to re-point
+		} else {
+			return nil // real dir (user-uploaded), don't overwrite
+		}
 	}
 
-	target := filepath.Join(s.baseDir, skillName)
+	target := filepath.Join(s.baseDir, globalDirName)
 	return os.Symlink(target, link)
+}
+
+// SaveGlobal saves a skill to the global store with an optional hash suffix.
+// Uses atomic write: writes to temp dir first, renames to final path.
+// If the target directory already exists (same hash), returns the existing path.
+// Returns the global directory name (e.g., "stock-analysis-a1b2c3").
+func (s *LocalStore) SaveGlobal(name, hash, content string) (string, error) {
+	if err := s.EnsureDir(); err != nil {
+		return "", err
+	}
+
+	dirName := name
+	if hash != "" {
+		dirName = name + "-" + hash
+	}
+	destDir := filepath.Join(s.baseDir, dirName)
+
+	// Already exists (same hash) — skip
+	if _, err := os.Stat(destDir); err == nil {
+		return dirName, nil
+	}
+
+	// Atomic write: temp dir → rename
+	tmpDir, err := os.MkdirTemp(s.baseDir, ".tmp-"+name+"-")
+	if err != nil {
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("write SKILL.md: %w", err)
+	}
+
+	if err := os.Rename(tmpDir, destDir); err != nil {
+		os.RemoveAll(tmpDir)
+		// Race: another process created it
+		if _, statErr := os.Stat(destDir); statErr == nil {
+			return dirName, nil
+		}
+		return "", fmt.Errorf("rename to final dir: %w", err)
+	}
+
+	return dirName, nil
+}
+
+// SaveUserLocal saves user-uploaded content directly to the user's skill directory.
+func (s *LocalStore) SaveUserLocal(userID, name, content string) error {
+	_, err := Parse([]byte(content))
+	if err != nil {
+		return fmt.Errorf("invalid SKILL.md content: %w", err)
+	}
+
+	userDir := s.UserSkillDir(userID)
+	dir := filepath.Join(userDir, name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0644)
 }
 
 // DeactivateSkill removes a user's skill (symlink or real dir) and runs GC on global.
