@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          GIT_COMMIT=$(git rev-parse --short HEAD)
+          go build -ldflags "-s -w \
+            -X tofi-core/cmd/tofi/cli.Version=$VERSION \
+            -X tofi-core/cmd/tofi/cli.BuildTime=$BUILD_TIME \
+            -X tofi-core/cmd/tofi/cli.GitCommit=$GIT_COMMIT" \
+            -o tofi-${{ matrix.goos }}-${{ matrix.goarch }} \
+            ./cmd/tofi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tofi-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: tofi-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            tofi-linux-arm64/tofi-linux-arm64
+            tofi-linux-amd64/tofi-linux-amd64
+            tofi-darwin-arm64/tofi-darwin-arm64
+          generate_release_notes: true

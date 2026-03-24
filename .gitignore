@@ -8,6 +8,7 @@ docs/
 
 # Workflows (user-defined, not tracked)
 workflows/
+!.github/workflows/
 
 # Environment variables (secrets)
 .env
