@@ -427,10 +427,10 @@ func (s *Server) Start() error {
 	mux.HandleFunc("DELETE /api/v1/apps/{id}/connectors/{cid}", s.AuthMiddleware(s.handleUnlinkAppConnector))
 
 	// App 管理路由
-	mux.HandleFunc("POST /api/v1/apps/plan", s.AuthMiddleware(s.handlePlanApp))
-	mux.HandleFunc("GET /api/v1/apps/plans/{planId}", s.AuthMiddleware(s.handleGetPlan))
-	mux.HandleFunc("POST /api/v1/apps/plans/{planId}/approve", s.AuthMiddleware(s.handleApprovePlan))
-	mux.HandleFunc("DELETE /api/v1/apps/plans/{planId}", s.AuthMiddleware(s.handleDeletePlan))
+	mux.HandleFunc("POST /api/v1/plans", s.AuthMiddleware(s.handlePlanApp))
+	mux.HandleFunc("GET /api/v1/plans/{planId}", s.AuthMiddleware(s.handleGetPlan))
+	mux.HandleFunc("POST /api/v1/plans/{planId}/approve", s.AuthMiddleware(s.handleApprovePlan))
+	mux.HandleFunc("DELETE /api/v1/plans/{planId}", s.AuthMiddleware(s.handleDeletePlan))
 	mux.HandleFunc("POST /api/v1/apps/parse-schedule", s.AuthMiddleware(s.handleParseSchedule))
 	mux.HandleFunc("POST /api/v1/apps/manager/chat", s.AuthMiddleware(s.handleManagerChat))
 	mux.HandleFunc("GET /api/v1/apps", s.AuthMiddleware(s.handleListApps))
