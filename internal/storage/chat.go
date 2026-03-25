@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"log"
+	"time"
 )
 
 // ChatSessionIndex is the SQLite index record for a chat session.
@@ -200,4 +201,14 @@ func (db *DB) GetUsageByModel(userID, startDate, endDate string) ([]ModelUsage, 
 		results = append(results, m)
 	}
 	return results, nil
+}
+
+// GetUserSpend returns total cost for a user since the given time.
+func (db *DB) GetUserSpend(userID string, since time.Time) (float64, error) {
+	var total float64
+	err := db.conn.QueryRow(
+		`SELECT COALESCE(SUM(total_cost), 0) FROM chat_sessions WHERE user_id = ? AND created_at >= ?`,
+		userID, since.Format("2006-01-02 15:04:05"),
+	).Scan(&total)
+	return total, err
 }

@@ -337,6 +337,15 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 		return nil, fmt.Errorf("model resolution failed: %w", err)
 	}
 
+	// 1.5 Check spend cap
+	if err := s.checkSpendCap(userID); err != nil {
+		emit("error", map[string]string{
+			"code":  ErrSpendCapExceeded,
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("spend cap: %w", err)
+	}
+
 	// 2. Build system prompt based on scope
 	systemPrompt := s.buildChatSystemPrompt(userID, scope)
 
