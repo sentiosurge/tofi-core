@@ -249,6 +249,10 @@ func InitDB(homeDir string) (*DB, error) {
 		log.Printf("⚠️  chat_sessions table creation (may already exist): %v", err)
 	}
 
+	if err := db.initAPIKeysTable(); err != nil {
+		log.Printf("⚠️  api_keys table creation: %v", err)
+	}
+
 	return db, nil
 }
 

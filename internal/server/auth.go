@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -96,8 +98,36 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		// Check if it's a raw access token (token auth mode)
 		if s.accessToken != "" && tokenStr == s.accessToken {
-			// Token mode: use "admin" as the default user
 			ctx := context.WithValue(r.Context(), UserContextKey, "admin")
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		// Check if it's an API key (tofi-sk-*)
+		if strings.HasPrefix(tokenStr, "tofi-sk-") {
+			h := sha256.Sum256([]byte(tokenStr))
+			keyHash := hex.EncodeToString(h[:])
+			rec, role, err := s.db.GetAPIKeyByHash(keyHash)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
+				return
+			}
+			if rec == nil {
+				writeJSONError(w, http.StatusUnauthorized, ErrUnauthorized, "Invalid API key", "")
+				return
+			}
+			// Check expiration
+			if rec.ExpiresAt != nil {
+				if exp, err := time.Parse(time.RFC3339, *rec.ExpiresAt); err == nil && time.Now().After(exp) {
+					writeJSONError(w, http.StatusUnauthorized, ErrUnauthorized, "API key has expired", "Create a new key: POST /api/v1/user/api-keys")
+					return
+				}
+			}
+			go s.db.TouchAPIKeyLastUsed(rec.ID)
+			ctx := context.WithValue(r.Context(), UserContextKey, rec.UserID)
+			if role != nil {
+				ctx = context.WithValue(ctx, RoleContextKey, *role)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}

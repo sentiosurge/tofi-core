@@ -409,6 +409,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/v1/user/settings/ai-keys", s.AuthMiddleware(s.handleUserListAIKeys))
 	mux.HandleFunc("DELETE /api/v1/user/settings/ai-key/{provider}", s.AuthMiddleware(s.handleUserDeleteAIKey))
 
+	// API Key management
+	mux.HandleFunc("POST /api/v1/user/api-keys", s.AuthMiddleware(s.handleCreateAPIKey))
+	mux.HandleFunc("GET /api/v1/user/api-keys", s.AuthMiddleware(s.handleListAPIKeys))
+	mux.HandleFunc("DELETE /api/v1/user/api-keys/{id}", s.AuthMiddleware(s.handleDeleteAPIKey))
+
 	// Admin: allow_user_keys toggle
 	mux.HandleFunc("PUT /api/v1/admin/settings/allow-user-keys", s.AdminMiddleware(s.handleSetAllowUserKeys))
 
