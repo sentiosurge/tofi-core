@@ -561,6 +561,111 @@ paths:
         '204':
           description: Key deleted
 
+  /api/v1/plans:
+    post:
+      summary: Create or Iterate App Plan
+      description: |
+        AI generates a complete app configuration from your natural language description.
+
+        **New plan** (no `plan_id`): Describe what you want → AI returns a full app spec.
+
+        **Iterate** (with `plan_id`): Add requirements to an existing plan → AI updates the spec.
+
+        Plans expire after 1 hour.
+      operationId: createPlan
+      tags: [Plans]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [description]
+              properties:
+                description:
+                  type: string
+                  description: Natural language description of the app you want
+                  example: "Every morning at 9am, summarize tech news from Hacker News"
+                plan_id:
+                  type: string
+                  description: Include to iterate on an existing plan
+                  example: "plan-a1b2c3d4"
+                model:
+                  type: string
+                  description: LLM model for plan generation (optional, auto-selected if empty)
+      responses:
+        '201':
+          description: Plan created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        '400':
+          description: Missing description or no AI key configured
+
+  /api/v1/plans/{planId}:
+    get:
+      summary: Get Plan
+      description: View a plan's app spec and conversation history.
+      operationId: getPlan
+      tags: [Plans]
+      parameters:
+        - $ref: '#/components/parameters/PlanId'
+      responses:
+        '200':
+          description: Plan details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        '404':
+          description: Plan not found or expired
+    delete:
+      summary: Delete Plan
+      description: Discard a plan. Plans also auto-expire after 1 hour.
+      operationId: deletePlan
+      tags: [Plans]
+      parameters:
+        - $ref: '#/components/parameters/PlanId'
+      responses:
+        '200':
+          description: Plan deleted
+        '404':
+          description: Plan not found
+
+  /api/v1/plans/{planId}/approve:
+    post:
+      summary: Approve Plan → Create App
+      description: |
+        Creates an app from the plan. The plan is deleted after approval.
+
+        You can override any field by including it in the request body.
+      operationId: approvePlan
+      tags: [Plans]
+      parameters:
+        - $ref: '#/components/parameters/PlanId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Optional field overrides (e.g. change model or name)
+              properties:
+                model:
+                  type: string
+                  example: "gpt-5.4"
+                name:
+                  type: string
+      responses:
+        '201':
+          description: App created from plan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/App'
+        '404':
+          description: Plan not found or expired
+
   /api/v1/apps:
     get:
       summary: List Apps
@@ -744,6 +849,13 @@ components:
       description: JWT token obtained via POST /api/v1/auth/login
 
   parameters:
+    PlanId:
+      name: planId
+      in: path
+      required: true
+      description: Plan ID (e.g. plan-a1b2c3d4)
+      schema:
+        type: string
     AppId:
       name: id
       in: path
@@ -757,6 +869,35 @@ components:
       description: Missing or invalid Authorization header
 
   schemas:
+    Plan:
+      type: object
+      properties:
+        plan_id:
+          type: string
+          example: "plan-a1b2c3d4"
+        description:
+          type: string
+          example: "Every morning at 9am, summarize tech news"
+        app:
+          type: object
+          description: Complete app spec (same format as POST /apps request body)
+        messages:
+          type: array
+          description: Conversation history for iterating the plan
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum: [user, assistant]
+              content:
+                type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
     App:
       type: object
       properties:
