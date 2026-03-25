@@ -230,6 +230,9 @@ func (s *Server) Start() error {
 	// 启动 plan 文件 TTL 清理
 	s.startPlanCleanup()
 
+	// 启动 app run log/session TTL 清理
+	s.startAppRunCleanup()
+
 	// 启动 App 调度器（DB-poll based）
 	s.appScheduler = NewAppScheduler(s)
 	if err := s.appScheduler.Start(); err != nil {

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"tofi-core/internal/apps"
 	"tofi-core/internal/chat"
 	"tofi-core/internal/connect"
+	"tofi-core/internal/mcp"
 	"tofi-core/internal/storage"
 
 	"github.com/google/uuid"
@@ -163,6 +166,12 @@ func (as *AppScheduler) dispatchRun(run *storage.AppRunRecord, promptOverride st
 		prompt = promptOverride
 	}
 
+	// Pre-load relevant memories for this app
+	memories, _ := as.server.db.RecallMemories(run.UserID, app.Name+" "+app.Description, 5)
+	if len(memories) > 0 {
+		prompt = prompt + "\n\n## Context from Previous Runs\n" + storage.FormatMemoriesForAgent(memories)
+	}
+
 	// Create a Chat Session for this app run
 	scope := chat.AgentScope("app-" + app.ID[:8])
 	sessionID := "s_" + uuid.New().String()[:12]
@@ -219,6 +228,23 @@ func (as *AppScheduler) dispatchRun(run *storage.AppRunRecord, promptOverride st
 		resultContent = result.Content
 	}
 	as.server.db.UpdateAppRunResult(run.ID, status, sessionID, resultContent)
+
+	// Auto-save run summary to memory for future runs
+	if status == "done" && resultContent != "" {
+		summary := fmt.Sprintf("[App: %s, Run: %s] Completed at %s.",
+			app.Name, run.ID[:8], time.Now().Format("2006-01-02 15:04"))
+		if len(resultContent) > 200 {
+			summary += " Output preview: " + resultContent[:200] + "..."
+		} else {
+			summary += " Output: " + resultContent
+		}
+		if _, err := as.server.db.SaveMemory(run.UserID, summary, "app-run,"+app.ID, "system", ""); err != nil {
+			log.Printf("[app-run:%s] Failed to save memory: %v", run.ID[:8], err)
+		}
+	}
+
+	// Write execution log file
+	as.writeRunLog(run, app, result, status, sessionID)
 }
 
 func (as *AppScheduler) checkRenewals() {
@@ -500,4 +526,128 @@ func parseHHMM(s string) (int, int) {
 	fmt.Sscanf(parts[0], "%d", &h)
 	fmt.Sscanf(parts[1], "%d", &m)
 	return h, m
+}
+
+// ── Run Logs ──
+
+// writeRunLog saves a structured log file for each app run.
+func (as *AppScheduler) writeRunLog(run *storage.AppRunRecord, app *storage.AppRecord, result *mcp.AgentResult, status, sessionID string) {
+	logsDir := filepath.Join(as.server.config.HomeDir, "users", run.UserID, "agents", app.ID, "logs")
+	os.MkdirAll(logsDir, 0755)
+
+	logPath := filepath.Join(logsDir, run.ID[:8]+".log")
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("=== App Run Log ===\n"))
+	sb.WriteString(fmt.Sprintf("Run ID:     %s\n", run.ID))
+	sb.WriteString(fmt.Sprintf("App:        %s (%s)\n", app.Name, app.ID))
+	sb.WriteString(fmt.Sprintf("Status:     %s\n", status))
+	sb.WriteString(fmt.Sprintf("Trigger:    %s\n", run.Trigger))
+	sb.WriteString(fmt.Sprintf("Session:    %s\n", sessionID))
+	sb.WriteString(fmt.Sprintf("Started:    %s\n", time.Now().Format(time.RFC3339)))
+
+	if result != nil {
+		sb.WriteString(fmt.Sprintf("Tokens In:  %d\n", result.TotalUsage.InputTokens))
+		sb.WriteString(fmt.Sprintf("Tokens Out: %d\n", result.TotalUsage.OutputTokens))
+		sb.WriteString(fmt.Sprintf("Cost:       $%.4f\n", result.TotalCost))
+		sb.WriteString(fmt.Sprintf("Model:      %s\n", result.Model))
+	}
+
+	sb.WriteString(fmt.Sprintf("\n=== Output ===\n"))
+	if result != nil && result.Content != "" {
+		sb.WriteString(result.Content)
+	} else {
+		sb.WriteString("(no output)")
+	}
+	sb.WriteString("\n")
+
+	if err := os.WriteFile(logPath, []byte(sb.String()), 0644); err != nil {
+		log.Printf("[app-run:%s] Failed to write log: %v", run.ID[:8], err)
+	}
+}
+
+// ── TTL Cleanup ──
+
+const (
+	appRunLogRetention     = 7 * 24 * time.Hour  // 7 days for logs
+	appRunSessionRetention = 30 * 24 * time.Hour // 30 days for session XMLs
+)
+
+// startAppRunCleanup launches a goroutine to clean expired logs and sessions.
+func (s *Server) startAppRunCleanup() {
+	go func() {
+		// Run once on startup after a short delay
+		time.Sleep(30 * time.Second)
+		s.cleanAppRunFiles()
+
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.cleanAppRunFiles()
+		}
+	}()
+}
+
+func (s *Server) cleanAppRunFiles() {
+	usersDir := filepath.Join(s.config.HomeDir, "users")
+	userEntries, err := os.ReadDir(usersDir)
+	if err != nil {
+		return
+	}
+
+	now := time.Now()
+	logsRemoved, xmlRemoved := 0, 0
+
+	for _, ue := range userEntries {
+		if !ue.IsDir() {
+			continue
+		}
+		agentsDir := filepath.Join(usersDir, ue.Name(), "agents")
+		agentEntries, err := os.ReadDir(agentsDir)
+		if err != nil {
+			continue
+		}
+
+		for _, ae := range agentEntries {
+			if !ae.IsDir() {
+				continue
+			}
+
+			// Clean logs
+			logsDir := filepath.Join(agentsDir, ae.Name(), "logs")
+			logsRemoved += cleanOldFiles(logsDir, ".log", now, appRunLogRetention)
+
+			// Clean session XMLs
+			chatDir := filepath.Join(agentsDir, ae.Name(), "chat")
+			xmlRemoved += cleanOldFiles(chatDir, ".xml", now, appRunSessionRetention)
+		}
+	}
+
+	if logsRemoved > 0 || xmlRemoved > 0 {
+		log.Printf("[cleanup] Removed %d expired logs, %d expired session XMLs", logsRemoved, xmlRemoved)
+	}
+}
+
+// cleanOldFiles removes files with the given suffix that are older than maxAge.
+func cleanOldFiles(dir, suffix string, now time.Time, maxAge time.Duration) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), suffix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if now.Sub(info.ModTime()) > maxAge {
+			os.Remove(filepath.Join(dir, e.Name()))
+			removed++
+		}
+	}
+	return removed
 }
