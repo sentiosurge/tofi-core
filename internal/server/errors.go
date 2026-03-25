@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 )
 
 // Standard error codes — English, stable, localization-ready.
@@ -22,6 +23,9 @@ const (
 	ErrSessionNotFound   = "SESSION_NOT_FOUND"
 	ErrAppNotFound       = "APP_NOT_FOUND"
 	ErrSkillNotFound     = "SKILL_NOT_FOUND"
+	ErrInvalidAIKey      = "INVALID_AI_KEY"
+	ErrProviderError     = "PROVIDER_ERROR"
+	ErrAgentError        = "AGENT_ERROR"
 )
 
 // apiKeyError is a structured error returned by resolveModelAndKey.
@@ -59,6 +63,41 @@ type apiError struct {
 //	    "hint": "PUT /api/v1/user/settings/ai-key ..."   // omitted when empty
 //	  }
 //	}
+// classifyAgentError inspects an agent/LLM error and returns a user-safe
+// (message, code, hint) triple. Raw upstream errors are logged, never exposed.
+func classifyAgentError(err error) (message, code, hint string) {
+	raw := err.Error()
+	log.Printf("Agent error (raw): %s", raw)
+
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.Contains(lower, "invalid_api_key") || strings.Contains(lower, "incorrect api key"):
+		return "Your AI API key is invalid or expired",
+			ErrInvalidAIKey,
+			"Check your key and update it: PUT /api/v1/user/settings/ai-key"
+	case strings.Contains(lower, "insufficient_quota") || strings.Contains(lower, "quota"):
+		return "Your AI provider account has insufficient quota",
+			ErrProviderError,
+			"Check your billing at your AI provider's dashboard"
+	case strings.Contains(lower, "rate_limit") || strings.Contains(lower, "429"):
+		return "AI provider rate limit reached, please try again shortly",
+			ErrProviderError,
+			""
+	case strings.Contains(lower, "model_not_found") || strings.Contains(lower, "does not exist"):
+		return "The requested model is not available",
+			ErrProviderError,
+			"Check available models: GET /api/v1/models"
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded"):
+		return "AI provider request timed out",
+			ErrProviderError,
+			"Try again or use a faster model"
+	default:
+		return "An error occurred while processing your request",
+			ErrAgentError,
+			""
+	}
+}
+
 func writeJSONError(w http.ResponseWriter, status int, code, message, hint string) {
 	if code == ErrInternal {
 		log.Printf("Internal error: %s", message)

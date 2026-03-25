@@ -8,18 +8,18 @@ import (
 // ChatSessionIndex is the SQLite index record for a chat session.
 // The actual message content lives in XML files; this is for fast listing/searching.
 type ChatSessionIndex struct {
-	ID                string
-	UserID            string
-	Scope             string // "" = user main chat, "agent:{name}" = agent chat
-	Title             string
-	Model             string
-	MessageCount      int
-	TotalInputTokens  int64
-	TotalOutputTokens int64
-	TotalCost         float64
-	FilePath          string // relative path to XML file within homeDir
-	CreatedAt         string
-	UpdatedAt         string
+	ID                string  `json:"id"`
+	UserID            string  `json:"user_id"`
+	Scope             string  `json:"scope"`              // "" = user main chat, "agent:{name}" = agent chat
+	Title             string  `json:"title"`
+	Model             string  `json:"model"`
+	MessageCount      int     `json:"message_count"`
+	TotalInputTokens  int64   `json:"total_input_tokens"`
+	TotalOutputTokens int64   `json:"total_output_tokens"`
+	TotalCost         float64 `json:"total_cost"`
+	FilePath          string  `json:"-"`                  // internal, not exposed in API
+	CreatedAt         string  `json:"created_at"`
+	UpdatedAt         string  `json:"updated_at"`
 }
 
 func (db *DB) initChatSessionsTable() error {

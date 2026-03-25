@@ -50,15 +50,34 @@ func (s *Server) handleCreateChatSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Resolve the effective model for the response
+	effectiveModel := session.Model
+	var warning string
+	resolvedModel, _, _, resolveErr := s.resolveModelAndKey(userID, session.Model)
+	if resolveErr != nil {
+		// No key configured — session created but warn the user
+		if keyErr, ok := resolveErr.(*apiKeyError); ok {
+			warning = keyErr.Message
+			effectiveModel = ""
+		}
+	} else {
+		effectiveModel = resolvedModel
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"id":      session.ID,
 		"scope":   req.Scope,
-		"model":   session.Model,
+		"model":   effectiveModel,
 		"skills":  req.Skills,
 		"created": session.Created,
-	})
+	}
+	if warning != "" {
+		resp["warning"] = warning
+		resp["hint"] = "PUT /api/v1/user/settings/ai-key with {\"provider\": \"openai\", \"api_key\": \"sk-...\"}"
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // --- GET /api/v1/chat/sessions ---
@@ -264,7 +283,13 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// apiKeyError already emitted a structured error event in executeChatSession
 		if _, ok := err.(*apiKeyError); !ok {
-			sendSSEEvent(w, flusher, "error", map[string]string{"error": err.Error()})
+			// Wrap upstream errors — never expose raw provider responses to the user
+			errMsg, errCode, errHint := classifyAgentError(err)
+			sendSSEEvent(w, flusher, "error", map[string]string{
+				"code":  errCode,
+				"error": errMsg,
+				"hint":  errHint,
+			})
 		}
 		return
 	}

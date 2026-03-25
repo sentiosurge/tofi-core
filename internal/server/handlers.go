@@ -251,12 +251,19 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 		available = []providerStatus{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"username":  u.Username,
 		"role":      u.Role,
 		"providers": available,
-	})
+	}
+	// When no providers are configured, tell the user what's available
+	if len(available) == 0 {
+		resp["available_providers"] = []string{"openai", "anthropic", "gemini", "deepseek", "groq", "openrouter"}
+		resp["hint"] = "No AI providers configured. Set a key: PUT /api/v1/user/settings/ai-key"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 // --- Workflow Handlers ---

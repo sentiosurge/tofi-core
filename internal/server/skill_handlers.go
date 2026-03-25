@@ -1109,7 +1109,8 @@ func (s *Server) handleUserDeleteAIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "provider": provider})
 }
 
 // handleSetAllowUserKeys PUT /api/v1/admin/settings/allow-user-keys — Admin 设置开关
@@ -1145,17 +1146,14 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		OutputCostPer1M float64 `json:"output_cost_per_1m"`
 	}
 
-	// 构建 enabled 过滤集合
-	var enabledSet map[string]bool
+	// 构建 enabled 过滤：只返回用户有 key 的 provider 的模型
+	var enabledProviders map[string]bool
 	if r.URL.Query().Get("enabled") == "true" {
 		userID := r.Context().Value(UserContextKey).(string)
-		val, _ := s.db.GetSetting("enabled_models", userID)
-		if val != "" {
-			var enabledList []string
-			json.Unmarshal([]byte(val), &enabledList)
-			enabledSet = make(map[string]bool, len(enabledList))
-			for _, m := range enabledList {
-				enabledSet[m] = true
+		enabledProviders = make(map[string]bool)
+		for _, pName := range []string{"openai", "anthropic", "gemini", "deepseek", "groq", "openrouter"} {
+			if key := s.findAPIKey(pName, userID); key != "" {
+				enabledProviders[pName] = true
 			}
 		}
 	}
@@ -1163,7 +1161,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	all := provider.ListAllModels()
 	models := make([]modelEntry, 0, len(all))
 	for name, info := range all {
-		if enabledSet != nil && !enabledSet[name] {
+		if enabledProviders != nil && !enabledProviders[info.Provider] {
 			continue
 		}
 		models = append(models, modelEntry{
@@ -1175,20 +1173,24 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Sort by provider order: openai → anthropic → gemini → deepseek
+	// Sort by provider order, then by cost descending (flagship models first)
 	providerOrder := map[string]int{
-		"openai": 0, "anthropic": 1, "gemini": 2, "deepseek": 3,
+		"openai": 0, "anthropic": 1, "gemini": 2, "deepseek": 3, "groq": 4, "openrouter": 5,
 	}
 	sort.SliceStable(models, func(i, j int) bool {
-		oi := providerOrder[models[i].Provider]
-		oj := providerOrder[models[j].Provider]
-		if _, ok := providerOrder[models[i].Provider]; !ok {
+		oi, oki := providerOrder[models[i].Provider]
+		oj, okj := providerOrder[models[j].Provider]
+		if !oki {
 			oi = 99
 		}
-		if _, ok := providerOrder[models[j].Provider]; !ok {
+		if !okj {
 			oj = 99
 		}
-		return oi < oj
+		if oi != oj {
+			return oi < oj
+		}
+		// Within same provider, sort by output cost descending (flagship first)
+		return models[i].OutputCostPer1M > models[j].OutputCostPer1M
 	})
 
 	w.Header().Set("Content-Type", "application/json")
