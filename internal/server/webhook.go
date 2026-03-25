@@ -25,21 +25,21 @@ func (s *Server) handleWebhookTrigger(w http.ResponseWriter, r *http.Request) {
 	// Extract token from URL: /api/v1/hooks/{token}
 	token := r.PathValue("token")
 	if token == "" {
-		http.Error(w, "Missing webhook token", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Missing webhook token", "")
 		return
 	}
 
 	// Look up webhook by token
 	webhook, err := s.db.GetWebhookByToken(token)
 	if err != nil {
-		http.Error(w, "Invalid or inactive webhook", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "Invalid or inactive webhook", "")
 		return
 	}
 
 	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Failed to read request body", "")
 		return
 	}
 	defer r.Body.Close()
@@ -51,7 +51,7 @@ func (s *Server) handleWebhookTrigger(w http.ResponseWriter, r *http.Request) {
 			signature = r.Header.Get("X-Hub-Signature-256") // GitHub compat
 		}
 		if !verifyHMAC(body, signature, webhook.Secret) {
-			http.Error(w, "Invalid signature", http.StatusUnauthorized)
+			writeJSONError(w, http.StatusUnauthorized, ErrUnauthorized, "Invalid signature", "")
 			return
 		}
 	}
@@ -86,7 +86,7 @@ func (s *Server) handleWebhookTrigger(w http.ResponseWriter, r *http.Request) {
 		wf, err = parser.ResolveWorkflow(webhook.WorkflowID, "workflows")
 		if err != nil {
 			log.Printf("❌ Webhook %s: failed to resolve workflow '%s': %v", webhook.Token, webhook.WorkflowID, err)
-			http.Error(w, "Failed to load workflow", http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to load workflow", "")
 			return
 		}
 	}
@@ -98,7 +98,7 @@ func (s *Server) handleWebhookTrigger(w http.ResponseWriter, r *http.Request) {
 	// Validate
 	if err := engine.ValidateAll(wf); err != nil {
 		log.Printf("❌ Webhook %s: workflow validation failed: %v", webhook.Token, err)
-		http.Error(w, fmt.Sprintf("Workflow validation failed: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Workflow validation failed: %v", err), "")
 		return
 	}
 
@@ -125,7 +125,7 @@ func (s *Server) handleWebhookTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.workerPool.Submit(job); err != nil {
-		http.Error(w, "Server busy, try again later", http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, ErrInternal, "Server busy, try again later", "")
 		return
 	}
 
@@ -151,11 +151,11 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		Description string `json:"description,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request body", "")
 		return
 	}
 	if req.WorkflowID == "" {
-		http.Error(w, "workflow_id is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "workflow_id is required", "")
 		return
 	}
 
@@ -163,7 +163,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	token := generateWebhookToken()
 
 	if err := s.db.CreateWebhook(id, user, req.WorkflowID, token, req.Secret, req.Description); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create webhook: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to create webhook: %v", err), "")
 		return
 	}
 
@@ -186,7 +186,7 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 
 	webhooks, err := s.db.ListWebhooks(user, workflowID)
 	if err != nil {
-		http.Error(w, "Failed to list webhooks", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to list webhooks", "")
 		return
 	}
 
@@ -199,7 +199,7 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	if err := s.db.DeleteWebhook(id, user); err != nil {
-		http.Error(w, "Failed to delete webhook", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to delete webhook", "")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -213,12 +213,12 @@ func (s *Server) handleToggleWebhook(w http.ResponseWriter, r *http.Request) {
 		Active bool `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request body", "")
 		return
 	}
 
 	if err := s.db.ToggleWebhook(id, user, req.Active); err != nil {
-		http.Error(w, "Failed to toggle webhook", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to toggle webhook", "")
 		return
 	}
 

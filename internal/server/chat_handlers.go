@@ -46,7 +46,7 @@ func (s *Server) handleCreateChatSession(w http.ResponseWriter, r *http.Request)
 	session := chat.NewSession(sessionID, req.Model, skillsStr)
 
 	if err := s.chatStore.Save(userID, req.Scope, session); err != nil {
-		http.Error(w, "failed to create session: "+err.Error(), 500)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to create session: "+err.Error(), "")
 		return
 	}
 
@@ -74,7 +74,7 @@ func (s *Server) handleListChatSessions(w http.ResponseWriter, r *http.Request) 
 
 	sessions, err := s.chatStore.List(userID, scope, 50)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -96,17 +96,17 @@ func (s *Server) handleGetChatSession(w http.ResponseWriter, r *http.Request) {
 	// Ownership check via index
 	idx, err := s.chatStore.GetIndex(sessionID)
 	if err != nil {
-		http.Error(w, "session not found", 404)
+		writeJSONError(w, http.StatusNotFound, ErrSessionNotFound, "session not found", "")
 		return
 	}
 	if idx.UserID != userID {
-		http.Error(w, "forbidden", 403)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "forbidden", "")
 		return
 	}
 
 	session, err := s.chatStore.LoadByID(sessionID)
 	if err != nil {
-		http.Error(w, "session not found: "+err.Error(), 404)
+		writeJSONError(w, http.StatusNotFound, ErrSessionNotFound, "session not found: "+err.Error(), "")
 		return
 	}
 
@@ -122,16 +122,16 @@ func (s *Server) handleDeleteChatSession(w http.ResponseWriter, r *http.Request)
 
 	idx, err := s.chatStore.GetIndex(sessionID)
 	if err != nil {
-		http.Error(w, "session not found", 404)
+		writeJSONError(w, http.StatusNotFound, ErrSessionNotFound, "session not found", "")
 		return
 	}
 	if idx.UserID != userID {
-		http.Error(w, "forbidden", 403)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "forbidden", "")
 		return
 	}
 
 	if err := s.chatStore.Delete(userID, idx.Scope, sessionID); err != nil {
-		http.Error(w, err.Error(), 500)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -145,17 +145,17 @@ func (s *Server) handleUpdateChatSession(w http.ResponseWriter, r *http.Request)
 
 	idx, err := s.chatStore.GetIndex(sessionID)
 	if err != nil {
-		http.Error(w, "session not found", 404)
+		writeJSONError(w, http.StatusNotFound, ErrSessionNotFound, "session not found", "")
 		return
 	}
 	if idx.UserID != userID {
-		http.Error(w, "forbidden", 403)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "forbidden", "")
 		return
 	}
 
 	session, err := s.chatStore.LoadByID(sessionID)
 	if err != nil {
-		http.Error(w, "failed to load session: "+err.Error(), 500)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to load session: "+err.Error(), "")
 		return
 	}
 
@@ -165,7 +165,7 @@ func (s *Server) handleUpdateChatSession(w http.ResponseWriter, r *http.Request)
 		Title  *string  `json:"title"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request", 400)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request", "")
 		return
 	}
 
@@ -181,7 +181,7 @@ func (s *Server) handleUpdateChatSession(w http.ResponseWriter, r *http.Request)
 	session.Updated = time.Now().UTC().Format(time.RFC3339)
 
 	if err := s.chatStore.Save(userID, idx.Scope, session); err != nil {
-		http.Error(w, err.Error(), 500)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -209,25 +209,25 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 		Message string `json:"message"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Message == "" {
-		http.Error(w, "message is required", 400)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "message is required", "")
 		return
 	}
 
 	// 1. Load session index for ownership check + scope
 	idx, err := s.chatStore.GetIndex(sessionID)
 	if err != nil {
-		http.Error(w, "session not found", 404)
+		writeJSONError(w, http.StatusNotFound, ErrSessionNotFound, "session not found", "")
 		return
 	}
 	if idx.UserID != userID {
-		http.Error(w, "forbidden", 403)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "forbidden", "")
 		return
 	}
 
 	// 2. Load full session from XML
 	session, err := s.chatStore.LoadByID(sessionID)
 	if err != nil {
-		http.Error(w, "failed to load session: "+err.Error(), 500)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to load session: "+err.Error(), "")
 		return
 	}
 
@@ -241,7 +241,7 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 	rc.SetWriteDeadline(time.Time{})
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming not supported", 500)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "streaming not supported", "")
 		return
 	}
 
@@ -262,7 +262,10 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.executeChatSession(userID, idx.Scope, session, req.Message, onEvent, &bridge.ExecuteOptions{Ctx: reqCtx})
 	if err != nil {
-		sendSSEEvent(w, flusher, "error", map[string]string{"error": err.Error()})
+		// apiKeyError already emitted a structured error event in executeChatSession
+		if _, ok := err.(*apiKeyError); !ok {
+			sendSSEEvent(w, flusher, "error", map[string]string{"error": err.Error()})
+		}
 		return
 	}
 
@@ -297,6 +300,15 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	// 1. Resolve model and API key
 	resolvedModel, apiKey, _, err := s.resolveModelAndKey(userID, session.Model)
 	if err != nil {
+		// Return structured error for AI key issues so callers can produce actionable messages
+		if keyErr, ok := err.(*apiKeyError); ok {
+			emit("error", map[string]string{
+				"code":    keyErr.Code,
+				"error":   keyErr.Message,
+				"hint":    keyErr.Hint,
+			})
+			return nil, keyErr
+		}
 		return nil, fmt.Errorf("model resolution failed: %w", err)
 	}
 
@@ -699,7 +711,7 @@ func (s *Server) handleChatSessionContinue(w http.ResponseWriter, r *http.Reques
 	sessionID := r.PathValue("id")
 
 	if !s.signalHold(sessionID, "continue") {
-		http.Error(w, "no hold channel found for session", http.StatusConflict)
+		writeJSONError(w, http.StatusConflict, ErrConflict, "no hold channel found for session", "")
 		return
 	}
 
@@ -713,7 +725,7 @@ func (s *Server) handleChatSessionAbort(w http.ResponseWriter, r *http.Request) 
 	sessionID := r.PathValue("id")
 
 	if !s.signalHold(sessionID, "abort") {
-		http.Error(w, "no hold channel found for session", http.StatusConflict)
+		writeJSONError(w, http.StatusConflict, ErrConflict, "no hold channel found for session", "")
 		return
 	}
 

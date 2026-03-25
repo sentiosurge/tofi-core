@@ -126,7 +126,7 @@ func (s *Server) handleListAllArtifacts(w http.ResponseWriter, r *http.Request) 
 
 	artifacts, err := s.db.ListAllArtifacts(user, limit, offset)
 	if err != nil {
-		http.Error(w, "Failed to list artifacts", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to list artifacts", "")
 		return
 	}
 	if artifacts == nil {
@@ -140,7 +140,7 @@ func (s *Server) handleListAllArtifacts(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	count, err := s.db.CountUsers()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -150,25 +150,25 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSetupAdmin(w http.ResponseWriter, r *http.Request) {
 	count, _ := s.db.CountUsers()
 	if count > 0 {
-		http.Error(w, "System already initialized", http.StatusForbidden)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "System already initialized", "")
 		return
 	}
 
 	var req SetupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request", "")
 		return
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to hash password", "")
 		return
 	}
 
 	id := uuid.New().String()
 	if err := s.db.SaveUser(id, req.Username, string(hash), "admin"); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -179,24 +179,24 @@ func (s *Server) handleSetupAdmin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request body", "")
 		return
 	}
 
 	user, err := s.db.GetUser(req.Username)
 	if err != nil {
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		writeJSONError(w, http.StatusUnauthorized, ErrInvalidCredentials, "Invalid username or password", "")
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		writeJSONError(w, http.StatusUnauthorized, ErrInvalidCredentials, "Invalid username or password", "")
 		return
 	}
 
 	token, err := GenerateToken(user.Username, user.Role)
 	if err != nil {
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -212,13 +212,38 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(UserContextKey).(string)
 	u, err := s.db.GetUser(user)
 	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "User not found", "")
 		return
 	}
+
+	// Build AI key status per provider
+	providers := []string{"openai", "anthropic", "gemini", "deepseek", "groq", "openrouter"}
+	type keyStatus struct {
+		Provider string `json:"provider"`
+		HasKey   bool   `json:"has_key"`
+		Source   string `json:"source"` // "user", "system", or ""
+	}
+	var aiKeys []keyStatus
+	for _, p := range providers {
+		ks := keyStatus{Provider: p}
+		// Check user-level key first
+		if key, err := s.db.ResolveAIKey(p, user); err == nil && key != "" {
+			ks.HasKey = true
+			// Determine source: check if user has their own key
+			if userKey, _ := s.db.GetSecret(user, "ai_key_"+p); userKey != nil {
+				ks.Source = "user"
+			} else {
+				ks.Source = "system"
+			}
+		}
+		aiKeys = append(aiKeys, ks)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]any{
 		"username": u.Username,
 		"role":     u.Role,
+		"ai_keys":  aiKeys,
 	})
 }
 
@@ -236,7 +261,7 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 
 	files, err := os.ReadDir(dir)
 	if err != nil {
-		http.Error(w, "Failed to read workflows", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to read workflows", "")
 		return
 	}
 
@@ -296,7 +321,7 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	yamlPath := filepath.Join(dir, id+".yaml")
 	content, err := os.ReadFile(yamlPath)
 	if err != nil {
-		http.Error(w, "Workflow not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "Workflow not found", "")
 		return
 	}
 
@@ -329,7 +354,7 @@ func (s *Server) handleSaveWorkflow(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(UserContextKey).(string)
 	var req SaveWorkflowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request", "")
 		return
 	}
 
@@ -339,13 +364,13 @@ func (s *Server) handleSaveWorkflow(w http.ResponseWriter, r *http.Request) {
 		// Validate and sanitize custom ID
 		id = generateWorkflowID(req.ID) // Sanitize the custom ID
 		if id == "" {
-			http.Error(w, "Workflow ID cannot be empty", http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Workflow ID cannot be empty", "")
 			return
 		}
 	} else {
 		id = generateWorkflowID(req.Name)
 		if id == "" {
-			http.Error(w, "Workflow name cannot be empty", http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Workflow name cannot be empty", "")
 			return
 		}
 	}
@@ -383,7 +408,7 @@ func (s *Server) handleSaveWorkflow(w http.ResponseWriter, r *http.Request) {
 				isUpdate = true
 			} else {
 				// Different workflow with same generated ID - conflict
-				http.Error(w, fmt.Sprintf("Workflow with ID '%s' already exists. Please choose a different name.", id), http.StatusConflict)
+				writeJSONError(w, http.StatusConflict, ErrConflict, fmt.Sprintf("Workflow with ID '%s' already exists. Please choose a different name.", id), "")
 				return
 			}
 		} else {
@@ -400,18 +425,18 @@ func (s *Server) handleSaveWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	wf, err := parser.ParseWorkflowFromBytes([]byte(req.Content), format)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Invalid workflow content (%s): %v", format, err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Invalid workflow content (%s): %v", format, err), "")
 		return
 	}
 
 	if err := engine.ValidateAll(wf); err != nil {
-		http.Error(w, fmt.Sprintf("Workflow validation failed: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Workflow validation failed: %v", err), "")
 		return
 	}
 
 	// Save YAML file
 	if err := os.WriteFile(yamlPath, []byte(req.Content), 0644); err != nil {
-		http.Error(w, "Failed to save workflow file", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to save workflow file", "")
 		return
 	}
 
@@ -463,22 +488,18 @@ func (s *Server) handleValidateWorkflow(w http.ResponseWriter, r *http.Request) 
 		Content string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request", "")
 		return
 	}
 
 	wf, err := parser.ParseWorkflowFromBytes([]byte(req.Content), "yaml")
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Invalid YAML: %v", err)})
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Invalid YAML: %v", err), "")
 		return
 	}
 
 	if err := engine.ValidateAll(wf); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Validation failed: %v", err)})
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Validation failed: %v", err), "")
 		return
 	}
 
@@ -491,7 +512,7 @@ func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	path := filepath.Join(s.config.HomeDir, user, "workflows", name+".yaml")
 	if err := os.Remove(path); err != nil {
-		http.Error(w, "Failed to delete workflow", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to delete workflow", "")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -501,7 +522,7 @@ func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, http.StatusMethodNotAllowed, ErrBadRequest, "Method not allowed", "")
 		return
 	}
 
@@ -514,7 +535,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Failed to read body", "")
 		return
 	}
 	defer r.Body.Close()
@@ -524,7 +545,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	var runReq RunRequest
 	if err := json.Unmarshal(body, &runReq); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request body", "")
 		return
 	}
 
@@ -556,7 +577,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to resolve workflow ID '%s': %v", runReq.WorkflowID, err), http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Failed to resolve workflow ID '%s': %v", runReq.WorkflowID, err), "")
 			return
 		}
 		// 确保 ID 一致
@@ -572,7 +593,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 		wf, err = parser.ParseWorkflowFromBytes([]byte(runReq.Content), format)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to parse workflow content: %v", err), http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Failed to parse workflow content: %v", err), "")
 			return
 		}
 		// 临时任务如果没有 ID，生成一个临时的
@@ -581,19 +602,19 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 
 	} else if len(runReq.Inputs) == 0 { // Allow inputs-only run if we supported that context, but here we need a workflow
-		http.Error(w, "Request must provide workflow_id or content", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Request must provide workflow_id or content", "")
 		return
 	}
 
 	if wf == nil {
-		http.Error(w, "Failed to load workflow definition", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to load workflow definition", "")
 		return
 	}
 
 	fmt.Printf("[DEBUG] Loaded Workflow '%s' (ID: %s) with %d nodes\n", wf.Name, wf.ID, len(wf.Nodes))
 
 	if err := engine.ValidateAll(wf); err != nil {
-		http.Error(w, fmt.Sprintf("Workflow validation failed: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Workflow validation failed: %v", err), "")
 		return
 	}
 
@@ -620,7 +641,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.workerPool.Submit(job); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to submit job to worker pool: %v", err), http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, ErrInternal, fmt.Sprintf("Failed to submit job to worker pool: %v", err), "")
 		return
 	}
 
@@ -652,7 +673,7 @@ func (s *Server) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -662,7 +683,7 @@ func (s *Server) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetExecution(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "Execution ID is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Execution ID is required", "")
 		return
 	}
 
@@ -687,18 +708,18 @@ func (s *Server) handleGetExecution(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(record.ResultJSON))
 		return
 	}
-	http.Error(w, "Execution not found", http.StatusNotFound)
+	writeJSONError(w, http.StatusNotFound, ErrNotFound, "Execution not found", "")
 }
 
 func (s *Server) handleGetExecutionLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "Execution ID is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Execution ID is required", "")
 		return
 	}
 	logs, err := s.db.GetLogs(id)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to fetch logs: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to fetch logs: %v", err), "")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -728,7 +749,7 @@ func (s *Server) handleApproveExecution(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	http.Error(w, "Execution not found or not running", http.StatusNotFound)
+	writeJSONError(w, http.StatusNotFound, ErrNotFound, "Execution not found or not running", "")
 }
 
 func (s *Server) handleCancelExecution(w http.ResponseWriter, r *http.Request) {
@@ -742,7 +763,7 @@ func (s *Server) handleCancelExecution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Error(w, "Execution not found or not running", http.StatusNotFound)
+	writeJSONError(w, http.StatusNotFound, ErrNotFound, "Execution not found or not running", "")
 }
 
 // --- Artifact Handlers ---
@@ -752,7 +773,7 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 
 	artifacts, err := s.db.ListExecutionArtifacts(id)
 	if err != nil {
-		http.Error(w, "Failed to list artifacts", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to list artifacts", "")
 		return
 	}
 	if artifacts == nil {
@@ -770,7 +791,7 @@ func (s *Server) handleDownloadArtifact(w http.ResponseWriter, r *http.Request) 
 
 	record, err := s.db.GetExecution(id)
 	if err != nil {
-		http.Error(w, "Execution not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "Execution not found", "")
 		return
 	}
 
@@ -781,7 +802,7 @@ func (s *Server) handleDownloadArtifact(w http.ResponseWriter, r *http.Request) 
 		// Fallback: legacy path without execution_id
 		filePath = filepath.Join(basePath, filepath.Base(filename))
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			http.Error(w, "Artifact not found", http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, ErrNotFound, "Artifact not found", "")
 			return
 		}
 	}
@@ -813,7 +834,7 @@ func (s *Server) handlePreviewFileGlobal(w http.ResponseWriter, r *http.Request)
 
 	files, err := s.db.ListUserFiles(user)
 	if err != nil {
-		http.Error(w, "Failed to list files", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to list files", "")
 		return
 	}
 
@@ -826,13 +847,13 @@ func (s *Server) handlePreviewFileGlobal(w http.ResponseWriter, r *http.Request)
 	}
 
 	if target == nil {
-		http.Error(w, "File not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "File not found", "")
 		return
 	}
 
 	filePath := filepath.Join(s.config.HomeDir, user, "storage", "files", target.UUID)
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		http.Error(w, "File not found on disk", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "File not found on disk", "")
 		return
 	}
 
@@ -851,48 +872,48 @@ func (s *Server) handleUploadFileGlobal(w http.ResponseWriter, r *http.Request) 
 	fileID := r.FormValue("file_id")
 
 	if fileID == "" {
-		http.Error(w, "file_id is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "file_id is required", "")
 		return
 	}
 
 	// Check 1GB Quota
 	currentSize, err := s.db.GetUserTotalFileSize(user)
 	if err != nil {
-		http.Error(w, "Failed to check quota", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to check quota", "")
 		return
 	}
 	if currentSize >= 1*1024*1024*1024 { // 1GB
-		http.Error(w, "Storage quota exceeded (1GB limit)", http.StatusForbidden)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "Storage quota exceeded (1GB limit)", "")
 		return
 	}
 
 	// Check file_id uniqueness
 	exists, err := s.db.CheckFileIDExists(user, fileID)
 	if err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Database error", "")
 		return
 	}
 	if exists {
-		http.Error(w, fmt.Sprintf("File ID '%s' already exists", fileID), http.StatusConflict)
+		writeJSONError(w, http.StatusConflict, ErrConflict, fmt.Sprintf("File ID '%s' already exists", fileID), "")
 		return
 	}
 
 	file, handler, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "Failed to get file", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Failed to get file", "")
 		return
 	}
 	defer file.Close()
 
 	if handler.Size > 100*1024*1024 {
-		http.Error(w, "File too large (max 100MB)", http.StatusRequestEntityTooLarge)
+		writeJSONError(w, http.StatusRequestEntityTooLarge, ErrBadRequest, "File too large (max 100MB)", "")
 		return
 	}
 
 	// Detect MIME type
 	buff := make([]byte, 512)
 	if _, err := file.Read(buff); err != nil {
-		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to read file", "")
 		return
 	}
 	mimeType := http.DetectContentType(buff)
@@ -908,13 +929,13 @@ func (s *Server) handleUploadFileGlobal(w http.ResponseWriter, r *http.Request) 
 	destPath := filepath.Join(storageDir, uuidStr)
 	dest, err := os.Create(destPath)
 	if err != nil {
-		http.Error(w, "Failed to store file", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to store file", "")
 		return
 	}
 	defer dest.Close()
 
 	if _, err := io.Copy(dest, file); err != nil {
-		http.Error(w, "Failed to write file", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to write file", "")
 		return
 	}
 
@@ -931,7 +952,7 @@ func (s *Server) handleUploadFileGlobal(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		// Clean up file if DB fails
 		os.Remove(destPath)
-		http.Error(w, "Failed to save metadata", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to save metadata", "")
 		return
 	}
 
@@ -947,7 +968,7 @@ func (s *Server) handleListFilesGlobal(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(UserContextKey).(string)
 	files, err := s.db.ListUserFiles(user)
 	if err != nil {
-		http.Error(w, "Failed to list files", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to list files", "")
 		return
 	}
 	if files == nil {
@@ -974,13 +995,13 @@ func (s *Server) handleDeleteFileGlobal(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if target == nil {
-		http.Error(w, "File not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "File not found", "")
 		return
 	}
 
 	// Delete from DB
 	if err := s.db.DeleteUserFile(user, id); err != nil {
-		http.Error(w, "Failed to delete metadata", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to delete metadata", "")
 		return
 	}
 
@@ -997,18 +1018,18 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value(UserContextKey).(string)
 	var req CreateSecretRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request", "")
 		return
 	}
 
 	val, err := crypto.Encrypt(req.Value)
 	if err != nil {
-		http.Error(w, "Encryption failed", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Encryption failed", "")
 		return
 	}
 
 	if err := s.db.SaveSecret(uuid.New().String(), user, req.Name, val); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -1019,7 +1040,7 @@ func (s *Server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	record, err := s.db.GetSecret(user, name)
 	if err != nil {
-		http.Error(w, "Secret not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "Secret not found", "")
 		return
 	}
 	val, _ := crypto.Decrypt(record.EncryptedValue)
@@ -1063,16 +1084,16 @@ func (s *Server) handleCreateWorkflowFileLink(w http.ResponseWriter, r *http.Req
 
 	var req CreateWorkflowFileLinkRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request body", "")
 		return
 	}
 
 	if req.NodeID == "" {
-		http.Error(w, "node_id is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "node_id is required", "")
 		return
 	}
 	if req.SourcePath == "" {
-		http.Error(w, "source_path is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "source_path is required", "")
 		return
 	}
 
@@ -1080,21 +1101,21 @@ func (s *Server) handleCreateWorkflowFileLink(w http.ResponseWriter, r *http.Req
 	info, err := os.Stat(req.SourcePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			http.Error(w, fmt.Sprintf("Source file does not exist: %s", req.SourcePath), http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Source file does not exist: %s", req.SourcePath), "")
 			return
 		}
-		http.Error(w, fmt.Sprintf("Failed to access source file: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to access source file: %v", err), "")
 		return
 	}
 	if info.IsDir() {
-		http.Error(w, "Source path is a directory, not a file", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Source path is a directory, not a file", "")
 		return
 	}
 
 	// Create files directory
 	filesDir := filepath.Join(s.config.HomeDir, user, "workflows", workflowID, "files")
 	if err := os.MkdirAll(filesDir, 0755); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create files directory: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to create files directory: %v", err), "")
 		return
 	}
 
@@ -1110,7 +1131,7 @@ func (s *Server) handleCreateWorkflowFileLink(w http.ResponseWriter, r *http.Req
 
 	// Create symlink
 	if err := os.Symlink(req.SourcePath, symlinkPath); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create symlink: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to create symlink: %v", err), "")
 		return
 	}
 
@@ -1143,19 +1164,19 @@ func (s *Server) handleUploadWorkflowFile(w http.ResponseWriter, r *http.Request
 	nodeID := r.FormValue("node_id")
 
 	if nodeID == "" {
-		http.Error(w, "node_id is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "node_id is required", "")
 		return
 	}
 
 	file, handler, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "Failed to get file", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Failed to get file", "")
 		return
 	}
 	defer file.Close()
 
 	if handler.Size > 100*1024*1024 {
-		http.Error(w, "File too large (max 100MB)", http.StatusRequestEntityTooLarge)
+		writeJSONError(w, http.StatusRequestEntityTooLarge, ErrBadRequest, "File too large (max 100MB)", "")
 		return
 	}
 
@@ -1169,7 +1190,7 @@ func (s *Server) handleUploadWorkflowFile(w http.ResponseWriter, r *http.Request
 	// Create storage directory: $HOME/{user}/storage/files/
 	storageDir := filepath.Join(s.config.HomeDir, user, "storage", "files")
 	if err := os.MkdirAll(storageDir, 0755); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create storage directory: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to create storage directory: %v", err), "")
 		return
 	}
 
@@ -1178,7 +1199,7 @@ func (s *Server) handleUploadWorkflowFile(w http.ResponseWriter, r *http.Request
 	// Create destination file
 	dest, err := os.Create(destPath)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create file: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to create file: %v", err), "")
 		return
 	}
 	defer dest.Close()
@@ -1186,7 +1207,7 @@ func (s *Server) handleUploadWorkflowFile(w http.ResponseWriter, r *http.Request
 	// Copy content
 	if _, err := io.Copy(dest, file); err != nil {
 		os.Remove(destPath) // Cleanup on failure
-		http.Error(w, fmt.Sprintf("Failed to write file: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to write file: %v", err), "")
 		return
 	}
 
@@ -1200,7 +1221,7 @@ func (s *Server) handleUploadWorkflowFile(w http.ResponseWriter, r *http.Request
 	// Note: storedFilename is used as UUID since it's unique (nodeId_timestamp_filename)
 	if err := s.db.SaveWorkflowFile(storedFilename, fileID, user, handler.Filename, mimeType, handler.Size, "", workflowID, nodeID); err != nil {
 		os.Remove(destPath) // Cleanup on failure
-		http.Error(w, fmt.Sprintf("Failed to save file record: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to save file record: %v", err), "")
 		return
 	}
 
@@ -1267,10 +1288,10 @@ func (s *Server) handleDeleteWorkflowFileLink(w http.ResponseWriter, r *http.Req
 
 	if err := os.Remove(symlinkPath); err != nil {
 		if os.IsNotExist(err) {
-			http.Error(w, "File link not found", http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, ErrNotFound, "File link not found", "")
 			return
 		}
-		http.Error(w, fmt.Sprintf("Failed to delete file link: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to delete file link: %v", err), "")
 		return
 	}
 
@@ -1295,7 +1316,7 @@ func (s *Server) handleGetWorkflowSchema(w http.ResponseWriter, r *http.Request)
 	// 例如: /api/v1/workflows/tofi/ai_response/schema
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "Workflow ID is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Workflow ID is required", "")
 		return
 	}
 
@@ -1317,7 +1338,7 @@ func (s *Server) handleGetWorkflowSchema(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Workflow not found: %v", err), http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, fmt.Sprintf("Workflow not found: %v", err), "")
 		return
 	}
 

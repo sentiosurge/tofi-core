@@ -27,7 +27,7 @@ import (
 func (s *Server) handleListSystemSkills(w http.ResponseWriter, r *http.Request) {
 	records, err := s.db.ListSystemSkills()
 	if err != nil {
-		http.Error(w, "failed to list system skills", 500)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to list system skills", "")
 		return
 	}
 	type systemSkillResp struct {
@@ -113,13 +113,13 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetSkill(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "skill id required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "skill id required", "")
 		return
 	}
 
 	skill, err := s.db.GetSkill(id)
 	if err != nil {
-		http.Error(w, "skill not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrSkillNotFound, "skill not found", "")
 		return
 	}
 
@@ -142,16 +142,16 @@ func (s *Server) handleCreateSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 
 	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "name is required", "")
 		return
 	}
 	if req.Instructions == "" {
-		http.Error(w, "instructions is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "instructions is required", "")
 		return
 	}
 
@@ -187,7 +187,7 @@ func (s *Server) handleCreateSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.db.SaveSkill(record); err != nil {
-		http.Error(w, fmt.Sprintf("failed to save skill: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to save skill: %v", err), "")
 		return
 	}
 
@@ -210,13 +210,13 @@ func (s *Server) handleUpdateSkill(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := s.db.GetSkill(id)
 	if err != nil {
-		http.Error(w, "skill not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrSkillNotFound, "skill not found", "")
 		return
 	}
 
 	// 只能编辑自己的私有 Skill
 	if existing.Scope == "public" || (existing.UserID != userID && existing.UserID != "system") {
-		http.Error(w, "cannot edit public or others' skills", http.StatusForbidden)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "cannot edit public or others' skills", "")
 		return
 	}
 
@@ -231,7 +231,7 @@ func (s *Server) handleUpdateSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 
@@ -269,7 +269,7 @@ func (s *Server) handleUpdateSkill(w http.ResponseWriter, r *http.Request) {
 	existing.AllowedTools = toJSON(manifest.AllowedToolsList())
 
 	if err := s.db.SaveSkill(existing); err != nil {
-		http.Error(w, fmt.Sprintf("failed to update skill: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to update skill: %v", err), "")
 		return
 	}
 
@@ -289,18 +289,18 @@ func (s *Server) handleTestSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 
 	if req.Prompt == "" && len(req.Inputs) == 0 {
-		http.Error(w, "prompt or inputs is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "prompt or inputs is required", "")
 		return
 	}
 
 	skill, err := s.db.GetSkill(id)
 	if err != nil {
-		http.Error(w, "skill not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrSkillNotFound, "skill not found", "")
 		return
 	}
 
@@ -337,7 +337,7 @@ func (s *Server) handleTestSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.workerPool.Submit(job); err != nil {
-		http.Error(w, fmt.Sprintf("failed to submit: %v", err), http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, ErrInternal, fmt.Sprintf("failed to submit: %v", err), "")
 		return
 	}
 
@@ -356,7 +356,7 @@ func (s *Server) handleExportSkill(w http.ResponseWriter, r *http.Request) {
 
 	skill, err := s.db.GetSkill(id)
 	if err != nil {
-		http.Error(w, "skill not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrSkillNotFound, "skill not found", "")
 		return
 	}
 
@@ -389,7 +389,7 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 
@@ -397,14 +397,14 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 	switch req.Mode {
 	case "preview":
 		if req.URL == "" {
-			http.Error(w, "url is required for preview", http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "url is required for preview", "")
 			return
 		}
 		s.installPreview(w, userID, req.URL)
 		return
 	case "confirm":
 		if req.SessionID == "" {
-			http.Error(w, "session_id is required for confirm", http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "session_id is required for confirm", "")
 			return
 		}
 		s.installConfirm(w, userID, req.SessionID, req.SkillNames)
@@ -415,20 +415,20 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 	switch req.Source {
 	case "local", "":
 		if req.Content == "" {
-			http.Error(w, "content is required for local install", http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "content is required for local install", "")
 			return
 		}
 		s.installFromContent(w, userID, req.Content, "local", "")
 
 	case "git":
 		if req.URL == "" {
-			http.Error(w, "url is required for git install", http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "url is required for git install", "")
 			return
 		}
 		s.installFromSource(w, userID, req.URL)
 
 	default:
-		http.Error(w, fmt.Sprintf("unsupported source: %s", req.Source), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("unsupported source: %s", req.Source), "")
 	}
 }
 
@@ -436,7 +436,7 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 func (s *Server) installFromContent(w http.ResponseWriter, userID, content, source, sourceURL string) {
 	skillFile, err := skills.Parse([]byte(content))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid SKILL.md: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("invalid SKILL.md: %v", err), "")
 		return
 	}
 
@@ -449,7 +449,7 @@ func (s *Server) installFromContent(w http.ResponseWriter, userID, content, sour
 	// 保存到数据库（私有）
 	record := s.buildSkillRecord(userID, skillFile, source, sourceURL, "private")
 	if err := s.db.SaveSkill(record); err != nil {
-		http.Error(w, fmt.Sprintf("failed to save skill: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to save skill: %v", err), "")
 		return
 	}
 
@@ -476,7 +476,7 @@ func (s *Server) installFromSource(w http.ResponseWriter, userID, source string)
 
 	result, err := installer.Install(source)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("install failed: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("install failed: %v", err), "")
 		return
 	}
 
@@ -498,7 +498,7 @@ func (s *Server) installFromSource(w http.ResponseWriter, userID, source string)
 	}
 
 	if len(records) == 0 {
-		http.Error(w, "failed to save any skills to database", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to save any skills to database", "")
 		return
 	}
 
@@ -554,7 +554,7 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "skill id required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "skill id required", "")
 		return
 	}
 
@@ -568,7 +568,7 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.db.DeleteSkill(id, userID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrSkillNotFound, err.Error(), "")
 		return
 	}
 
@@ -579,13 +579,13 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetSkillResources(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "skill id required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "skill id required", "")
 		return
 	}
 
 	skill, err := s.db.GetSkill(id)
 	if err != nil {
-		http.Error(w, "skill not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrSkillNotFound, "skill not found", "")
 		return
 	}
 
@@ -690,19 +690,19 @@ func (s *Server) handleGetSkillResources(w http.ResponseWriter, r *http.Request)
 func (s *Server) handlePutSkillResource(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "skill id required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "skill id required", "")
 		return
 	}
 
 	skill, err := s.db.GetSkill(id)
 	if err != nil {
-		http.Error(w, "skill not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrSkillNotFound, "skill not found", "")
 		return
 	}
 
 	// 仅允许 local skill 修改资源
 	if skill.Source != "local" {
-		http.Error(w, "only local skills can be modified", http.StatusForbidden)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "only local skills can be modified", "")
 		return
 	}
 
@@ -712,30 +712,30 @@ func (s *Server) handlePutSkillResource(w http.ResponseWriter, r *http.Request) 
 		Content  string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 	if req.Dir == "" || req.Filename == "" {
-		http.Error(w, "dir and filename are required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "dir and filename are required", "")
 		return
 	}
 	// 安全检查：防止路径遍历
 	if strings.Contains(req.Dir, "..") || strings.Contains(req.Filename, "..") ||
 		strings.Contains(req.Dir, "/") || strings.Contains(req.Filename, "/") {
-		http.Error(w, "invalid dir or filename", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid dir or filename", "")
 		return
 	}
 
 	localStore := skills.NewLocalStore(s.config.HomeDir)
 	dirPath := filepath.Join(localStore.SkillDir(skill.Name), req.Dir)
 	if err := os.MkdirAll(dirPath, 0755); err != nil {
-		http.Error(w, "failed to create directory", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to create directory", "")
 		return
 	}
 
 	filePath := filepath.Join(dirPath, req.Filename)
 	if err := os.WriteFile(filePath, []byte(req.Content), 0644); err != nil {
-		http.Error(w, "failed to write file", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to write file", "")
 		return
 	}
 
@@ -747,18 +747,18 @@ func (s *Server) handlePutSkillResource(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleDeleteSkillResource(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "skill id required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "skill id required", "")
 		return
 	}
 
 	skill, err := s.db.GetSkill(id)
 	if err != nil {
-		http.Error(w, "skill not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrSkillNotFound, "skill not found", "")
 		return
 	}
 
 	if skill.Source != "local" {
-		http.Error(w, "only local skills can be modified", http.StatusForbidden)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "only local skills can be modified", "")
 		return
 	}
 
@@ -767,23 +767,23 @@ func (s *Server) handleDeleteSkillResource(w http.ResponseWriter, r *http.Reques
 		Filename string `json:"filename"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 	if req.Dir == "" || req.Filename == "" {
-		http.Error(w, "dir and filename are required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "dir and filename are required", "")
 		return
 	}
 	if strings.Contains(req.Dir, "..") || strings.Contains(req.Filename, "..") ||
 		strings.Contains(req.Dir, "/") || strings.Contains(req.Filename, "/") {
-		http.Error(w, "invalid dir or filename", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid dir or filename", "")
 		return
 	}
 
 	localStore := skills.NewLocalStore(s.config.HomeDir)
 	filePath := filepath.Join(localStore.SkillDir(skill.Name), req.Dir, req.Filename)
 	if err := os.Remove(filePath); err != nil {
-		http.Error(w, "failed to delete file", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "failed to delete file", "")
 		return
 	}
 
@@ -810,18 +810,18 @@ func (s *Server) handleRunSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 
 	if req.Prompt == "" && len(req.Inputs) == 0 {
-		http.Error(w, "prompt or inputs is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "prompt or inputs is required", "")
 		return
 	}
 
 	skill, err := s.db.GetSkill(id)
 	if err != nil {
-		http.Error(w, "skill not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrSkillNotFound, "skill not found", "")
 		return
 	}
 
@@ -853,7 +853,7 @@ func (s *Server) handleRunSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.workerPool.Submit(job); err != nil {
-		http.Error(w, fmt.Sprintf("failed to submit: %v", err), http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, ErrInternal, fmt.Sprintf("failed to submit: %v", err), "")
 		return
 	}
 
@@ -900,7 +900,7 @@ func buildSkillWorkflow(skill *storage.SkillRecord, prompt, model string, useSys
 func (s *Server) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 	if query == "" {
-		http.Error(w, "search query 'q' is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "search query 'q' is required", "")
 		return
 	}
 
@@ -981,12 +981,12 @@ func (s *Server) handleSetAIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 
 	if req.Provider == "" || req.APIKey == "" {
-		http.Error(w, "provider and api_key are required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "provider and api_key are required", "")
 		return
 	}
 
@@ -994,20 +994,20 @@ func (s *Server) handleSetAIKey(w http.ResponseWriter, r *http.Request) {
 	if req.Scope == "system" {
 		// 只有 admin 能设置系统级 key
 		if role != "admin" {
-			http.Error(w, "only admin can set system-level API keys", http.StatusForbidden)
+			writeJSONError(w, http.StatusForbidden, ErrForbidden, "only admin can set system-level API keys", "")
 			return
 		}
 		scope = "system"
 	} else {
 		// 非 admin 用户检查 allow_user_keys 开关
 		if role != "admin" && !s.db.AllowUserKeys() {
-			http.Error(w, "user API keys are disabled by admin", http.StatusForbidden)
+			writeJSONError(w, http.StatusForbidden, ErrUserKeysDisabled, "user API keys are disabled by admin", "")
 			return
 		}
 	}
 
 	if err := s.db.SetAIKey(req.Provider, scope, req.APIKey); err != nil {
-		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to save: %v", err), "")
 		return
 	}
 
@@ -1032,12 +1032,12 @@ func (s *Server) handleDeleteAIKey(w http.ResponseWriter, r *http.Request) {
 
 	// 只有 admin 能删除系统级 key
 	if scope == "system" && role != "admin" {
-		http.Error(w, "only admin can delete system-level API keys", http.StatusForbidden)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "only admin can delete system-level API keys", "")
 		return
 	}
 
 	if err := s.db.DeleteAIKey(provider, scope); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -1052,7 +1052,7 @@ func (s *Server) handleUserSetAIKey(w http.ResponseWriter, r *http.Request) {
 
 	// 检查 admin 开关
 	if !s.db.AllowUserKeys() {
-		http.Error(w, "user API keys are disabled by admin", http.StatusForbidden)
+		writeJSONError(w, http.StatusForbidden, ErrUserKeysDisabled, "user API keys are disabled by admin", "")
 		return
 	}
 
@@ -1062,17 +1062,17 @@ func (s *Server) handleUserSetAIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 
 	if req.Provider == "" || req.APIKey == "" {
-		http.Error(w, "provider and api_key are required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "provider and api_key are required", "")
 		return
 	}
 
 	if err := s.db.SetAIKey(req.Provider, userID, req.APIKey); err != nil {
-		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to save: %v", err), "")
 		return
 	}
 
@@ -1105,7 +1105,7 @@ func (s *Server) handleUserDeleteAIKey(w http.ResponseWriter, r *http.Request) {
 	provider := r.PathValue("provider")
 
 	if err := s.db.DeleteAIKey(provider, userID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -1118,12 +1118,12 @@ func (s *Server) handleSetAllowUserKeys(w http.ResponseWriter, r *http.Request) 
 		Allow bool `json:"allow"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 
 	if err := s.db.SetAllowUserKeys(req.Allow); err != nil {
-		http.Error(w, fmt.Sprintf("failed to save: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to save: %v", err), "")
 		return
 	}
 
@@ -1213,7 +1213,7 @@ func (s *Server) handleSetPreferredModel(w http.ResponseWriter, r *http.Request)
 		Model string `json:"model"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request", 400)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request", "")
 		return
 	}
 
@@ -1250,7 +1250,7 @@ func (s *Server) handleSetEnabledModels(w http.ResponseWriter, r *http.Request) 
 		Models []string `json:"models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request", 400)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request", "")
 		return
 	}
 
@@ -1295,7 +1295,7 @@ func (s *Server) installPreview(w http.ResponseWriter, userID, source string) {
 
 	result, cleanup, err := installer.PreviewInstall(source)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("preview failed: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("preview failed: %v", err), "")
 		return
 	}
 
@@ -1341,7 +1341,7 @@ func (s *Server) installPreview(w http.ResponseWriter, userID, source string) {
 func (s *Server) installConfirm(w http.ResponseWriter, userID, sessionID string, skillNames []string) {
 	session := s.getPreviewSession(sessionID)
 	if session == nil {
-		http.Error(w, "session expired or not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrSessionNotFound, "session expired or not found", "")
 		return
 	}
 	defer s.removePreviewSession(sessionID)
@@ -1363,7 +1363,7 @@ func (s *Server) installConfirm(w http.ResponseWriter, userID, sessionID string,
 	}
 
 	if len(toInstall) == 0 {
-		http.Error(w, "no skills selected", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "no skills selected", "")
 		return
 	}
 
@@ -1413,7 +1413,7 @@ func (s *Server) installConfirm(w http.ResponseWriter, userID, sessionID string,
 	}
 
 	if len(records) == 0 {
-		http.Error(w, "failed to save any skills to database", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to save any skills to database", "")
 		return
 	}
 
@@ -1436,38 +1436,38 @@ func (s *Server) handleInstallSkillZip(w http.ResponseWriter, r *http.Request) {
 
 	// 50MB limit
 	if err := r.ParseMultipartForm(50 << 20); err != nil {
-		http.Error(w, "file too large or invalid multipart form", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "file too large or invalid multipart form", "")
 		return
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "missing 'file' field in form data", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "missing 'file' field in form data", "")
 		return
 	}
 	defer file.Close()
 
 	if !strings.HasSuffix(strings.ToLower(header.Filename), ".zip") {
-		http.Error(w, "only .zip files are accepted", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "only .zip files are accepted", "")
 		return
 	}
 
 	if header.Size > 50*1024*1024 {
-		http.Error(w, "file too large (max 50MB)", http.StatusRequestEntityTooLarge)
+		writeJSONError(w, http.StatusRequestEntityTooLarge, ErrBadRequest, "file too large (max 50MB)", "")
 		return
 	}
 
 	// Write to temp file (zip.OpenReader needs a file path)
 	tmpFile, err := os.CreateTemp("", "tofi-skill-*.zip")
 	if err != nil {
-		http.Error(w, "failed to create temp file", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to create temp file", "")
 		return
 	}
 	defer os.Remove(tmpFile.Name())
 
 	if _, err := io.Copy(tmpFile, file); err != nil {
 		tmpFile.Close()
-		http.Error(w, "failed to save uploaded file", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to save uploaded file", "")
 		return
 	}
 	tmpFile.Close()
@@ -1475,14 +1475,14 @@ func (s *Server) handleInstallSkillZip(w http.ResponseWriter, r *http.Request) {
 	// Extract to temp dir
 	tempDir, err := os.MkdirTemp("", "tofi-skill-zip-")
 	if err != nil {
-		http.Error(w, "failed to create temp directory", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to create temp directory", "")
 		return
 	}
 	cleanup := func() { os.RemoveAll(tempDir) }
 
 	if err := skills.ExtractZip(tmpFile.Name(), tempDir); err != nil {
 		cleanup()
-		http.Error(w, fmt.Sprintf("failed to extract zip: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("failed to extract zip: %v", err), "")
 		return
 	}
 
@@ -1494,7 +1494,7 @@ func (s *Server) handleInstallSkillZip(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			errMsg = fmt.Sprintf("skill discovery failed: %v", err)
 		}
-		http.Error(w, errMsg, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, errMsg, "")
 		return
 	}
 
@@ -1512,13 +1512,13 @@ func (s *Server) handleInstallSkillZip(w http.ResponseWriter, r *http.Request) {
 		isUpdate := existing != nil
 
 		if err := installer.InstallOne(sf); err != nil {
-			http.Error(w, fmt.Sprintf("install failed: %v", err), http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("install failed: %v", err), "")
 			return
 		}
 
 		record := s.buildSkillRecord(userID, sf, "local", "zip-upload", "private")
 		if err := s.db.SaveSkill(record); err != nil {
-			http.Error(w, fmt.Sprintf("failed to save skill: %v", err), http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to save skill: %v", err), "")
 			return
 		}
 
@@ -1573,13 +1573,13 @@ func (s *Server) handleInstallSkillZip(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetCollection(w http.ResponseWriter, r *http.Request) {
 	sourceURL := r.URL.Query().Get("source")
 	if sourceURL == "" {
-		http.Error(w, "source query parameter is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "source query parameter is required", "")
 		return
 	}
 
 	records, err := s.db.ListSkillsBySourceURL(sourceURL)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 	if records == nil {
@@ -1599,7 +1599,7 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 	userID := r.Context().Value(UserContextKey).(string)
 	sourceURL := r.URL.Query().Get("source")
 	if sourceURL == "" {
-		http.Error(w, "source query parameter is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "source query parameter is required", "")
 		return
 	}
 
@@ -1614,7 +1614,7 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 
 	count, err := s.db.DeleteSkillsBySourceURL(sourceURL, userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 

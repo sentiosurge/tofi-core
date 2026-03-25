@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Tofi API
-  version: 0.1.0
+  version: 0.1.7
   description: |
     Tofi is an AI App Engine. Create AI-powered apps that run on a schedule
     or on-demand, with results delivered to your preferred channels.
@@ -13,18 +13,58 @@ info:
     ```
 
     ## Quick Start
-    1. Login to get your token: `POST /api/v1/auth/login`
-    2. List your apps: `GET /api/v1/apps`
-    3. Trigger a run: `POST /api/v1/apps/{id}/run`
-    4. Check the result: `GET /api/v1/apps/{id}/runs/{runId}`
 
-    ## Login Example
+    **Step 1: Login**
     ```bash
     curl -X POST https://tofi.sentiosurge.com/api/v1/auth/login \
       -H "Content-Type: application/json" \
       -d '{"username": "your-username", "password": "your-password"}'
     ```
-    Response: `{"token": "eyJ...", "username": "your-username", "role": "user"}`
+    Save the `token` from the response.
+
+    **Step 2: Check your status**
+    ```bash
+    curl https://tofi.sentiosurge.com/api/v1/auth/me \
+      -H "Authorization: Bearer YOUR_TOKEN"
+    ```
+    This shows your configured AI providers. If `ai_keys` is empty, go to Step 3.
+
+    **Step 3: Set your AI key**
+    ```bash
+    curl -X PUT https://tofi.sentiosurge.com/api/v1/user/settings/ai-key \
+      -H "Authorization: Bearer YOUR_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"provider": "openai", "api_key": "sk-..."}'
+    ```
+    Supported providers: `openai`, `anthropic`, `gemini`, `deepseek`, `groq`, `openrouter`
+
+    **Step 4: Start chatting**
+    ```bash
+    # Create a session
+    curl -X POST https://tofi.sentiosurge.com/api/v1/chat/sessions \
+      -H "Authorization: Bearer YOUR_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{}'
+
+    # Send a message (SSE stream)
+    curl -N -X POST https://tofi.sentiosurge.com/api/v1/chat/sessions/SESSION_ID/messages \
+      -H "Authorization: Bearer YOUR_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"message": "Hello!"}'
+    ```
+
+    **Step 5: Or use Apps**
+    ```bash
+    curl https://tofi.sentiosurge.com/api/v1/apps \
+      -H "Authorization: Bearer YOUR_TOKEN"
+    ```
+
+    ## Error Format
+    All errors return JSON:
+    ```json
+    {"error": {"code": "NO_AI_KEY", "message": "...", "hint": "..."}}
+    ```
+    The `hint` field (when present) tells you exactly what to do next.
 
 servers:
   - url: https://tofi.sentiosurge.com
@@ -83,6 +123,226 @@ paths:
                 role: "user"
         '401':
           description: Invalid username or password
+
+  /api/v1/auth/me:
+    get:
+      summary: Get Current User
+      description: |
+        Returns your user profile and AI key configuration status.
+        Use this after login to check which AI providers are available.
+      operationId: getMe
+      tags: [Auth]
+      responses:
+        '200':
+          description: User profile with AI key status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  username:
+                    type: string
+                  role:
+                    type: string
+                    enum: [admin, user]
+                  ai_keys:
+                    type: array
+                    description: Status of each AI provider
+                    items:
+                      type: object
+                      properties:
+                        provider:
+                          type: string
+                        has_key:
+                          type: boolean
+                        source:
+                          type: string
+                          enum: [user, system, ""]
+                          description: "\"user\" = your own key, \"system\" = admin-provided key"
+              example:
+                username: "alice"
+                role: "user"
+                ai_keys:
+                  - provider: "openai"
+                    has_key: true
+                    source: "system"
+                  - provider: "anthropic"
+                    has_key: true
+                    source: "user"
+                  - provider: "gemini"
+                    has_key: false
+                    source: ""
+
+  /api/v1/chat/sessions:
+    post:
+      summary: Create Chat Session
+      description: |
+        Create a new chat session. All fields are optional.
+        Use the returned `id` to send messages.
+      operationId: createChatSession
+      tags: [Chat]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  description: LLM model to use (auto-detected if omitted)
+                scope:
+                  type: string
+                  description: Session scope (empty for general chat)
+                skills:
+                  type: array
+                  items:
+                    type: string
+                  description: Skill names to enable
+            example:
+              model: "claude-sonnet-4-20250514"
+              skills: ["web-search"]
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  scope:
+                    type: string
+                  model:
+                    type: string
+                  skills:
+                    type: array
+                    items:
+                      type: string
+                  created:
+                    type: string
+              example:
+                id: "s_a1b2c3d4e5f6"
+                scope: ""
+                model: "claude-sonnet-4-20250514"
+                skills: ["web-search"]
+                created: "2026-03-24T10:00:00Z"
+    get:
+      summary: List Chat Sessions
+      description: Returns chat sessions for the authenticated user.
+      operationId: listChatSessions
+      tags: [Chat]
+      parameters:
+        - name: scope
+          in: query
+          description: Filter by scope. Omit to list all scopes.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Array of chat sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    scope:
+                      type: string
+                    model:
+                      type: string
+                    title:
+                      type: string
+                    updated_at:
+                      type: string
+
+  /api/v1/chat/sessions/{id}/messages:
+    post:
+      summary: Send Message (SSE Stream)
+      description: |
+        Send a message in a chat session. Returns a Server-Sent Events (SSE) stream.
+
+        **SSE Events:**
+        - `connected` — session connected
+        - `chunk` — streaming text chunk from the AI
+        - `tool_call` — AI is calling a tool
+        - `error` — an error occurred (includes `code`, `error`, `hint` fields)
+        - `done` — response complete (includes `result`, `model`, token usage)
+
+        **Common error codes in SSE:**
+        - `NO_AI_KEY` — no API key configured (hint tells you how to set one)
+        - `NO_AI_KEY_FOR_MODEL` — no key for the requested model
+      operationId: sendChatMessage
+      tags: [Chat]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Chat session ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+            example:
+              message: "What is the weather today?"
+      responses:
+        '200':
+          description: SSE stream of AI response
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: Message is required
+        '404':
+          description: Session not found
+
+  /api/v1/models:
+    get:
+      summary: List Available Models
+      description: |
+        Returns all known LLM models with their provider, context window, and pricing.
+        Use `?enabled=true` to filter to only your enabled models.
+      operationId: listModels
+      tags: [Settings]
+      parameters:
+        - name: enabled
+          in: query
+          description: If "true", only return models enabled for your account
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Array of models
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    provider:
+                      type: string
+                    context_window:
+                      type: integer
+                    input_cost_per_1m:
+                      type: number
+                    output_cost_per_1m:
+                      type: number
 
   /api/v1/skills:
     get:
@@ -587,3 +847,20 @@ components:
         installed_at:
           type: string
           format: date-time
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code (e.g. NO_AI_KEY, BAD_REQUEST)
+            message:
+              type: string
+              description: Human-readable error description
+            hint:
+              type: string
+              description: Actionable suggestion (omitted when not applicable)

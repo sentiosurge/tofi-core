@@ -13,7 +13,7 @@ func (s *Server) registerDocsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docs", func(w http.ResponseWriter, r *http.Request) {
 		data, err := docsFS.ReadFile("docs/index.html")
 		if err != nil {
-			http.Error(w, "docs not found", http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, ErrNotFound, "docs not found", "")
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -23,7 +23,7 @@ func (s *Server) registerDocsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docs/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 		data, err := docsFS.ReadFile("docs/openapi.yaml")
 		if err != nil {
-			http.Error(w, "spec not found", http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, ErrNotFound, "spec not found", "")
 			return
 		}
 		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")

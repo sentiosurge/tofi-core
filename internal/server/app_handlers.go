@@ -30,7 +30,7 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 
 	apps, err := s.db.ListApps(userID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to list apps: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to list apps: %v", err), "")
 		return
 	}
 	if apps == nil {
@@ -70,11 +70,11 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 
 	app, err := s.db.GetApp(id)
 	if err != nil {
-		http.Error(w, "app not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
 		return
 	}
 	if app.UserID != userID {
-		http.Error(w, "app not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
 		return
 	}
 
@@ -103,15 +103,15 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		ParameterDefs    *json.RawMessage `json:"parameter_defs"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 	if req.ID == "" {
-		http.Error(w, "id is required (lowercase + hyphens, e.g. 'daily-weather')", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "id is required (lowercase + hyphens, e.g. 'daily-weather')", "")
 		return
 	}
 	if !isValidAppID(req.ID) {
-		http.Error(w, "id must be kebab-case (lowercase letters, digits, hyphens only)", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "id must be kebab-case (lowercase letters, digits, hyphens only)", "")
 		return
 	}
 
@@ -123,7 +123,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	// Step 1: Write agent files to disk (source of truth)
 	if s.workspace != nil {
 		if err := s.workspace.WriteAgent(userID, def); err != nil {
-			http.Error(w, fmt.Sprintf("failed to write agent files: %v", err), http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to write agent files: %v", err), "")
 			return
 		}
 	}
@@ -133,7 +133,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	if s.workspaceSync != nil {
 		synced, err := s.workspaceSync.SyncAgentToDB(userID, req.ID)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to sync agent to index: %v", err), http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to sync agent to index: %v", err), "")
 			return
 		}
 		record = synced
@@ -141,7 +141,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		// Fallback: direct DB write
 		record = workspace.AgentDefToRecord(userID, def)
 		if err := s.db.CreateApp(record); err != nil {
-			http.Error(w, fmt.Sprintf("failed to create app: %v", err), http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to create app: %v", err), "")
 			return
 		}
 	}
@@ -164,7 +164,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := s.db.GetApp(id)
 	if err != nil || existing.UserID != userID {
-		http.Error(w, "app not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
 		return
 	}
 
@@ -183,7 +183,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		ParameterDefs    *json.RawMessage `json:"parameter_defs"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 
@@ -230,7 +230,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	if s.workspace != nil {
 		def := workspace.RecordToAgentDef(existing)
 		if err := s.workspace.WriteAgent(userID, def); err != nil {
-			http.Error(w, fmt.Sprintf("failed to write agent files: %v", err), http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to write agent files: %v", err), "")
 			return
 		}
 	}
@@ -241,7 +241,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("[app-update] sync failed, falling back to direct DB: %v", err)
 			if err := s.db.UpdateApp(existing); err != nil {
-				http.Error(w, fmt.Sprintf("failed to update app: %v", err), http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to update app: %v", err), "")
 				return
 			}
 		} else {
@@ -250,13 +250,13 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 			synced.Parameters = existing.Parameters
 			synced.ID = existing.ID
 			if err := s.db.UpdateApp(synced); err != nil {
-				http.Error(w, fmt.Sprintf("failed to update app index: %v", err), http.StatusInternalServerError)
+				writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to update app index: %v", err), "")
 				return
 			}
 		}
 	} else {
 		if err := s.db.UpdateApp(existing); err != nil {
-			http.Error(w, fmt.Sprintf("failed to update app: %v", err), http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to update app: %v", err), "")
 			return
 		}
 	}
@@ -284,7 +284,7 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	// Get app name before deleting (needed for file deletion)
 	app, err := s.db.GetApp(id)
 	if err != nil || app.UserID != userID {
-		http.Error(w, "app not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
 		return
 	}
 
@@ -302,7 +302,7 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 
 	// Step 2: Remove from DB index
 	if err := s.db.DeleteApp(id, userID); err != nil {
-		http.Error(w, fmt.Sprintf("failed to delete app: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to delete app: %v", err), "")
 		return
 	}
 
@@ -318,17 +318,17 @@ func (s *Server) handleActivateApp(w http.ResponseWriter, r *http.Request) {
 
 	app, err := s.db.GetApp(id)
 	if err != nil || app.UserID != userID {
-		http.Error(w, "app not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
 		return
 	}
 
 	if app.ScheduleRules == "" || app.ScheduleRules == "[]" {
-		http.Error(w, "app has no schedule rules configured", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "app has no schedule rules configured", "")
 		return
 	}
 
 	if err := s.db.SetAppActive(id, userID, true); err != nil {
-		http.Error(w, fmt.Sprintf("failed to activate: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to activate: %v", err), "")
 		return
 	}
 
@@ -353,12 +353,12 @@ func (s *Server) handleDeactivateApp(w http.ResponseWriter, r *http.Request) {
 
 	app, err := s.db.GetApp(id)
 	if err != nil || app.UserID != userID {
-		http.Error(w, "app not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
 		return
 	}
 
 	if err := s.db.SetAppActive(id, userID, false); err != nil {
-		http.Error(w, fmt.Sprintf("failed to deactivate: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to deactivate: %v", err), "")
 		return
 	}
 
@@ -384,12 +384,12 @@ func (s *Server) handleRunAppNow(w http.ResponseWriter, r *http.Request) {
 
 	app, err := s.db.GetApp(id)
 	if err != nil || app.UserID != userID {
-		http.Error(w, "app not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
 		return
 	}
 
 	if app.Prompt == "" {
-		http.Error(w, "app has no prompt configured", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "app has no prompt configured", "")
 		return
 	}
 
@@ -406,7 +406,7 @@ func (s *Server) handleRunAppNow(w http.ResponseWriter, r *http.Request) {
 
 	run, err := s.appScheduler.DispatchManualRun(app, userID, promptOverride)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to run app: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to run app: %v", err), "")
 		return
 	}
 
@@ -422,7 +422,7 @@ func (s *Server) handleListAppRuns(w http.ResponseWriter, r *http.Request) {
 
 	app, err := s.db.GetApp(id)
 	if err != nil || app.UserID != userID {
-		http.Error(w, "app not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
 		return
 	}
 
@@ -437,7 +437,7 @@ func (s *Server) handleListAppRuns(w http.ResponseWriter, r *http.Request) {
 
 	runs, err := s.db.ListAppRuns(id, status, limit)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to list runs: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to list runs: %v", err), "")
 		return
 	}
 	if runs == nil {
@@ -456,13 +456,13 @@ func (s *Server) handleGetAppRun(w http.ResponseWriter, r *http.Request) {
 
 	app, err := s.db.GetApp(appID)
 	if err != nil || app.UserID != userID {
-		http.Error(w, "app not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
 		return
 	}
 
 	run, err := s.db.GetAppRun(appID, runID)
 	if err != nil {
-		http.Error(w, "run not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "run not found", "")
 		return
 	}
 
@@ -480,11 +480,11 @@ func (s *Server) handleParseSchedule(w http.ResponseWriter, r *http.Request) {
 		Existing json.RawMessage  `json:"existing,omitempty"` // existing entries for smart merge
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 	if req.Text == "" {
-		http.Error(w, "text is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "text is required", "")
 		return
 	}
 	if req.Timezone == "" {
@@ -543,13 +543,13 @@ Examples:
 
 	model, apiKey, _, err := s.resolveModelAndKey(userID, "")
 	if err != nil {
-		http.Error(w, fmt.Sprintf("no API key available: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("no API key available: %v", err), "")
 		return
 	}
 
 	p, err := provider.NewForModel(model, apiKey)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to create provider: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to create provider: %v", err), "")
 		return
 	}
 	llmResp, err := p.Chat(r.Context(), &provider.ChatRequest{
@@ -560,12 +560,12 @@ Examples:
 		},
 	})
 	if err != nil {
-		http.Error(w, fmt.Sprintf("LLM call failed: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("LLM call failed: %v", err), "")
 		return
 	}
 	result := llmResp.Content
 	if err != nil {
-		http.Error(w, fmt.Sprintf("LLM call failed: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("LLM call failed: %v", err), "")
 		return
 	}
 
@@ -621,7 +621,7 @@ func (s *Server) handleGetUpcomingRuns(w http.ResponseWriter, r *http.Request) {
 
 	runs, err := s.db.GetUpcomingRuns(userID, limit)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to get upcoming runs: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to get upcoming runs: %v", err), "")
 		return
 	}
 	if runs == nil {
@@ -638,7 +638,7 @@ func (s *Server) handleSkipRun(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
 
 	if err := s.db.SkipAppRun(runID, userID); err != nil {
-		http.Error(w, fmt.Sprintf("failed to skip run: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to skip run: %v", err), "")
 		return
 	}
 
@@ -657,25 +657,25 @@ func (s *Server) handleManagerChat(w http.ResponseWriter, r *http.Request) {
 		Messages []map[string]interface{} `json:"messages"` // conversation history [{role, content}, ...]
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 	if req.Message == "" && len(req.Messages) == 0 {
-		http.Error(w, "message or messages required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "message or messages required", "")
 		return
 	}
 
 	// 1. Resolve model and API key
 	model, apiKey, _, err := s.resolveModelAndKey(userID, "")
 	if err != nil {
-		http.Error(w, fmt.Sprintf("no API key: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("no API key: %v", err), "")
 		return
 	}
 
 	// 2. Load current apps for context
 	userApps, err := s.db.ListApps(userID)
 	if err != nil {
-		http.Error(w, "failed to load apps", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to load apps", "")
 		return
 	}
 	var appsCtx []map[string]interface{}
@@ -765,7 +765,7 @@ func (s *Server) handleManagerChat(w http.ResponseWriter, r *http.Request) {
 	rc.SetWriteDeadline(time.Time{})
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming not supported", 500)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "streaming not supported", "")
 		return
 	}
 

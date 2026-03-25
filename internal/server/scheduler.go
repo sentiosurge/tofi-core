@@ -168,11 +168,11 @@ func (s *Server) handleCreateCronTrigger(w http.ResponseWriter, r *http.Request)
 		Description string `json:"description,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request body", "")
 		return
 	}
 	if req.WorkflowID == "" || req.Expression == "" {
-		http.Error(w, "workflow_id and expression are required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "workflow_id and expression are required", "")
 		return
 	}
 	if req.Timezone == "" {
@@ -182,14 +182,14 @@ func (s *Server) handleCreateCronTrigger(w http.ResponseWriter, r *http.Request)
 	// Validate cron expression
 	parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 	if _, err := parser.Parse(req.Expression); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid cron expression: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Invalid cron expression: %v", err), "")
 		return
 	}
 
 	id := uuid.New().String()
 
 	if err := s.db.CreateCronTrigger(id, user, req.WorkflowID, req.Expression, req.Timezone, req.Description); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create cron trigger: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("Failed to create cron trigger: %v", err), "")
 		return
 	}
 
@@ -224,7 +224,7 @@ func (s *Server) handleListCronTriggers(w http.ResponseWriter, r *http.Request) 
 
 	triggers, err := s.db.ListCronTriggers(user, workflowID)
 	if err != nil {
-		http.Error(w, "Failed to list cron triggers", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to list cron triggers", "")
 		return
 	}
 
@@ -243,7 +243,7 @@ func (s *Server) handleUpdateCronTrigger(w http.ResponseWriter, r *http.Request)
 		Active      *bool  `json:"active,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request body", "")
 		return
 	}
 	if req.Timezone == "" {
@@ -259,13 +259,13 @@ func (s *Server) handleUpdateCronTrigger(w http.ResponseWriter, r *http.Request)
 	if req.Expression != "" {
 		p := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 		if _, err := p.Parse(req.Expression); err != nil {
-			http.Error(w, fmt.Sprintf("Invalid cron expression: %v", err), http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, fmt.Sprintf("Invalid cron expression: %v", err), "")
 			return
 		}
 	}
 
 	if err := s.db.UpdateCronTrigger(id, user, req.Expression, req.Timezone, req.Description, active); err != nil {
-		http.Error(w, "Failed to update cron trigger", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to update cron trigger", "")
 		return
 	}
 
@@ -304,7 +304,7 @@ func (s *Server) handleDeleteCronTrigger(w http.ResponseWriter, r *http.Request)
 	id := r.PathValue("id")
 
 	if err := s.db.DeleteCronTrigger(id, user); err != nil {
-		http.Error(w, "Failed to delete cron trigger", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to delete cron trigger", "")
 		return
 	}
 

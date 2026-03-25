@@ -43,7 +43,7 @@ type WorkflowInfo struct {
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := s.db.ListAllUsers()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -65,12 +65,12 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	var req CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Invalid request body", "")
 		return
 	}
 
 	if req.Username == "" || req.Password == "" {
-		http.Error(w, "Username and password are required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Username and password are required", "")
 		return
 	}
 
@@ -82,20 +82,20 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	// 检查用户名是否已存在
 	existing, _ := s.db.GetUser(req.Username)
 	if existing != nil {
-		http.Error(w, "Username already exists", http.StatusConflict)
+		writeJSONError(w, http.StatusConflict, ErrConflict, "Username already exists", "")
 		return
 	}
 
 	// 密码哈希
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to hash password", "")
 		return
 	}
 
 	id := uuid.New().String()
 	if err := s.db.SaveUser(id, req.Username, string(hash), req.Role); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -111,7 +111,7 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "User ID is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "User ID is required", "")
 		return
 	}
 
@@ -119,11 +119,11 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	currentUser := r.Context().Value(UserContextKey).(string)
 	targetUser, err := s.db.GetUserByID(id)
 	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "User not found", "")
 		return
 	}
 	if targetUser.Username == currentUser {
-		http.Error(w, "Cannot delete your own account", http.StatusForbidden)
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "Cannot delete your own account", "")
 		return
 	}
 
@@ -137,13 +137,13 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if adminCount <= 1 {
-			http.Error(w, "Cannot delete the last admin account", http.StatusForbidden)
+			writeJSONError(w, http.StatusForbidden, ErrForbidden, "Cannot delete the last admin account", "")
 			return
 		}
 	}
 
 	if err := s.db.DeleteUser(id); err != nil {
-		http.Error(w, "Failed to delete user", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "Failed to delete user", "")
 		return
 	}
 
@@ -169,7 +169,7 @@ func (s *Server) handleAdminListExecutions(w http.ResponseWriter, r *http.Reques
 	}
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -181,7 +181,7 @@ func (s *Server) handleAdminListExecutions(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleAdminGetStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := s.db.GetSystemStats()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -198,7 +198,7 @@ func (s *Server) handleAdminListWorkflows(w http.ResponseWriter, r *http.Request
 	// 获取所有用户
 	users, err := s.db.ListAllUsers()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -265,7 +265,7 @@ func (s *Server) handleAdminGetUsage(w http.ResponseWriter, r *http.Request) {
 
 	usage, err := s.db.GetUsageByModel(userID, startDate, endDate)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -287,7 +287,7 @@ type SecretInfo struct {
 func (s *Server) handleAdminListSecrets(w http.ResponseWriter, r *http.Request) {
 	secrets, err := s.db.ListAllSecrets()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, err.Error(), "")
 		return
 	}
 
@@ -310,12 +310,12 @@ func (s *Server) handleAdminListSecrets(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleAdminDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "Secret ID is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "Secret ID is required", "")
 		return
 	}
 
 	if err := s.db.DeleteSecretByID(id); err != nil {
-		http.Error(w, "Secret not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "Secret not found", "")
 		return
 	}
 

@@ -82,13 +82,13 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, "Missing Authorization header", http.StatusUnauthorized)
+			writeJSONError(w, http.StatusUnauthorized, ErrUnauthorized, "Missing Authorization header", "Include 'Authorization: Bearer <token>' in your request")
 			return
 		}
 
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, "Invalid Authorization format (expected 'Bearer <token>')", http.StatusUnauthorized)
+			writeJSONError(w, http.StatusUnauthorized, ErrUnauthorized, "Invalid Authorization format", "Expected 'Authorization: Bearer <token>'")
 			return
 		}
 
@@ -105,7 +105,7 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// Otherwise try JWT
 		user, role, err := parseJWT(tokenStr)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusUnauthorized)
+			writeJSONError(w, http.StatusUnauthorized, ErrUnauthorized, "Invalid or expired token", "Login again: POST /api/v1/auth/login")
 			return
 		}
 
@@ -134,11 +134,11 @@ func (s *Server) AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// Fallback: check DB for user role
 		user, err := s.db.GetUser(username)
 		if err != nil {
-			http.Error(w, "Admin access required", http.StatusForbidden)
+			writeJSONError(w, http.StatusForbidden, ErrForbidden, "Admin access required", "")
 			return
 		}
 		if user.Role != "admin" {
-			http.Error(w, "Admin access required", http.StatusForbidden)
+			writeJSONError(w, http.StatusForbidden, ErrForbidden, "Admin access required", "")
 			return
 		}
 		next.ServeHTTP(w, r)

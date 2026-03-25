@@ -23,7 +23,7 @@ func (s *Server) handleListConnectors(w http.ResponseWriter, r *http.Request) {
 
 	connectors, err := s.db.ListConnectors(userID)
 	if err != nil {
-		http.Error(w, `{"error":"failed to list connectors"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to list connectors", "")
 		return
 	}
 
@@ -69,7 +69,7 @@ func (s *Server) handleCreateConnector(w http.ResponseWriter, r *http.Request) {
 		Config json.RawMessage `json:"config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request body", "")
 		return
 	}
 
@@ -79,7 +79,7 @@ func (s *Server) handleCreateConnector(w http.ResponseWriter, r *http.Request) {
 		storage.ConnectorDiscordWebhook, storage.ConnectorDiscordBot, storage.ConnectorEmail:
 		// valid
 	default:
-		http.Error(w, `{"error":"unsupported connector type"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "unsupported connector type", "")
 		return
 	}
 
@@ -88,12 +88,12 @@ func (s *Server) handleCreateConnector(w http.ResponseWriter, r *http.Request) {
 	case storage.ConnectorTelegram:
 		var tgCfg storage.TelegramConnectorConfig
 		if err := json.Unmarshal(req.Config, &tgCfg); err != nil || tgCfg.BotToken == "" {
-			http.Error(w, `{"error":"bot_token required for telegram"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "bot_token required for telegram", "")
 			return
 		}
 		info, err := connect.GetBotInfo(tgCfg.BotToken)
 		if err != nil {
-			http.Error(w, `{"error":"invalid bot token: `+err.Error()+`"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid bot token: "+err.Error(), "")
 			return
 		}
 		tgCfg.BotName = info.Name
@@ -105,22 +105,22 @@ func (s *Server) handleCreateConnector(w http.ResponseWriter, r *http.Request) {
 	case storage.ConnectorDiscordWebhook:
 		var whCfg storage.WebhookConnectorConfig
 		if err := json.Unmarshal(req.Config, &whCfg); err != nil || whCfg.WebhookURL == "" {
-			http.Error(w, `{"error":"webhook_url required for discord_webhook"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "webhook_url required for discord_webhook", "")
 			return
 		}
 		if err := connect.ValidateDiscordWebhook(whCfg.WebhookURL); err != nil {
-			http.Error(w, `{"error":"invalid discord webhook: `+err.Error()+`"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid discord webhook: "+err.Error(), "")
 			return
 		}
 
 	case storage.ConnectorSlackWebhook:
 		var whCfg storage.WebhookConnectorConfig
 		if err := json.Unmarshal(req.Config, &whCfg); err != nil || whCfg.WebhookURL == "" {
-			http.Error(w, `{"error":"webhook_url required for slack_webhook"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "webhook_url required for slack_webhook", "")
 			return
 		}
 		if err := connect.ValidateSlackWebhook(whCfg.WebhookURL); err != nil {
-			http.Error(w, `{"error":"invalid slack webhook: `+err.Error()+`"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid slack webhook: "+err.Error(), "")
 			return
 		}
 	}
@@ -141,7 +141,7 @@ func (s *Server) handleCreateConnector(w http.ResponseWriter, r *http.Request) {
 
 	connector, err := s.db.CreateConnector(userID, scope, ctype, req.Name, configStr)
 	if err != nil {
-		http.Error(w, `{"error":"failed to create connector"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to create connector", "")
 		return
 	}
 
@@ -156,7 +156,7 @@ func (s *Server) handleGetConnector(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := s.db.GetConnector(connID, userID)
 	if err != nil {
-		http.Error(w, `{"error":"connector not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "connector not found", "")
 		return
 	}
 
@@ -177,7 +177,7 @@ func (s *Server) handleDeleteConnector(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := s.db.GetConnector(connID, userID)
 	if err != nil {
-		http.Error(w, `{"error":"connector not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "connector not found", "")
 		return
 	}
 
@@ -204,7 +204,7 @@ func (s *Server) handleDeleteConnector(w http.ResponseWriter, r *http.Request) {
 	s.db.DeleteBridgeSessionsByConnector(connID)
 
 	if err := s.db.DeleteConnector(connID, userID); err != nil {
-		http.Error(w, `{"error":"failed to delete"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to delete", "")
 		return
 	}
 
@@ -221,12 +221,12 @@ func (s *Server) handleToggleConnector(w http.ResponseWriter, r *http.Request) {
 		Enabled bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid request", "")
 		return
 	}
 
 	if err := s.db.SetConnectorEnabled(connID, userID, req.Enabled); err != nil {
-		http.Error(w, `{"error":"failed to toggle"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to toggle", "")
 		return
 	}
 
@@ -256,18 +256,18 @@ func (s *Server) handleConnectorVerify(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := s.db.GetConnector(connID, userID)
 	if err != nil {
-		http.Error(w, `{"error":"connector not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "connector not found", "")
 		return
 	}
 
 	if conn.Type != storage.ConnectorTelegram {
-		http.Error(w, `{"error":"verify only supported for telegram"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "verify only supported for telegram", "")
 		return
 	}
 
 	tgCfg, err := conn.TelegramConfig()
 	if err != nil || tgCfg.BotToken == "" {
-		http.Error(w, `{"error":"telegram config invalid"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "telegram config invalid", "")
 		return
 	}
 
@@ -392,13 +392,13 @@ func (s *Server) handleConnectorReceivers(w http.ResponseWriter, r *http.Request
 
 	// 验证 connector 归属
 	if _, err := s.db.GetConnector(connID, userID); err != nil {
-		http.Error(w, `{"error":"connector not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "connector not found", "")
 		return
 	}
 
 	receivers, err := s.db.ListConnectorReceivers(connID)
 	if err != nil {
-		http.Error(w, `{"error":"failed to list receivers"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to list receivers", "")
 		return
 	}
 
@@ -413,13 +413,13 @@ func (s *Server) handleDeleteConnectorReceiver(w http.ResponseWriter, r *http.Re
 	ridStr := r.PathValue("rid")
 	rid, err := strconv.ParseInt(ridStr, 10, 64)
 	if err != nil {
-		http.Error(w, `{"error":"invalid receiver id"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid receiver id", "")
 		return
 	}
 
 	conn, err := s.db.GetConnector(connID, userID)
 	if err != nil {
-		http.Error(w, `{"error":"connector not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "connector not found", "")
 		return
 	}
 
@@ -436,7 +436,7 @@ func (s *Server) handleDeleteConnectorReceiver(w http.ResponseWriter, r *http.Re
 	}
 
 	if err := s.db.DeleteConnectorReceiver(rid); err != nil {
-		http.Error(w, `{"error":"failed to delete"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to delete", "")
 		return
 	}
 
@@ -451,7 +451,7 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := s.db.GetConnector(connID, userID)
 	if err != nil {
-		http.Error(w, `{"error":"connector not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "connector not found", "")
 		return
 	}
 
@@ -466,7 +466,7 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 	case storage.ConnectorDiscordWebhook, storage.ConnectorSlackWebhook:
 		whCfg, err := conn.WebhookConfig()
 		if err != nil || whCfg.WebhookURL == "" {
-			http.Error(w, `{"error":"webhook config invalid"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "webhook config invalid", "")
 			return
 		}
 		var sendErr error
@@ -477,7 +477,7 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 		}
 		if sendErr != nil {
 			log.Printf("[connect] webhook test failed: %v", sendErr)
-			http.Error(w, `{"error":"test failed: `+sendErr.Error()+`"}`, http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, ErrInternal, "test failed: "+sendErr.Error(), "")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -487,13 +487,13 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 	case storage.ConnectorTelegram:
 		// Telegram: send to specific receiver or all receivers
 	default:
-		http.Error(w, `{"error":"test not supported for this connector type"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "test not supported for this connector type", "")
 		return
 	}
 
 	tgCfg, err := conn.TelegramConfig()
 	if err != nil || tgCfg.BotToken == "" {
-		http.Error(w, `{"error":"telegram config invalid"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "telegram config invalid", "")
 		return
 	}
 
@@ -502,12 +502,12 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 	if req.ReceiverID != nil {
 		receiver, err := s.db.GetConnectorReceiver(*req.ReceiverID)
 		if err != nil {
-			http.Error(w, `{"error":"receiver not found"}`, http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, ErrNotFound, "receiver not found", "")
 			return
 		}
 		meta, _ := receiver.TelegramMeta()
 		if meta == nil {
-			http.Error(w, `{"error":"invalid receiver metadata"}`, http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, ErrInternal, "invalid receiver metadata", "")
 			return
 		}
 		if err := connect.SendMessage(tgCfg.BotToken, meta.ChatID, tgMsg); err != nil {
@@ -516,7 +516,7 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 	} else {
 		receivers, _ := s.db.ListConnectorReceivers(connID)
 		if len(receivers) == 0 {
-			http.Error(w, `{"error":"no receivers connected"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "no receivers connected", "")
 			return
 		}
 		for _, rv := range receivers {
@@ -542,7 +542,7 @@ func (s *Server) handleLinkAppConnector(w http.ResponseWriter, r *http.Request) 
 
 	// 验证 app 存在
 	if _, err := s.db.GetApp(appID); err != nil {
-		http.Error(w, `{"error":"app not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "app not found", "")
 		return
 	}
 
@@ -550,18 +550,18 @@ func (s *Server) handleLinkAppConnector(w http.ResponseWriter, r *http.Request) 
 		ConnectorID string `json:"connector_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ConnectorID == "" {
-		http.Error(w, `{"error":"connector_id required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "connector_id required", "")
 		return
 	}
 
 	// 验证 connector 存在且属于该用户
 	if _, err := s.db.GetConnector(req.ConnectorID, userID); err != nil {
-		http.Error(w, `{"error":"connector not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "connector not found", "")
 		return
 	}
 
 	if err := s.db.LinkAppConnector(appID, req.ConnectorID); err != nil {
-		http.Error(w, `{"error":"failed to link"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to link", "")
 		return
 	}
 
@@ -576,12 +576,12 @@ func (s *Server) handleUnlinkAppConnector(w http.ResponseWriter, r *http.Request
 	connID := r.PathValue("cid")
 
 	if _, err := s.db.GetApp(appID); err != nil {
-		http.Error(w, `{"error":"app not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "app not found", "")
 		return
 	}
 
 	if err := s.db.UnlinkAppConnector(appID, connID); err != nil {
-		http.Error(w, `{"error":"failed to unlink"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to unlink", "")
 		return
 	}
 
@@ -596,7 +596,7 @@ func (s *Server) handleListAppConnectors(w http.ResponseWriter, r *http.Request)
 
 	connectors, err := s.db.ListConnectorsForApp(userID, appID)
 	if err != nil {
-		http.Error(w, `{"error":"failed to list"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, "failed to list", "")
 		return
 	}
 

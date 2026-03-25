@@ -20,7 +20,12 @@ func (s *Server) resolveModelAndKey(userID, requestedModel string) (model, apiKe
 		if apiKey != "" {
 			return requestedModel, apiKey, providerName, nil
 		}
-		return "", "", "", fmt.Errorf("no API key found for model '%s' (provider: %s)", requestedModel, providerName)
+		return "", "", "", &apiKeyError{
+			Code:     ErrNoAIKeyForModel,
+			Message:  fmt.Sprintf("No API key found for model '%s' (provider: %s)", requestedModel, providerName),
+			Hint:     fmt.Sprintf("Set your API key: PUT /api/v1/user/settings/ai-key with {\"provider\": \"%s\", \"api_key\": \"your-key\"}", providerName),
+			Provider: providerName,
+		}
 	}
 
 	// 2. 用户偏好模型
@@ -52,7 +57,11 @@ func (s *Server) resolveModelAndKey(userID, requestedModel string) (model, apiKe
 		}
 	}
 
-	return "", "", "", fmt.Errorf("no API key configured. Go to Settings to add one, or set TOFI_OPENAI_API_KEY / TOFI_ANTHROPIC_API_KEY env var")
+	return "", "", "", &apiKeyError{
+		Code:    ErrNoAIKey,
+		Message: "No AI provider configured. Set an API key to start using Tofi.",
+		Hint:    "PUT /api/v1/user/settings/ai-key with {\"provider\": \"openai\", \"api_key\": \"sk-...\"}. Supported providers: openai, anthropic, gemini, deepseek, groq, openrouter",
+	}
 }
 
 // findAPIKey 从 Settings 表和环境变量中查找 API Key

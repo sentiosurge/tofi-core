@@ -112,7 +112,7 @@ func (c *apiClient) get(path string, dest any) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		return fmt.Errorf("%s", parseAPIError(resp.StatusCode, body))
 	}
 
 	return json.NewDecoder(resp.Body).Decode(dest)
@@ -126,7 +126,11 @@ func (c *apiClient) getRaw(path string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	return io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s", parseAPIError(resp.StatusCode, body))
+	}
+	return body, nil
 }
 
 // delete performs a DELETE request.
@@ -139,7 +143,7 @@ func (c *apiClient) delete(path string) error {
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		return fmt.Errorf("%s", parseAPIError(resp.StatusCode, body))
 	}
 	return nil
 }
@@ -154,7 +158,7 @@ func (c *apiClient) post(path string, body io.Reader, dest any) error {
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("%s", parseAPIError(resp.StatusCode, respBody))
 	}
 
 	if dest != nil {
@@ -173,7 +177,7 @@ func (c *apiClient) put(path string, body io.Reader, dest any) error {
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("%s", parseAPIError(resp.StatusCode, respBody))
 	}
 
 	if dest != nil {
@@ -192,7 +196,7 @@ func (c *apiClient) patch(path string, body io.Reader, dest any) error {
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("%s", parseAPIError(resp.StatusCode, respBody))
 	}
 
 	if dest != nil {
@@ -210,4 +214,31 @@ func (c *apiClient) postRaw(path string, body io.Reader) ([]byte, int, error) {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	return data, resp.StatusCode, nil
+}
+
+// parseAPIError extracts a user-friendly error message from the API response body.
+// If the body is a JSON error ({"error":{"code":"...","message":"...","hint":"..."}}),
+// it returns the message (and hint if present). Otherwise falls back to raw text.
+func parseAPIError(statusCode int, body []byte) string {
+	if len(body) == 0 {
+		return fmt.Sprintf("API error (%d)", statusCode)
+	}
+
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Hint    string `json:"hint"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &resp); err == nil && resp.Error.Message != "" {
+		msg := resp.Error.Message
+		if resp.Error.Hint != "" {
+			msg += "\n  → " + resp.Error.Hint
+		}
+		return msg
+	}
+
+	// Fallback: raw text
+	return string(body)
 }
