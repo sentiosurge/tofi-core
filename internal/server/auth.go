@@ -76,10 +76,19 @@ func parseJWT(tokenString string) (string, string, error) {
 	return user, role, nil
 }
 
+// serveWithRateLimit checks the rate limiter before calling next.
+func (s *Server) serveWithRateLimit(w http.ResponseWriter, r *http.Request, userID string, next http.HandlerFunc) {
+	if s.rateLimiter != nil && !s.rateLimiter.Allow(userID) {
+		w.Header().Set("Retry-After", "60")
+		writeJSONError(w, 429, ErrRateLimited, "Rate limit exceeded", fmt.Sprintf("Maximum %d requests per minute", s.rateLimiter.rpm))
+		return
+	}
+	next.ServeHTTP(w, r)
+}
+
 // AuthMiddleware validates auth token and injects user into context.
-// Supports two modes:
-//   - Token mode: raw access_token from config (matched against s.accessToken)
-//   - JWT mode: standard JWT signed with jwt_secret
+// Supports three modes: token mode, API key (tofi-sk-*), and JWT.
+// Rate limiting is applied after successful authentication.
 func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
@@ -99,7 +108,7 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// Check if it's a raw access token (token auth mode)
 		if s.accessToken != "" && tokenStr == s.accessToken {
 			ctx := context.WithValue(r.Context(), UserContextKey, "admin")
-			next.ServeHTTP(w, r.WithContext(ctx))
+			s.serveWithRateLimit(w, r.WithContext(ctx), "admin", next)
 			return
 		}
 
@@ -116,7 +125,6 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				writeJSONError(w, http.StatusUnauthorized, ErrUnauthorized, "Invalid API key", "")
 				return
 			}
-			// Check expiration
 			if rec.ExpiresAt != nil {
 				if exp, err := time.Parse(time.RFC3339, *rec.ExpiresAt); err == nil && time.Now().After(exp) {
 					writeJSONError(w, http.StatusUnauthorized, ErrUnauthorized, "API key has expired", "Create a new key: POST /api/v1/user/api-keys")
@@ -128,7 +136,7 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			if role != nil {
 				ctx = context.WithValue(ctx, RoleContextKey, *role)
 			}
-			next.ServeHTTP(w, r.WithContext(ctx))
+			s.serveWithRateLimit(w, r.WithContext(ctx), rec.UserID, next)
 			return
 		}
 
@@ -141,7 +149,7 @@ func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx := context.WithValue(r.Context(), UserContextKey, user)
 		ctx = context.WithValue(ctx, RoleContextKey, role)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		s.serveWithRateLimit(w, r.WithContext(ctx), user, next)
 	}
 }
 

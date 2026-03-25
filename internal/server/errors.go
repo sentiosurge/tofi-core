@@ -27,6 +27,7 @@ const (
 	ErrProviderError     = "PROVIDER_ERROR"
 	ErrAgentError        = "AGENT_ERROR"
 	ErrSpendCapExceeded  = "SPEND_CAP_EXCEEDED"
+	ErrRateLimited       = "RATE_LIMITED"
 )
 
 // apiKeyError is a structured error returned by resolveModelAndKey.

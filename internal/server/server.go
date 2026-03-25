@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -72,6 +73,9 @@ type Server struct {
 	// Bridge Manager (Telegram bidirectional chat)
 	bridgeManager *bridge.ChatBridgeManager
 
+	// Per-user rate limiter
+	rateLimiter *RateLimiter
+
 	// Access token for token-mode auth (read from config.yaml)
 	accessToken string
 }
@@ -112,6 +116,14 @@ func NewServer(config Config) (*Server, error) {
 	// Initialize sandbox executor (direct execution with software-level isolation)
 	exec := executor.NewDirectExecutor(config.HomeDir)
 
+	// Read rate limit RPM from settings (default 60)
+	rpm := 60
+	if rpmStr, err := db.GetSetting("rate_limit_rpm", ""); err == nil && rpmStr != "" {
+		if v, err := strconv.Atoi(rpmStr); err == nil && v > 0 {
+			rpm = v
+		}
+	}
+
 	return &Server{
 		config:          config,
 		registry:        registry,
@@ -121,6 +133,7 @@ func NewServer(config Config) (*Server, error) {
 		holdChannels:    make(map[string]chan HoldSignal),
 		previewSessions: make(map[string]*PreviewSession),
 		chatStore:       chat.NewStore(config.HomeDir, db),
+		rateLimiter:     NewRateLimiter(rpm),
 	}, nil
 }
 
@@ -232,6 +245,11 @@ func (s *Server) Start() error {
 
 	// 启动 app run log/session TTL 清理
 	s.startAppRunCleanup()
+
+	// 启动 rate limiter 清理
+	rateLimitStop := make(chan struct{})
+	go s.rateLimiter.StartCleanup(rateLimitStop)
+	defer close(rateLimitStop)
 
 	// 启动 App 调度器（DB-poll based）
 	s.appScheduler = NewAppScheduler(s)
