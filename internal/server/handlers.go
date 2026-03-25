@@ -216,34 +216,46 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build AI key status per provider
-	providers := []string{"openai", "anthropic", "gemini", "deepseek", "groq", "openrouter"}
-	type keyStatus struct {
-		Provider string `json:"provider"`
-		HasKey   bool   `json:"has_key"`
-		Source   string `json:"source"` // "user", "system", or ""
+	// Build available providers — only include providers with a key configured
+	allProviders := []struct {
+		name         string
+		defaultModel string
+	}{
+		{"openai", "gpt-5.4"},
+		{"anthropic", "claude-sonnet-4-20250514"},
+		{"gemini", "gemini-2.5-flash"},
+		{"deepseek", "deepseek-chat"},
+		{"groq", ""},
+		{"openrouter", ""},
 	}
-	var aiKeys []keyStatus
-	for _, p := range providers {
-		ks := keyStatus{Provider: p}
-		// Check user-level key first
-		if key, err := s.db.ResolveAIKey(p, user); err == nil && key != "" {
-			ks.HasKey = true
-			// Determine source: check if user has their own key
-			if userKey, _ := s.db.GetSecret(user, "ai_key_"+p); userKey != nil {
-				ks.Source = "user"
-			} else {
-				ks.Source = "system"
+	type providerStatus struct {
+		Provider     string `json:"provider"`
+		Source       string `json:"source"`        // "user" or "system"
+		DefaultModel string `json:"default_model"` // default model for this provider
+	}
+	var available []providerStatus
+	for _, p := range allProviders {
+		if key, err := s.db.ResolveAIKey(p.name, user); err == nil && key != "" {
+			source := "system"
+			if userKey, _ := s.db.GetSecret(user, "ai_key_"+p.name); userKey != nil {
+				source = "user"
 			}
+			available = append(available, providerStatus{
+				Provider:     p.name,
+				Source:       source,
+				DefaultModel: p.defaultModel,
+			})
 		}
-		aiKeys = append(aiKeys, ks)
+	}
+	if available == nil {
+		available = []providerStatus{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"username": u.Username,
-		"role":     u.Role,
-		"ai_keys":  aiKeys,
+		"username":  u.Username,
+		"role":      u.Role,
+		"providers": available,
 	})
 }
 

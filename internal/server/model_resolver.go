@@ -38,14 +38,15 @@ func (s *Server) resolveModelAndKey(userID, requestedModel string) (model, apiKe
 	}
 
 	// 3. 自动检测：按优先级尝试各 provider
+	// Default models should be the best generally-available model per provider.
 	providers := []struct {
 		name         string
 		defaultModel string
 		envKey       string
 	}{
 		{"anthropic", "claude-sonnet-4-20250514", "TOFI_ANTHROPIC_API_KEY"},
-		{"openai", "gpt-5-mini", "TOFI_OPENAI_API_KEY"},
-		{"gemini", "gemini-2.0-flash", "TOFI_GEMINI_API_KEY"},
+		{"openai", "gpt-5.4", "TOFI_OPENAI_API_KEY"},
+		{"gemini", "gemini-2.5-flash", "TOFI_GEMINI_API_KEY"},
 		{"deepseek", "deepseek-chat", "TOFI_DEEPSEEK_API_KEY"},
 	}
 

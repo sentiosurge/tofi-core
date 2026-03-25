@@ -134,7 +134,7 @@ paths:
       tags: [Auth]
       responses:
         '200':
-          description: User profile with AI key status
+          description: User profile with available AI providers
           content:
             application/json:
               schema:
@@ -145,33 +145,31 @@ paths:
                   role:
                     type: string
                     enum: [admin, user]
-                  ai_keys:
+                  providers:
                     type: array
-                    description: Status of each AI provider
+                    description: Only providers with a configured API key are listed
                     items:
                       type: object
                       properties:
                         provider:
                           type: string
-                        has_key:
-                          type: boolean
                         source:
                           type: string
-                          enum: [user, system, ""]
+                          enum: [user, system]
                           description: "\"user\" = your own key, \"system\" = admin-provided key"
+                        default_model:
+                          type: string
+                          description: Default model for this provider
               example:
                 username: "alice"
                 role: "user"
-                ai_keys:
+                providers:
                   - provider: "openai"
-                    has_key: true
                     source: "system"
+                    default_model: "gpt-5.4"
                   - provider: "anthropic"
-                    has_key: true
                     source: "user"
-                  - provider: "gemini"
-                    has_key: false
-                    source: ""
+                    default_model: "claude-sonnet-4-20250514"
 
   /api/v1/chat/sessions:
     post:
