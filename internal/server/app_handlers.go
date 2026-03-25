@@ -488,7 +488,7 @@ func (s *Server) handleParseSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Timezone == "" {
-		req.Timezone = "America/New_York"
+		req.Timezone = getUserTimezone(r)
 	}
 
 	systemPrompt := `You are a schedule editor. Convert natural language into structured schedule entries, and intelligently merge with existing entries when provided.
@@ -884,7 +884,8 @@ You have a sandbox shell (curl, python3, etc.).
 - Always respond in the same language as the user
 - Be concise and helpful
 
-Current time: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST (Monday)"))
+Current time: %s
+User timezone: %s`, string(appsJSON), time.Now().Format("2006-01-02 15:04:05 MST (Monday)"), getUserTimezone(r))
 
 	for _, instructions := range skillInstructions {
 		system += "\n\n---\n\n" + instructions

@@ -187,6 +187,7 @@ func runNonInteractive(message string) error {
 		req.Header.Set("Authorization", "Bearer "+client.token)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Timezone", time.Now().Location().String())
 
 	// Use a long-timeout HTTP client for streaming
 	streamClient := &http.Client{Timeout: 10 * time.Minute}

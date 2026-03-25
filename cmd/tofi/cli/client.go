@@ -99,6 +99,8 @@ func (c *apiClient) doRequest(method, path string, body io.Reader) (*http.Respon
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// Inject local timezone so backend knows user's time context
+	req.Header.Set("X-Timezone", time.Now().Location().String())
 	return c.http.Do(req)
 }
 

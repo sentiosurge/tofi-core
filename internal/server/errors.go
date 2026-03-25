@@ -98,6 +98,18 @@ func classifyAgentError(err error) (message, code, hint string) {
 	}
 }
 
+// getUserTimezone extracts user timezone from X-Timezone header or query param.
+// Falls back to UTC if not provided.
+func getUserTimezone(r *http.Request) string {
+	if tz := r.Header.Get("X-Timezone"); tz != "" {
+		return tz
+	}
+	if tz := r.URL.Query().Get("timezone"); tz != "" {
+		return tz
+	}
+	return "UTC"
+}
+
 func writeJSONError(w http.ResponseWriter, status int, code, message, hint string) {
 	if code == ErrInternal {
 		log.Printf("Internal error: %s", message)

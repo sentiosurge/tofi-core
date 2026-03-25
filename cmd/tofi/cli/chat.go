@@ -2119,6 +2119,7 @@ func (m *chatModel) streamChatMessage(ctx context.Context, message string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("X-Timezone", time.Now().Location().String())
 	if m.client.token != "" {
 		req.Header.Set("Authorization", "Bearer "+m.client.token)
 	}

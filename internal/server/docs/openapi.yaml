@@ -574,25 +574,31 @@ paths:
         Plans expire after 1 hour.
       operationId: createPlan
       tags: [Plans]
+      parameters:
+        - name: id
+          in: query
+          description: Plan ID to iterate on. Omit to create a new plan.
+          schema:
+            type: string
+          example: "plan-a1b2c3d4"
+        - name: timezone
+          in: query
+          description: User timezone (also accepted via X-Timezone header)
+          schema:
+            type: string
+          example: "America/Los_Angeles"
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [description]
+              required: [prompt]
               properties:
-                description:
+                prompt:
                   type: string
                   description: Natural language description of the app you want
                   example: "Every morning at 9am, summarize tech news from Hacker News"
-                plan_id:
-                  type: string
-                  description: Include to iterate on an existing plan
-                  example: "plan-a1b2c3d4"
-                model:
-                  type: string
-                  description: LLM model for plan generation (optional, auto-selected if empty)
       responses:
         '201':
           description: Plan created or updated
@@ -875,7 +881,7 @@ components:
         plan_id:
           type: string
           example: "plan-a1b2c3d4"
-        description:
+        prompt:
           type: string
           example: "Every morning at 9am, summarize tech news"
         app:
