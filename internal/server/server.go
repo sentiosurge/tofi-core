@@ -412,6 +412,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/v1/chat/sessions/{id}", s.AuthMiddleware(s.handleGetChatSession))
 	mux.HandleFunc("DELETE /api/v1/chat/sessions/{id}", s.AuthMiddleware(s.handleDeleteChatSession))
 	mux.HandleFunc("PATCH /api/v1/chat/sessions/{id}", s.AuthMiddleware(s.handleUpdateChatSession))
+	mux.HandleFunc("GET /api/v1/chat/sessions/{id}/export", s.AuthMiddleware(s.handleExportSession))
 	mux.HandleFunc("POST /api/v1/chat/sessions/{id}/messages", s.AuthMiddleware(s.handleChatMessage))
 	mux.HandleFunc("POST /api/v1/chat/sessions/{id}/continue", s.AuthMiddleware(s.handleChatSessionContinue))
 	mux.HandleFunc("POST /api/v1/chat/sessions/{id}/abort", s.AuthMiddleware(s.handleChatSessionAbort))
@@ -482,6 +483,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/v1/apps/{id}/run", s.AuthMiddleware(s.handleRunAppNow))
 	mux.HandleFunc("GET /api/v1/apps/{id}/runs", s.AuthMiddleware(s.handleListAppRuns))
 	mux.HandleFunc("GET /api/v1/apps/{id}/runs/{runId}", s.AuthMiddleware(s.handleGetAppRun))
+	mux.HandleFunc("GET /api/v1/apps/{id}/runs/{runId}/session", s.AuthMiddleware(s.handleGetAppRunSession))
+	mux.HandleFunc("GET /api/v1/apps/{id}/runs/{runId}/log", s.AuthMiddleware(s.handleGetAppRunLog))
 
 	// Schedules
 	mux.HandleFunc("GET /api/v1/schedules/upcoming", s.AuthMiddleware(s.handleGetUpcomingRuns))

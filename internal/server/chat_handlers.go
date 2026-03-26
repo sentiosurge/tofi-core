@@ -996,3 +996,98 @@ func (s *Server) generateSessionTitle(userID, scope, sessionID, model, apiKey, f
 	}
 	log.Printf("✅ [title:%s] %s", sessionID[:8], title)
 }
+
+// --- GET /api/v1/chat/sessions/{id}/export ---
+
+// handleExportSession exports a session as JSON or Markdown.
+// Query params: format=json (default) | markdown
+func (s *Server) handleExportSession(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	sessionID := r.PathValue("id")
+
+	idx, err := s.chatStore.GetIndex(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, ErrSessionNotFound, "session not found", "")
+		return
+	}
+	if idx.UserID != userID {
+		writeJSONError(w, http.StatusForbidden, ErrForbidden, "forbidden", "")
+		return
+	}
+
+	session, err := s.chatStore.LoadByID(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, ErrSessionNotFound, "session not found: "+err.Error(), "")
+		return
+	}
+
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "json"
+	}
+
+	switch format {
+	case "markdown":
+		md := formatSessionMarkdown(session)
+		filename := fmt.Sprintf("session-%s.md", sessionID)
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+		w.Write([]byte(md))
+
+	case "json":
+		filename := fmt.Sprintf("session-%s.json", sessionID)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+		json.NewEncoder(w).Encode(session)
+
+	default:
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "invalid format: use 'json' or 'markdown'", "")
+	}
+}
+
+func formatSessionMarkdown(session *chat.Session) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# %s\n\n", session.Title))
+	sb.WriteString(fmt.Sprintf("- **Session ID:** %s\n", session.ID))
+	sb.WriteString(fmt.Sprintf("- **Model:** %s\n", session.Model))
+	sb.WriteString(fmt.Sprintf("- **Created:** %s\n", session.Created))
+	if session.Usage.InputTokens > 0 || session.Usage.OutputTokens > 0 {
+		sb.WriteString(fmt.Sprintf("- **Tokens:** %d in / %d out ($%.4f)\n",
+			session.Usage.InputTokens, session.Usage.OutputTokens, session.Usage.Cost))
+	}
+	sb.WriteString("\n---\n\n")
+
+	for _, msg := range session.Messages {
+		if msg.Content == "" && len(msg.ToolCalls) == 0 {
+			continue
+		}
+		role := msg.Role
+		switch role {
+		case "user":
+			role = "User"
+		case "assistant":
+			role = "Assistant"
+		case "system":
+			role = "System"
+		case "tool":
+			role = fmt.Sprintf("Tool (%s)", msg.Name)
+		}
+
+		if msg.Timestamp != "" {
+			sb.WriteString(fmt.Sprintf("### %s — %s\n\n", role, msg.Timestamp))
+		} else {
+			sb.WriteString(fmt.Sprintf("### %s\n\n", role))
+		}
+
+		if msg.Content != "" {
+			sb.WriteString(msg.Content)
+			sb.WriteString("\n\n")
+		}
+
+		for _, tc := range msg.ToolCalls {
+			sb.WriteString(fmt.Sprintf("> **Tool call:** `%s`\n>\n> ```json\n> %s\n> ```\n\n", tc.Name, tc.Input))
+		}
+	}
+
+	return sb.String()
+}

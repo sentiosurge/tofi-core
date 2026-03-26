@@ -470,6 +470,69 @@ func (s *Server) handleGetAppRun(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(run)
 }
 
+// handleGetAppRunSession GET /api/v1/apps/{id}/runs/{runId}/session
+// Returns the full chat session (with messages) associated with an app run.
+func (s *Server) handleGetAppRunSession(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	appID := r.PathValue("id")
+	runID := r.PathValue("runId")
+
+	app, err := s.db.GetApp(appID)
+	if err != nil || app.UserID != userID {
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
+		return
+	}
+
+	run, err := s.db.GetAppRun(appID, runID)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "run not found", "")
+		return
+	}
+
+	if run.SessionID == "" {
+		writeJSONError(w, http.StatusNotFound, ErrSessionNotFound, "run has no associated session", "")
+		return
+	}
+
+	session, err := s.chatStore.LoadByID(run.SessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, ErrSessionNotFound, "session not found (may have been cleaned up)", "")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(session)
+}
+
+// handleGetAppRunLog GET /api/v1/apps/{id}/runs/{runId}/log
+// Returns the plain-text log file for an app run.
+func (s *Server) handleGetAppRunLog(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	appID := r.PathValue("id")
+	runID := r.PathValue("runId")
+
+	app, err := s.db.GetApp(appID)
+	if err != nil || app.UserID != userID {
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
+		return
+	}
+
+	if _, err := s.db.GetAppRun(appID, runID); err != nil {
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "run not found", "")
+		return
+	}
+
+	logPath := filepath.Join(s.config.HomeDir, "users", userID, "agents", appID, "logs", runID[:8]+".log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "log not found (may have been cleaned up)", "")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write(data)
+}
+
 // handleParseSchedule POST /api/v1/apps/parse-schedule
 func (s *Server) handleParseSchedule(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(UserContextKey).(string)
