@@ -23,11 +23,30 @@ import urllib.parse
 import urllib.request
 
 
+def ddgs_news(query, count=10):
+    """Fallback news search using DuckDuckGo."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.news(query, max_results=count))
+            if not results:
+                print(f"No news found for: {query}")
+                return
+            for i, r in enumerate(results, 1):
+                print(f"\n--- News {i} ---")
+                print(f"Title: {r.get('title', '')}")
+                print(f"URL: {r.get('url', '')}")
+                print(f"Source: {r.get('source', '')}")
+                print(f"Date: {r.get('date', '')}")
+                print(f"Snippet: {r.get('body', '')}")
+    except ImportError:
+        print("Error: duckduckgo-search package not installed.")
+        print("Install with: pip install duckduckgo-search")
+        sys.exit(1)
+
+
 def main():
     api_key = os.environ.get("BRAVE_API_KEY", "")
-    if not api_key:
-        print("Error: BRAVE_API_KEY environment variable is not set.")
-        sys.exit(1)
 
     args = sys.argv[1:]
     if not args or not args[0].strip() or args[0].startswith("--"):
@@ -59,6 +78,12 @@ def main():
             i += 1
         else:
             i += 1
+
+    # If no Brave API key, use DuckDuckGo fallback
+    if not api_key:
+        print("[No Brave API key — using DuckDuckGo fallback]")
+        ddgs_news(query, count)
+        sys.exit(0)
 
     # Use Brave News Search endpoint
     params = {

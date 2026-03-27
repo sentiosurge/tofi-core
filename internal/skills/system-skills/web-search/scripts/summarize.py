@@ -19,11 +19,28 @@ import urllib.parse
 import urllib.request
 
 
+def ddgs_search(query, count=5):
+    """Fallback search using DuckDuckGo (no API key needed)."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=count))
+            if not results:
+                print(f"No results found for: {query}")
+                return
+            for i, r in enumerate(results, 1):
+                print(f"\n--- Result {i} ---")
+                print(f"Title: {r.get('title', '')}")
+                print(f"URL: {r.get('href', '')}")
+                print(f"Snippet: {r.get('body', '')}")
+    except ImportError:
+        print("Error: duckduckgo-search package not installed.")
+        print("Install with: pip install duckduckgo-search")
+        sys.exit(1)
+
+
 def main():
     api_key = os.environ.get("BRAVE_API_KEY", "")
-    if not api_key:
-        print("Error: BRAVE_API_KEY environment variable is not set.")
-        sys.exit(1)
 
     args = sys.argv[1:]
     if not args or not args[0].strip():
@@ -31,6 +48,12 @@ def main():
         sys.exit(1)
 
     query = args[0].strip()
+
+    # If no Brave API key, use DuckDuckGo fallback
+    if not api_key:
+        print("[No Brave API key — using DuckDuckGo fallback (no AI summary available)]")
+        ddgs_search(query)
+        sys.exit(0)
 
     # Step 1: Web search with summary=1 to get summary key
     params = {

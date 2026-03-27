@@ -1,11 +1,14 @@
 ---
 name: web-search
-description: Search the web for real-time information using Brave Search API
-version: "3.0"
+description: Search the web for real-time information using Brave Search or DuckDuckGo fallback
+version: "3.1"
 required_secrets: ["BRAVE_API_KEY"]
 ---
 
 # Web Search Toolkit
+
+> **API Key**: Best results with Brave Search API key (set in Settings > Service Keys).
+> Without a key, searches use DuckDuckGo as a free fallback with reduced quality.
 
 You have 5 search tools. Use them **together** — most good answers need 2-4 tool calls.
 

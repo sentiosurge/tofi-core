@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -148,20 +149,25 @@ func (s *Server) buildSkillTools(userID string, skillNames []string) ([]mcp.Skil
 			skillInstructions = append(skillInstructions, st.Instructions)
 		}
 
-		// Resolve secrets from DB (encrypted storage)
+		// Resolve secrets: user DB first, then system env fallback
 		for _, secretName := range requiredSecrets {
 			if _, ok := secretEnv[secretName]; ok {
 				continue
 			}
+			// 1. Try user's own key from encrypted DB
 			secretRec, err := s.db.GetSecret(userID, secretName)
-			if err != nil {
-				continue
+			if err == nil {
+				val, err := crypto.Decrypt(secretRec.EncryptedValue)
+				if err == nil && val != "" {
+					secretEnv[secretName] = val
+					continue
+				}
 			}
-			val, err := crypto.Decrypt(secretRec.EncryptedValue)
-			if err != nil {
-				continue
+			// 2. Fallback to system environment variable
+			if sysVal := os.Getenv(secretName); sysVal != "" {
+				secretEnv[secretName] = sysVal
 			}
-			secretEnv[secretName] = val
+			// 3. If neither exists, don't inject — let the script handle fallback
 		}
 	}
 

@@ -24,8 +24,8 @@ import urllib.request
 def main():
     api_key = os.environ.get("BRAVE_API_KEY", "")
     if not api_key:
-        print("Error: BRAVE_API_KEY environment variable is not set.")
-        sys.exit(1)
+        print("Video search requires a Brave API key. Please configure it in Settings > Service Keys.")
+        sys.exit(0)
 
     args = sys.argv[1:]
     if not args or not args[0].strip() or args[0].startswith("--"):

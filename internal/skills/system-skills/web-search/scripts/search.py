@@ -23,12 +23,28 @@ import urllib.parse
 import urllib.request
 
 
+def ddgs_search(query, count=5, region="wt-wt"):
+    """Fallback search using DuckDuckGo (no API key needed)."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=count, region=region))
+            if not results:
+                print(f"No results found for: {query}")
+                return
+            for i, r in enumerate(results, 1):
+                print(f"\n--- Result {i} ---")
+                print(f"Title: {r.get('title', '')}")
+                print(f"URL: {r.get('href', '')}")
+                print(f"Snippet: {r.get('body', '')}")
+    except ImportError:
+        print("Error: duckduckgo-search package not installed.")
+        print("Install with: pip install duckduckgo-search")
+        sys.exit(1)
+
+
 def main():
     api_key = os.environ.get("BRAVE_API_KEY", "")
-    if not api_key:
-        print("Error: BRAVE_API_KEY environment variable is not set.")
-        print("Please configure it in Settings > Service Keys.")
-        sys.exit(1)
 
     # Parse arguments
     args = sys.argv[1:]
@@ -68,6 +84,12 @@ def main():
             i += 2
         else:
             i += 1
+
+    # If no Brave API key, use DuckDuckGo fallback
+    if not api_key:
+        print("[No Brave API key — using DuckDuckGo fallback]")
+        ddgs_search(query, count)
+        sys.exit(0)
 
     # When freshness is specified, skip LLM Context (it doesn't support time filtering)
     # and go directly to web search which properly supports freshness.
