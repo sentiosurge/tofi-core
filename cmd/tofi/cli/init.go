@@ -11,9 +11,11 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/bcrypt"
 	"tofi-core/internal/daemon"
+	"tofi-core/internal/storage"
 )
 
 var initForce bool
@@ -584,6 +586,34 @@ jwt_secret: %s
 
 	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	// Write admin user to DB (password mode only)
+	if m.authMode == authPassword {
+		db, err := storage.InitDB(m.homeDir)
+		if err != nil {
+			return fmt.Errorf("failed to open DB: %w", err)
+		}
+		defer db.Close()
+
+		username := m.usernameInput.Value()
+		hash, err := bcrypt.GenerateFromPassword([]byte(m.passwordInput.Value()), bcrypt.DefaultCost)
+		if err != nil {
+			return fmt.Errorf("failed to hash password: %w", err)
+		}
+
+		// Delete existing admin user if re-initializing
+		if users, err := db.ListAllUsers(); err == nil {
+			for _, u := range users {
+				if u.Role == "admin" {
+					_ = db.DeleteUser(u.ID)
+				}
+			}
+		}
+
+		if err := db.SaveUser(uuid.New().String(), username, string(hash), "admin"); err != nil {
+			return fmt.Errorf("failed to save admin user to DB: %w", err)
+		}
 	}
 
 	return nil
