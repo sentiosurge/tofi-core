@@ -667,17 +667,17 @@ You have skills listed in <available-skills>. Call tofi_load_skill with the skil
 				} else if cfg.Executor != nil {
 					output, err := cfg.Executor.Execute(context.Background(), cfg.SandboxDir, cfg.UserDir, command, timeout, cfg.SecretEnv)
 					if err != nil {
-						resultMsg = fmt.Sprintf("Command error: %v\nOutput: %s", err, output)
+						resultMsg = truncateShellOutput(output, err, 500)
 					} else {
-						resultMsg = output
+						resultMsg = truncateShellSuccess(output, 30000)
 					}
 				} else {
 					// Legacy fallback (no user directory support)
 					output, err := executor.NewDirectExecutor("").Execute(context.Background(), cfg.SandboxDir, "", command, timeout, nil)
 					if err != nil {
-						resultMsg = fmt.Sprintf("Command error: %v\nOutput: %s", err, output)
+						resultMsg = truncateShellOutput(output, err, 500)
 					} else {
-						resultMsg = output
+						resultMsg = truncateShellSuccess(output, 30000)
 					}
 				}
 				ctx.Log("[Sandbox] %s → %s", truncate(command, 80), truncate(resultMsg, 200))
@@ -1229,6 +1229,23 @@ func truncate(s string, n int) string {
 		return s[:n] + "..."
 	}
 	return s
+}
+
+// truncateShellOutput formats a failed command's output, capping at maxChars.
+func truncateShellOutput(output string, err error, maxChars int) string {
+	combined := output
+	if len(combined) > maxChars {
+		combined = combined[:maxChars] + "... [output truncated]"
+	}
+	return fmt.Sprintf("Command failed (%v): %s", err, combined)
+}
+
+// truncateShellSuccess caps successful command output at maxChars.
+func truncateShellSuccess(output string, maxChars int) string {
+	if len(output) > maxChars {
+		return output[:maxChars] + "\n\n[output truncated at " + fmt.Sprintf("%d", maxChars) + " chars]"
+	}
+	return output
 }
 
 // sanitizeToolName converts a skill name to a valid tool function name

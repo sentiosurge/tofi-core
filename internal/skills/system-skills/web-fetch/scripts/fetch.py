@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Web page content fetcher — uses headless Chrome to render JS and extract text.
+"""Web page content fetcher — uses headless Chrome to render JS and extract plain text.
 
 Usage:
     python3 fetch.py "https://example.com/article" [--max-chars N]
 
 Options:
-    --max-chars N  Maximum characters to return (default: 12000)
+    --max-chars N  Maximum characters to return (default: 8000)
 
 Requires Google Chrome or Chromium installed on the system.
 Uses trafilatura for content extraction if available (pip install trafilatura).
@@ -63,7 +63,7 @@ def find_chrome():
     return None
 
 
-def fetch_with_chrome(url, chrome_path, max_chars=12000):
+def fetch_with_chrome(url, chrome_path, max_chars=8000):
     """Fetch a URL using headless Chrome --dump-dom, then extract text."""
     # Use a realistic User-Agent to avoid 403 blocks
     user_agent = (
@@ -115,7 +115,7 @@ def fetch_with_chrome(url, chrome_path, max_chars=12000):
     text = extract_text(html)
 
     if len(text) > max_chars:
-        text = text[:max_chars] + "\n\n[... content truncated ...]"
+        text = text[:max_chars] + "\n\n[Content truncated at %d chars]" % max_chars
 
     return url, title, text
 
@@ -165,7 +165,7 @@ def main():
         sys.exit(1)
 
     url = args[0].strip()
-    max_chars = 12000
+    max_chars = 8000
 
     i = 1
     while i < len(args):

@@ -18,7 +18,7 @@ Read any web page and get clean text content. Uses headless Chrome to render Jav
 ```bash
 python3 skills/web-fetch/scripts/fetch.py "URL" [--max-chars N]
 ```
-- `--max-chars N`: Maximum characters to return (default: 12000, max: 50000)
+- `--max-chars N`: Maximum characters to return (default: 8000, max: 50000)
 - Renders JavaScript via headless Chrome before extracting text
 - Uses trafilatura for intelligent article extraction (with regex fallback)
 
