@@ -402,6 +402,11 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 		systemPrompt += `
 ## Skills
 You have skills listed in <available-skills>. Call tofi_load_skill with the skill name to get instructions and activate its tools. Only load when the user's request requires it — not on every message. If you already loaded a skill or have the tools from earlier in the conversation, just use them directly. Never pretend to do something without the right tools.
+
+## Tool Usage Rules
+- NEVER use tofi_shell to fetch web pages (curl, wget, python requests, httpx, etc). Always use the web-fetch skill for fetching URLs — it extracts clean text and saves tokens.
+- NEVER use tofi_shell to run python scripts with requests/httpx/urllib for web scraping. Use web-fetch instead.
+- tofi_shell output is truncated at 8000 chars. For large outputs, use specific tools (web-search, web-fetch) that handle pagination.
 `
 	}
 
@@ -669,7 +674,7 @@ You have skills listed in <available-skills>. Call tofi_load_skill with the skil
 					if err != nil {
 						resultMsg = truncateShellOutput(output, err, 500)
 					} else {
-						resultMsg = truncateShellSuccess(output, 30000)
+						resultMsg = truncateShellSuccess(output, 8000)
 					}
 				} else {
 					// Legacy fallback (no user directory support)
@@ -677,7 +682,7 @@ You have skills listed in <available-skills>. Call tofi_load_skill with the skil
 					if err != nil {
 						resultMsg = truncateShellOutput(output, err, 500)
 					} else {
-						resultMsg = truncateShellSuccess(output, 30000)
+						resultMsg = truncateShellSuccess(output, 8000)
 					}
 				}
 				ctx.Log("[Sandbox] %s → %s", truncate(command, 80), truncate(resultMsg, 200))
