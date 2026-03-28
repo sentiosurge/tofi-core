@@ -338,10 +338,10 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 			// Replace relative script paths with absolute paths so AI doesn't need to guess
 		instructions := skill.Instructions
 		if skill.SkillDir != "" {
-			// "skills/{name}/scripts/" → "/absolute/path/to/skills/{name}/scripts/"
-			instructions = strings.ReplaceAll(instructions, "skills/"+name+"/scripts/", skill.SkillDir+"/scripts/")
-			// Also handle "skills/{name}/" without "scripts/"
-			instructions = strings.ReplaceAll(instructions, "skills/"+name+"/", skill.SkillDir+"/")
+			// Only replace the relative prefix "skills/{name}/" — single pass to avoid double-replace
+			relativePrefix := "skills/" + name + "/"
+			absolutePrefix := skill.SkillDir + "/"
+			instructions = strings.ReplaceAll(instructions, relativePrefix, absolutePrefix)
 		}
 
 		result := fmt.Sprintf("# Skill: %s\n\n%s", name, instructions)
