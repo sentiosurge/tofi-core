@@ -335,7 +335,16 @@ func RunAgentLoop(cfg AgentConfig, ctx *models.ExecutionContext) (*AgentResult, 
 				}
 			}
 
-			result := fmt.Sprintf("# Skill: %s\n\n%s", name, skill.Instructions)
+			// Replace relative script paths with absolute paths so AI doesn't need to guess
+		instructions := skill.Instructions
+		if skill.SkillDir != "" {
+			// "skills/{name}/scripts/" → "/absolute/path/to/skills/{name}/scripts/"
+			instructions = strings.ReplaceAll(instructions, "skills/"+name+"/scripts/", skill.SkillDir+"/scripts/")
+			// Also handle "skills/{name}/" without "scripts/"
+			instructions = strings.ReplaceAll(instructions, "skills/"+name+"/", skill.SkillDir+"/")
+		}
+
+		result := fmt.Sprintf("# Skill: %s\n\n%s", name, instructions)
 			if len(activatedTools) > 0 {
 				result += fmt.Sprintf("\n\n---\nActivated tools: %s\nThese tools are now callable.", strings.Join(activatedTools, ", "))
 			}
