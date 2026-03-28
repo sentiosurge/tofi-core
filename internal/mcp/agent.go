@@ -670,6 +670,21 @@ You have skills listed in <available-skills>. Call tofi_load_skill with the skil
 			// Handle Built-in 'tofi_shell'
 			if fnName == "tofi_shell" && cfg.SandboxDir != "" {
 				command, _ := argsMap["command"].(string)
+
+				// Detect skill script in command → override display name for OnToolCall
+				if displayName := detectSkillFromCommand(command); displayName != "" {
+					origMarkStepDone := markStepDone
+					markStepDone = func(result string) {
+						durationMs := time.Since(toolStartTime).Milliseconds()
+						if cfg.OnStepDone != nil {
+							cfg.OnStepDone(displayName, result, durationMs)
+						}
+						if cfg.OnToolCall != nil {
+							cfg.OnToolCall(displayName, fnArgs, result, durationMs)
+						}
+					}
+					_ = origMarkStepDone // suppress unused warning
+				}
 				timeout := 60
 				if t, ok := argsMap["timeout"].(float64); ok && t > 0 && t <= 120 {
 					timeout = int(t)
@@ -1260,6 +1275,25 @@ func truncateShellSuccess(output string, maxChars int) string {
 		return output[:maxChars] + "\n\n[output truncated at " + fmt.Sprintf("%d", maxChars) + " chars]"
 	}
 	return output
+}
+
+// detectSkillFromCommand checks if a shell command runs a skill script
+// and returns a display name like "web-search" or "web-fetch".
+// Returns empty string if the command is not a skill script.
+func detectSkillFromCommand(command string) string {
+	// Match patterns like:
+	//   python3 /path/to/skills/web-search/scripts/search.py ...
+	//   python3 skills/web-search/scripts/news.py ...
+	idx := strings.Index(command, "skills/")
+	if idx == -1 {
+		return ""
+	}
+	rest := command[idx+len("skills/"):]
+	slashIdx := strings.Index(rest, "/")
+	if slashIdx == -1 {
+		return ""
+	}
+	return rest[:slashIdx]
 }
 
 // sanitizeToolName converts a skill name to a valid tool function name
