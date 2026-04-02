@@ -105,6 +105,7 @@ func runPreflightChecks() error {
 	})
 
 	if !report.HasFail {
+		fmt.Printf("  %s Preflight checks passed\n", successStyle.Render("✓"))
 		return nil
 	}
 

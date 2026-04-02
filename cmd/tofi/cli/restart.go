@@ -32,7 +32,12 @@ func runRestart(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  %s Engine stopped\n", successStyle.Render("✓"))
 	}
 
-	// Delegate to start
+	// Preflight health checks
+	if err := runPreflightChecks(); err != nil {
+		return err
+	}
+
+	// Start
 	fmt.Printf("  %s Starting engine...\n", accentStyle.Render("●"))
 	pid, err := daemon.Start(homeDir, startPort, false)
 	if err != nil {
