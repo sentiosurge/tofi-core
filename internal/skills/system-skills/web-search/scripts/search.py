@@ -37,12 +37,9 @@ def ddgs_search(query, count=5, region="wt-wt"):
     try:
         from ddgs import DDGS
     except ImportError:
-        try:
-            from duckduckgo_search import DDGS
-        except ImportError:
-            print("Error: ddgs package not installed.")
-            print("Install with: pip install ddgs")
-            sys.exit(1)
+        print("Error: ddgs package not installed.")
+        print("Install with: pip install ddgs")
+        sys.exit(1)
     with DDGS() as ddgs:
         results = list(ddgs.text(query, max_results=count, region=region))
         if not results:
