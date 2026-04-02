@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"tofi-core/internal/daemon"
+	"tofi-core/internal/doctor"
 	"tofi-core/internal/pkg/logger"
 	"tofi-core/internal/server"
 
@@ -46,37 +47,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 }
 
 func runDaemon() error {
-	// Ensure workspace exists
-	if _, err := os.Stat(homeDir); os.IsNotExist(err) {
-		fmt.Println()
-		fmt.Println(errorStyle.Render("  ✗ Workspace not found at ") + accentStyle.Render(homeDir))
-		fmt.Println(subtitleStyle.Render("  Run ") + accentStyle.Render("tofi init") + subtitleStyle.Render(" first"))
-		fmt.Println()
-		return fmt.Errorf("workspace not initialized")
+	// Preflight health checks
+	if err := runPreflightChecks(); err != nil {
+		return err
 	}
 
 	fmt.Println()
 	fmt.Println(logo)
 	fmt.Println()
 
-	// Start checks
-	steps := []struct {
-		label string
-		check func() error
-	}{
-		{"Loading workspace", func() error {
-			_, err := os.Stat(homeDir)
-			return err
-		}},
-	}
-
-	for _, step := range steps {
-		if err := step.check(); err != nil {
-			fmt.Printf("  %s %s\n", errorStyle.Render("✗"), step.label)
-			return err
-		}
-		fmt.Printf("  %s %s    %s\n", successStyle.Render("✓"), step.label, subtitleStyle.Render(homeDir))
-	}
+	fmt.Printf("  %s %s    %s\n", successStyle.Render("✓"), "Loading workspace", subtitleStyle.Render(homeDir))
 
 	fmt.Printf("  %s Starting engine...\n", accentStyle.Render("●"))
 
@@ -117,7 +97,41 @@ func loadJWTSecret() {
 	os.Setenv("TOFI_JWT_SECRET", cfg.JWTSecret)
 }
 
+// runPreflightChecks runs critical doctor checks before starting the engine.
+func runPreflightChecks() error {
+	report := doctor.Run(doctor.Options{
+		HomeDir:      homeDir,
+		CriticalOnly: true,
+	})
+
+	if !report.HasFail {
+		return nil
+	}
+
+	fmt.Println()
+	fmt.Println(errorStyle.Render("  ✗ Preflight checks failed"))
+	fmt.Println()
+
+	for _, r := range report.Results {
+		if r.Severity != doctor.SeverityFail {
+			continue
+		}
+		fmt.Printf("  %s %-24s %s\n", errorStyle.Render("✗"), r.Label, errorStyle.Render(r.Detail))
+	}
+
+	fmt.Println()
+	fmt.Printf("  Run %s to diagnose and repair.\n", accentStyle.Render("tofi doctor --fix"))
+	fmt.Println()
+
+	return fmt.Errorf("preflight checks failed")
+}
+
 func runForeground() error {
+	// Preflight health checks
+	if err := runPreflightChecks(); err != nil {
+		return err
+	}
+
 	// Load JWT secret from config so daemon and CLI share the same secret
 	loadJWTSecret()
 

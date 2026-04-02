@@ -146,3 +146,22 @@ func GlobalSkillDir(skillName string) string {
 func UserSkillDir(userID, skillName string) string {
 	return filepath.Join(UserSkillsDir(userID), skillName)
 }
+
+// ──────────────────────────────────────────────────────────────
+// Python virtual environment (isolated from system Python)
+// ──────────────────────────────────────────────────────────────
+
+// PythonVenvDir returns the Python venv directory for system skill dependencies.
+func PythonVenvDir() string {
+	return filepath.Join(PackagesDir(), "pyenv")
+}
+
+// PythonVenvBin returns the Python binary inside the venv.
+func PythonVenvBin() string {
+	return filepath.Join(PythonVenvDir(), "bin", "python3")
+}
+
+// PythonVenvPip returns the pip binary inside the venv.
+func PythonVenvPip() string {
+	return filepath.Join(PythonVenvDir(), "bin", "pip")
+}

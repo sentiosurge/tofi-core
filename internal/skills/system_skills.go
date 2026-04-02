@@ -17,6 +17,11 @@ import (
 //go:embed system-skills/*
 var systemSkillsFS embed.FS
 
+// GetSystemSkillsFS returns the embedded filesystem for external verification (e.g., doctor checks).
+func GetSystemSkillsFS() embed.FS {
+	return systemSkillsFS
+}
+
 // InstallSystemSkills scans the embedded system-skills directory and installs/updates
 // each skill into the database and local store. Idempotent — only updates when needed.
 // Also cleans up system skills that no longer exist in the embedded FS.
