@@ -59,17 +59,39 @@ func CheckPythonDeps(homeDir string) []CheckResult {
 		return results
 	}
 
-	// Verify venv python is executable
+	// Verify venv is complete: python3 executable AND pip exists
+	// A partial venv (python3 exists but pip missing) happens when python3-venv
+	// package was not installed during venv creation — ensurepip fails silently
+	// leaving a directory with bin/python3 but no bin/pip.
+	venvPip := paths.PythonVenvPip()
+	venvCorrupted := false
+
 	if err := exec.Command(venvPython, "--version").Run(); err != nil {
+		venvCorrupted = true
+	} else if _, err := os.Stat(venvPip); os.IsNotExist(err) {
+		venvCorrupted = true
+	}
+
+	if venvCorrupted {
 		results = append(results, newFixable(
-			catPythonDeps, "Python venv", "corrupted — python3 not executable",
-			"recreate venv at "+venvDir,
+			catPythonDeps, "Python venv", "incomplete (missing pip) — recreate needed",
+			"rm -rf "+venvDir+" && python3 -m venv "+venvDir,
 			SeverityWarn,
 			func() error {
 				os.RemoveAll(venvDir)
 				return createVenv(venvDir)
 			},
 		))
+
+		for _, pkg := range requiredPythonPkgs {
+			p := pkg
+			results = append(results, newFixable(
+				catPythonDeps, p.PipName, "venv incomplete (used by "+p.UsedBy+")",
+				"pip install "+p.PipName,
+				SeverityWarn,
+				func() error { return installPackage(venvDir, p) },
+			))
+		}
 		return results
 	}
 	results = append(results, newOK(catPythonDeps, "Python venv", venvDir))
@@ -117,14 +139,22 @@ func createVenv(venvDir string) error {
 func installPackage(venvDir string, pkg requiredPythonPkg) error {
 	venvPython := filepath.Join(venvDir, "bin", "python3")
 
-	// Ensure venv exists
+	pipBin := filepath.Join(venvDir, "bin", "pip")
+
+	// Ensure venv exists and is complete (has pip)
+	needsCreate := false
 	if _, err := os.Stat(venvPython); os.IsNotExist(err) {
+		needsCreate = true
+	} else if _, err := os.Stat(pipBin); os.IsNotExist(err) {
+		// Partial venv — nuke and rebuild
+		os.RemoveAll(venvDir)
+		needsCreate = true
+	}
+	if needsCreate {
 		if err := createVenv(venvDir); err != nil {
 			return fmt.Errorf("create venv: %w", err)
 		}
 	}
-
-	pipBin := filepath.Join(venvDir, "bin", "pip")
 	cmd := exec.Command(pipBin, "install", pkg.PipName)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
