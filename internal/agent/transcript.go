@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"tofi-core/internal/paths"
 	"tofi-core/internal/provider"
 )
 
@@ -47,7 +48,7 @@ func NewTranscript(sessionID, userDir string) (*Transcript, error) {
 	if userDir != "" {
 		dir = filepath.Join(userDir, "transcripts")
 	} else {
-		dir = filepath.Join(os.Getenv("HOME"), ".tofi", "transcripts")
+		dir = filepath.Join(paths.TofiHome(), "transcripts")
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create transcript dir: %w", err)
@@ -101,7 +102,7 @@ func LoadLastCheckpoint(sessionID, userDir string) (*TranscriptEntry, error) {
 	if userDir != "" {
 		dir = filepath.Join(userDir, "transcripts")
 	} else {
-		dir = filepath.Join(os.Getenv("HOME"), ".tofi", "transcripts")
+		dir = filepath.Join(paths.TofiHome(), "transcripts")
 	}
 	path := filepath.Join(dir, sessionID+".jsonl")
 

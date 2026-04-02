@@ -123,7 +123,10 @@ func (s *Server) buildSkillTools(userID string, skillNames []string) ([]agent.Sk
 			}
 			if len(sf.ScriptDirs) > 0 {
 				// Scripts are copied to disk by InstallSystemSkills()
-				st.SkillDir = skills.SystemSkillScriptsDir(s.config.HomeDir, name)
+				// SkillDir = skill root (e.g., ~/.tofi/skills/web-search), NOT the scripts/ subdirectory.
+				// DirectTool.Script paths are relative to this root (e.g., "scripts/search.py").
+				localStore := skills.NewLocalStore(s.config.HomeDir)
+				st.SkillDir = localStore.SkillDir(name)
 			}
 			requiredSecrets = sf.Manifest.RequiredSecrets
 		} else {

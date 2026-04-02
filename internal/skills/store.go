@@ -20,16 +20,18 @@ type SkillInfo struct {
 }
 
 // LocalStore 管理本地文件系统中的技能目录
-// Global skills: {homeDir}/.tofi/skills/
-// User skills:   {homeDir}/.tofi/users/{uid}/skills/
+// Global skills: {TOFI_HOME}/skills/
+// User skills:   {TOFI_HOME}/users/{uid}/skills/
 type LocalStore struct {
 	homeDir string // e.g. /home/user (OS home)
 	baseDir string // e.g. /home/user/.tofi/skills (global)
 }
 
 // NewLocalStore 创建本地技能存储
+// homeDir is TOFI_HOME (e.g., ~/.tofi), NOT the OS home directory.
+// Skills are stored at TOFI_HOME/skills/ (global) and TOFI_HOME/users/{uid}/skills/ (per-user).
 func NewLocalStore(homeDir string) *LocalStore {
-	dir := filepath.Join(homeDir, ".tofi", "skills")
+	dir := filepath.Join(homeDir, "skills")
 	return &LocalStore{homeDir: homeDir, baseDir: dir}
 }
 
@@ -128,7 +130,7 @@ func (s *LocalStore) SaveLocal(name, content string) error {
 
 // UserSkillDir returns the skills directory for a specific user.
 func (s *LocalStore) UserSkillDir(userID string) string {
-	return filepath.Join(s.homeDir, ".tofi", "users", userID, "skills")
+	return filepath.Join(s.homeDir, "users", userID, "skills")
 }
 
 // ActivateGlobalSkill creates a symlink from user's skills dir to a global skill directory.
@@ -244,7 +246,7 @@ func (s *LocalStore) gcGlobalSkill(skillName string) error {
 		return nil // already gone
 	}
 
-	usersDir := filepath.Join(s.homeDir, ".tofi", "users")
+	usersDir := filepath.Join(s.homeDir, "users")
 	entries, err := os.ReadDir(usersDir)
 	if err != nil {
 		// No users dir = no references
