@@ -85,6 +85,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	// Run fixes if --fix
+	var fixedCount, fixFailedCount int
 	if doctorFix && fixableCount > 0 {
 		fmt.Println(titleStyle.Render("  Fixing..."))
 		fmt.Println()
@@ -92,8 +93,10 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fixResults := doctor.Fix(report)
 		for _, fr := range fixResults {
 			if fr.Fixed {
+				fixedCount++
 				fmt.Printf("  %s %-24s %s\n", successStyle.Render("✓"), fr.Label, subtitleStyle.Render("fixed"))
 			} else {
+				fixFailedCount++
 				fmt.Printf("  %s %-24s %s\n", errorStyle.Render("✗"), fr.Label, errorStyle.Render(fr.Error))
 			}
 		}
@@ -107,13 +110,23 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	// Summary
-	summary := fmt.Sprintf("  %s %d passed", successStyle.Render("●"), okCount)
-	if warnCount > 0 {
-		summary += fmt.Sprintf("  %s %d warnings", warnStyle.Render("●"), warnCount)
+	// Summary — subtract successfully fixed items from warn/fail counts
+	effectiveOK := okCount + fixedCount
+	effectiveWarn := warnCount - fixedCount
+	if effectiveWarn < 0 {
+		effectiveWarn = 0
 	}
-	if failCount > 0 {
-		summary += fmt.Sprintf("  %s %d failures", errorStyle.Render("●"), failCount)
+	effectiveFail := failCount + fixFailedCount
+
+	summary := fmt.Sprintf("  %s %d passed", successStyle.Render("●"), effectiveOK)
+	if fixedCount > 0 {
+		summary += fmt.Sprintf(" (%d fixed)", fixedCount)
+	}
+	if effectiveWarn > 0 {
+		summary += fmt.Sprintf("  %s %d warnings", warnStyle.Render("●"), effectiveWarn)
+	}
+	if effectiveFail > 0 {
+		summary += fmt.Sprintf("  %s %d failures", errorStyle.Render("●"), effectiveFail)
 	}
 	fmt.Println(summary)
 	fmt.Println()
