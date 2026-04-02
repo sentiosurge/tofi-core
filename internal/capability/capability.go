@@ -115,19 +115,16 @@ func BuildMCPServers(caps *ParsedCapabilities) []agent.MCPServerConfig {
 }
 
 // BuildExtraTools collects all capability-provided tools (web_search, notify, etc.)
+// Note: web_search is now handled exclusively by the web-search system skill
+// (richer functionality: Brave LLM Context + DuckDuckGo fallback + news + summarize).
+// The old capability-based BuildWebSearchTool has been removed.
 func BuildExtraTools(caps *ParsedCapabilities, getter SecretGetter) []agent.ExtraBuiltinTool {
 	if caps == nil {
 		return nil
 	}
 	var tools []agent.ExtraBuiltinTool
 
-	// Web Search
-	if caps.WebSearch != nil && caps.WebSearch.Enabled && getter != nil {
-		if apiKey, err := getter("BRAVE_API_KEY"); err == nil && apiKey != "" {
-			tools = append(tools, BuildWebSearchTool(apiKey))
-		}
-	}
-
+	// Web Search — now via system skill only (no longer a capability tool)
 	// Notify — now handled by connect.InjectNotifyTool (connector system)
 
 	return tools
