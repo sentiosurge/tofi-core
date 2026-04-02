@@ -46,6 +46,9 @@ func BuildProviderMessages(session *Session, newMessage string, model string) []
 		})
 	}
 
+	// Validate and repair tool_use/tool_result pairing before sending to API
+	messages = repairToolPairing(messages)
+
 	return messages
 }
 
@@ -116,4 +119,64 @@ func trimToTokenBudget(providerMsgs []provider.Message, chatMsgs []Message, mode
 	}
 
 	return providerMsgs[cutoff:]
+}
+
+// repairToolPairing ensures every tool_use (assistant message with ToolCalls)
+// has matching tool_result messages, and every tool_result has a corresponding
+// tool_use. This prevents API rejections from providers like Anthropic that
+// strictly validate pairing.
+func repairToolPairing(messages []provider.Message) []provider.Message {
+	// Collect all tool call IDs from assistant messages
+	expectedResults := make(map[string]bool)
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" {
+					expectedResults[tc.ID] = false // not yet seen
+				}
+			}
+		}
+	}
+
+	// Mark which results we've seen
+	for _, msg := range messages {
+		if msg.Role == "tool" && msg.ToolCallID != "" {
+			expectedResults[msg.ToolCallID] = true
+		}
+	}
+
+	// Check if all results are present
+	allPaired := true
+	for _, seen := range expectedResults {
+		if !seen {
+			allPaired = false
+			break
+		}
+	}
+
+	if allPaired {
+		return messages // no repair needed
+	}
+
+	// Repair: add empty tool results for orphaned tool calls
+	var result []provider.Message
+	for _, msg := range messages {
+		result = append(result, msg)
+
+		if msg.Role == "assistant" {
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" && !expectedResults[tc.ID] {
+					// This tool call has no result — add a placeholder
+					result = append(result, provider.Message{
+						Role:       "tool",
+						Content:    "[Tool result unavailable — execution was interrupted]",
+						ToolCallID: tc.ID,
+						ToolName:   tc.Name,
+					})
+				}
+			}
+		}
+	}
+
+	return result
 }
