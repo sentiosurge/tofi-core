@@ -8,20 +8,13 @@ import (
 type AgentPhase int
 
 const (
-	// PhaseInit is the initial state before the first LLM call.
-	PhaseInit AgentPhase = iota
-	// PhaseThinking means the agent is waiting for or processing an LLM response.
-	PhaseThinking
-	// PhaseExecuting means the agent is executing tool calls.
-	PhaseExecuting
-	// PhaseCompacting means the agent is compacting context.
-	PhaseCompacting
-	// PhaseDone means the agent loop has completed.
-	PhaseDone
-	// PhaseCancelled means the agent loop was cancelled.
-	PhaseCancelled
-	// PhaseError means the agent loop encountered a fatal error.
-	PhaseError
+	PhaseInit       AgentPhase = iota // Initial state before the first LLM call.
+	PhaseThinking                     // Waiting for or processing an LLM response.
+	PhaseExecuting                    // Executing tool calls.
+	PhaseCompacting                   // Compacting context.
+	PhaseDone                         // Loop completed successfully.
+	PhaseCancelled                    // Loop was cancelled by client.
+	PhaseError                        // Loop encountered a fatal error.
 )
 
 func (p AgentPhase) String() string {
@@ -50,51 +43,28 @@ func (p AgentPhase) IsTerminal() bool {
 	return p == PhaseDone || p == PhaseCancelled || p == PhaseError
 }
 
-// AgentState holds the complete state of an agent loop iteration.
-// Each transition creates a new state (immutable pattern).
+// AgentState holds the complete session state of an agent loop.
+// Transition methods return new copies (immutable pattern).
 type AgentState struct {
-	// Phase is the current execution phase.
-	Phase AgentPhase
-
-	// Step is the current iteration number (1-based).
-	Step int
-
-	// Messages is the conversation history.
-	Messages []provider.Message
-
-	// TotalUsage is the cumulative token usage across all API calls.
-	TotalUsage provider.Usage
-
-	// LLMCalls is the number of API calls made so far.
-	LLMCalls int
-
-	// Tracker provides per-model token/cost breakdown.
-	Tracker *TokenTracker
-
-	// LoadedSkills tracks which skills have been activated.
-	LoadedSkills map[string]bool
-
-	// AllTools is the current list of available tools (may grow as skills load).
-	AllTools []provider.Tool
-
-	// SystemPrompt is the system prompt for API calls.
-	SystemPrompt string
-
-	// InitialMsgCount marks where new messages start (for result slicing).
+	Phase           AgentPhase
+	Step            int
+	Messages        []provider.Message
+	TotalUsage      provider.Usage
+	LLMCalls        int
+	Tracker         *TokenTracker
+	LoadedSkills    map[string]bool
+	SystemPrompt    string
 	InitialMsgCount int
-
-	// Result holds the final content when Phase is Done.
-	Result string
-
-	// Error holds the error when Phase is Error.
-	Err error
+	Result          string
+	Err             error
+	Trace           *Trace
+	Transcript      *Transcript
 }
 
 // NewAgentState creates the initial state for an agent loop.
 func NewAgentState(
 	systemPrompt string,
 	messages []provider.Message,
-	tools []provider.Tool,
 	loadedSkills map[string]bool,
 	model string,
 ) *AgentState {
@@ -106,34 +76,32 @@ func NewAgentState(
 		LLMCalls:        0,
 		Tracker:         NewTokenTracker(model),
 		LoadedSkills:    loadedSkills,
-		AllTools:        tools,
 		SystemPrompt:    systemPrompt,
 		InitialMsgCount: len(messages),
+		Trace:           NewTrace(),
 	}
 }
 
-// WithPhase returns a new state with the phase updated.
+// --- Transition methods (each returns a new state) ---
+
 func (s *AgentState) WithPhase(phase AgentPhase) *AgentState {
 	next := *s
 	next.Phase = phase
 	return &next
 }
 
-// WithStep returns a new state with the step incremented.
 func (s *AgentState) WithStep(step int) *AgentState {
 	next := *s
 	next.Step = step
 	return &next
 }
 
-// WithMessages returns a new state with updated messages.
 func (s *AgentState) WithMessages(msgs []provider.Message) *AgentState {
 	next := *s
 	next.Messages = msgs
 	return &next
 }
 
-// WithResult returns a terminal state with the final result.
 func (s *AgentState) WithResult(content string) *AgentState {
 	next := *s
 	next.Phase = PhaseDone
@@ -141,11 +109,22 @@ func (s *AgentState) WithResult(content string) *AgentState {
 	return &next
 }
 
-// WithError returns a terminal state with an error.
 func (s *AgentState) WithError(err error) *AgentState {
 	next := *s
 	next.Phase = PhaseError
 	next.Err = err
+	return &next
+}
+
+func (s *AgentState) WithCancelled() *AgentState {
+	next := *s
+	next.Phase = PhaseCancelled
+	return &next
+}
+
+func (s *AgentState) WithTranscript(t *Transcript) *AgentState {
+	next := *s
+	next.Transcript = t
 	return &next
 }
 
@@ -187,5 +166,6 @@ func (s *AgentState) ToResult(model string) *AgentResult {
 		LoadedSkills:   mapKeys(s.LoadedSkills),
 		Messages:       s.NewMessages(),
 		ModelBreakdown: s.Tracker.ModelBreakdown(),
+		Trace:          s.Trace,
 	}
 }

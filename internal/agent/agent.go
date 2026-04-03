@@ -550,28 +550,22 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 		}
 	}
 
-	// 4. Start Loop
+	// 4. Start Loop â€” AgentState drives the entire execution
 	loopCtx := cfg.Ctx
 	if loopCtx == nil {
 		loopCtx = context.Background()
 	}
-	initialMsgCount := len(messages) // track where new messages start
 	maxSteps := 30
-	totalUsage := provider.Usage{}
-	llmCalls := 0
-	tracker := NewTokenTracker(cfg.Model)
-	trace := NewTrace()
 
-	// Transcript for crash recovery (best-effort â€” don't fail if it can't write)
-	// Uses UserDir for per-user isolation when available
-	var transcript *Transcript
+	state := NewAgentState(systemPrompt, messages, loadedSkills, cfg.Model)
+
+	// Transcript for crash recovery
 	if cfg.SessionID != "" {
 		if t, err := NewTranscript(cfg.SessionID, cfg.UserDir); err == nil {
-			transcript = t
+			state = state.WithTranscript(t)
 			defer func() {
-				// Clean up transcript on successful completion
-				if transcript != nil {
-					transcript.Clean()
+				if state.Transcript != nil {
+					state.Transcript.Clean()
 				}
 			}()
 		}
@@ -586,22 +580,29 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 		allTools = append(allTools, tt.Schema())
 	}
 
-	for step := 1; step <= maxSteps; step++ {
+	for !state.Phase.IsTerminal() {
+		state.Step++
+		if state.Step > maxSteps {
+			lastContent := ""
+			if len(state.Messages) > 0 {
+				lastContent = state.Messages[len(state.Messages)-1].Content
+			}
+			state = state.WithResult(lastContent)
+			break
+		}
+
 		// Check for cancellation before starting a new LLM call
 		if loopCtx.Err() != nil {
 			ctx.Log("[Agent] Cancelled by client.")
-			return &AgentResult{
-				Content:        "",
-				TotalUsage:     totalUsage,
-				TotalCost:      tracker.TotalCost(),
-				Model:          cfg.Model,
-				LLMCalls:       llmCalls,
-				LoadedSkills:   mapKeys(loadedSkills),
-				Messages:       messages[initialMsgCount:],
-				ModelBreakdown: tracker.ModelBreakdown(),
-				Trace:          trace,
-			}, nil
+			state = state.WithCancelled()
+			break
 		}
+
+		state = state.WithPhase(PhaseThinking)
+		state.Trace.RecordPhaseChange(state.Step, PhaseInit, PhaseThinking)
+
+		// Extract messages from state for this iteration (written back at end of loop)
+		messages := state.Messages
 
 		// Micro-compact: trim old tool results that LLM has already consumed
 		if len(messages) > 8 {
@@ -610,8 +611,8 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 
 		// Pre-call context budget check â€” compact proactively before hitting the limit
 		estimatedInput := EstimateContextUsage(systemPrompt, messages, allTools)
-		if tracker.ShouldCompact(estimatedInput, 0.80) && len(messages) > 4 {
-			ctx.Log("[Agent] Pre-call compaction triggered: estimated %d tokens > 80%% of %d window", estimatedInput, tracker.ContextWindow())
+		if state.Tracker.ShouldCompact(estimatedInput, 0.80) && len(messages) > 4 {
+			ctx.Log("[Agent] Pre-call compaction triggered: estimated %d tokens > 80%% of %d window", estimatedInput, state.Tracker.ContextWindow())
 			cfg.Hooks.callPreCompact(len(messages), estimatedInput)
 			originalCount := len(messages)
 			summary, compactErr := compactMessages(cfg.Provider, cfg.Model, messages)
@@ -626,14 +627,14 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 		}
 
 		// Pre-API hook
-		if err := cfg.Hooks.callPreAPICall(step, len(messages), estimatedInput); err != nil {
+		if err := cfg.Hooks.callPreAPICall(state.Step, len(messages), estimatedInput); err != nil {
 			ctx.Log("[Agent] PreAPICall hook blocked: %v", err)
 			return nil, fmt.Errorf("pre-API hook: %w", err)
 		}
 
 		// Checkpoint before API call (crash recovery)
-		if transcript != nil {
-			transcript.Checkpoint(step, PhaseThinking, messages, totalUsage, llmCalls)
+		if state.Transcript != nil {
+			state.Transcript.Checkpoint(state.Step, PhaseThinking, messages, state.TotalUsage, state.LLMCalls)
 		}
 
 		req := &provider.ChatRequest{
@@ -691,32 +692,25 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 				lastContent := ""
 				if resp != nil {
 					lastContent = resp.Content
-					totalUsage.Add(resp.Usage)
+					state = state.RecordAPICall(cfg.Model, resp.Usage)
 				}
-				return &AgentResult{
-					Content:        lastContent,
-					TotalUsage:     totalUsage,
-					TotalCost:      tracker.TotalCost(),
-					Model:          cfg.Model,
-					LLMCalls:       llmCalls + 1,
-					LoadedSkills:   mapKeys(loadedSkills),
-					Messages:       messages[initialMsgCount:],
-					ModelBreakdown: tracker.ModelBreakdown(),
-					Trace:          trace,
-				}, nil
+				state = state.WithMessages(messages)
+				state = state.WithCancelled()
+				state.Result = lastContent
+				return state.ToResult(cfg.Model), nil
 			}
-			trace.RecordError(step, err)
+			state.Trace.RecordError(state.Step, err)
+			state = state.WithMessages(messages)
+			state = state.WithError(err)
 			return nil, fmt.Errorf("LLM call failed: %v", err)
 		}
 
 		apiDuration := time.Since(apiStart)
-		llmCalls++
-		totalUsage.Add(resp.Usage)
-		tracker.RecordUsage(cfg.Model, resp.Usage)
-		trace.RecordAPICall(step, cfg.Model, resp.Usage, resp, apiDuration)
-		cfg.Hooks.callPostAPICall(step, resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.HasToolCalls())
+		state = state.RecordAPICall(cfg.Model, resp.Usage)
+		state.Trace.RecordAPICall(state.Step, cfg.Model, resp.Usage, resp, apiDuration)
+		cfg.Hooks.callPostAPICall(state.Step, resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.HasToolCalls())
 		if cfg.LiveUsage != nil {
-			*cfg.LiveUsage = totalUsage
+			*cfg.LiveUsage = state.TotalUsage
 		}
 
 		// Append Assistant Message
@@ -746,17 +740,9 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 					cfg.OnStepStart("Generating Result", "")
 				}
 				ctx.Log("[Agent] Finished.")
-				return &AgentResult{
-					Content:        cleanContent,
-					TotalUsage:     totalUsage,
-					TotalCost:      tracker.TotalCost(),
-					Model:          cfg.Model,
-					LLMCalls:       llmCalls,
-					LoadedSkills:   mapKeys(loadedSkills),
-					Messages:       messages[initialMsgCount:],
-					ModelBreakdown: tracker.ModelBreakdown(),
-					Trace:          trace,
-				}, nil
+				state = state.WithMessages(messages)
+				state = state.WithResult(cleanContent)
+				return state.ToResult(cfg.Model), nil
 			}
 
 			// Content was only <think> tags (model was reasoning but didn't produce a response)
@@ -887,7 +873,7 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 					result = modified
 				}
 				// Record in trace
-				trace.RecordToolExec(step, fnName, fnArgs, result, true, time.Since(toolStartTime))
+				state.Trace.RecordToolExec(state.Step, fnName, fnArgs, result, true, time.Since(toolStartTime))
 				if fnName != "tofi_wait" && fnName != "tofi_update_progress" && cfg.OnStepDone != nil {
 					cfg.OnStepDone(fnName, result, durationMs)
 				}
@@ -1189,8 +1175,8 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 		} // end sequential execution else block
 
 		// Post-call context compaction â€” use actual API-reported token count
-		if resp.Usage.InputTokens > int64(float64(tracker.ContextWindow())*0.80) && len(messages) > 4 {
-			ctx.Log("[Agent] Post-call compaction triggered: %d tokens > 80%% of %d window", resp.Usage.InputTokens, tracker.ContextWindow())
+		if resp.Usage.InputTokens > int64(float64(state.Tracker.ContextWindow())*0.80) && len(messages) > 4 {
+			ctx.Log("[Agent] Post-call compaction triggered: %d tokens > 80%% of %d window", resp.Usage.InputTokens, state.Tracker.ContextWindow())
 			originalTokens := int(resp.Usage.InputTokens)
 			cfg.Hooks.callPreCompact(len(messages), originalTokens)
 
@@ -1209,32 +1195,16 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 				ctx.Log("[Agent] Compacted: %d messages â†’ %d messages (%d â†’ ~%d tokens)", originalCount, len(messages), originalTokens, compactedTokens)
 			}
 		}
+
+		// Write messages back to state at end of iteration
+		state = state.WithMessages(messages)
 	}
 
-	// Max steps fallback
-	lastContent := ""
-	if len(messages) > 0 {
-		lastMsg := messages[len(messages)-1]
-		if lastMsg.Content != "" {
-			lastContent = lastMsg.Content
-		}
+	// Loop exited via state machine â€” return result
+	if state.Err != nil {
+		return nil, fmt.Errorf("agent loop failed: %w", state.Err)
 	}
-	if lastContent != "" {
-		ctx.Log("[Agent] Max steps reached. Returning partial result.")
-		return &AgentResult{
-			Content:        lastContent,
-			TotalUsage:     totalUsage,
-			TotalCost:      tracker.TotalCost(),
-			Model:          cfg.Model,
-			LLMCalls:       llmCalls,
-			LoadedSkills:   mapKeys(loadedSkills),
-			Messages:       messages[initialMsgCount:],
-			ModelBreakdown: tracker.ModelBreakdown(),
-			Trace:          trace,
-		}, nil
-	}
-
-	return nil, fmt.Errorf("max steps (%d) reached without final answer", maxSteps)
+	return state.ToResult(cfg.Model), nil
 }
 
 // compactMessages uses the same LLM to generate a concise summary of the conversation.

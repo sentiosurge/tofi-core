@@ -45,7 +45,7 @@ func TestAgentPhase_IsTerminal(t *testing.T) {
 func TestAgentState_Immutability(t *testing.T) {
 	original := NewAgentState("system", []provider.Message{
 		{Role: "user", Content: "hello"},
-	}, nil, map[string]bool{}, "gpt-5-mini")
+	}, map[string]bool{}, "gpt-5-mini")
 
 	// WithPhase should not mutate original
 	next := original.WithPhase(PhaseThinking)
@@ -76,7 +76,7 @@ func TestAgentState_Immutability(t *testing.T) {
 }
 
 func TestAgentState_RecordAPICall(t *testing.T) {
-	state := NewAgentState("system", nil, nil, map[string]bool{}, "gpt-5-mini")
+	state := NewAgentState("system", nil, map[string]bool{}, "gpt-5-mini")
 
 	next := state.RecordAPICall("gpt-5-mini", provider.Usage{InputTokens: 100, OutputTokens: 50})
 
@@ -92,7 +92,7 @@ func TestAgentState_RecordAPICall(t *testing.T) {
 }
 
 func TestAgentState_WithResult(t *testing.T) {
-	state := NewAgentState("system", nil, nil, map[string]bool{}, "gpt-5-mini")
+	state := NewAgentState("system", nil, map[string]bool{}, "gpt-5-mini")
 
 	done := state.WithResult("final answer")
 	if done.Phase != PhaseDone {
@@ -109,7 +109,7 @@ func TestAgentState_WithResult(t *testing.T) {
 func TestAgentState_ToResult(t *testing.T) {
 	state := NewAgentState("system", []provider.Message{
 		{Role: "user", Content: "hello"},
-	}, nil, map[string]bool{"web-search": true}, "gpt-5-mini")
+	}, map[string]bool{"web-search": true}, "gpt-5-mini")
 
 	state = state.AppendMessage(provider.Message{Role: "assistant", Content: "hi"})
 	state = state.RecordAPICall("gpt-5-mini", provider.Usage{InputTokens: 100, OutputTokens: 50})
@@ -133,7 +133,7 @@ func TestAgentState_ToResult(t *testing.T) {
 func TestAgentState_NewMessages(t *testing.T) {
 	state := NewAgentState("system", []provider.Message{
 		{Role: "user", Content: "hello"},
-	}, nil, map[string]bool{}, "test")
+	}, map[string]bool{}, "test")
 
 	// Before any new messages
 	if len(state.NewMessages()) != 0 {

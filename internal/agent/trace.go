@@ -50,6 +50,10 @@ type TraceDetail struct {
 
 	// For error
 	ErrorMessage string         `json:"error_message,omitempty"`
+
+	// For phase_change
+	FromPhase string            `json:"from_phase,omitempty"`
+	ToPhase   string            `json:"to_phase,omitempty"`
 }
 
 // NewTrace creates a new trace recorder.
@@ -148,6 +152,23 @@ func (t *Trace) RecordError(step int, err error) {
 		Event:      "error",
 		Detail: TraceDetail{
 			ErrorMessage: err.Error(),
+		},
+	})
+}
+
+// RecordPhaseChange records a state machine phase transition.
+func (t *Trace) RecordPhaseChange(step int, from, to AgentPhase) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.entries = append(t.entries, TraceEntry{
+		Step:      step,
+		Phase:     to.String(),
+		Timestamp: time.Now(),
+		Event:     "phase_change",
+		Detail: TraceDetail{
+			FromPhase: from.String(),
+			ToPhase:   to.String(),
 		},
 	})
 }
