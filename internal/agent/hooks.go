@@ -65,3 +65,19 @@ func (h *Hooks) callPostAPICall(step int, inputTokens, outputTokens int64, hasTo
 	}
 	h.PostAPICall(step, inputTokens, outputTokens, hasToolCalls)
 }
+
+// callPreCompact invokes the PreCompact hook if set.
+func (h *Hooks) callPreCompact(messageCount, estimatedTokens int) {
+	if h == nil || h.PreCompact == nil {
+		return
+	}
+	h.PreCompact(messageCount, estimatedTokens)
+}
+
+// callPostCompact invokes the PostCompact hook if set.
+func (h *Hooks) callPostCompact(originalMsgs, compactedMsgs, originalTokens, compactedTokens int) {
+	if h == nil || h.PostCompact == nil {
+		return
+	}
+	h.PostCompact(originalMsgs, compactedMsgs, originalTokens, compactedTokens)
+}

@@ -612,12 +612,16 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 		estimatedInput := EstimateContextUsage(systemPrompt, messages, allTools)
 		if tracker.ShouldCompact(estimatedInput, 0.80) && len(messages) > 4 {
 			ctx.Log("[Agent] Pre-call compaction triggered: estimated %d tokens > 80%% of %d window", estimatedInput, tracker.ContextWindow())
+			cfg.Hooks.callPreCompact(len(messages), estimatedInput)
+			originalCount := len(messages)
 			summary, compactErr := compactMessages(cfg.Provider, cfg.Model, messages)
 			if compactErr != nil {
 				ctx.Log("[Agent] Pre-call compaction failed: %v", compactErr)
 			} else {
 				messages = compactAndRebuild(messages, summary)
-				ctx.Log("[Agent] Pre-call compacted to %d messages (~%d tokens)", len(messages), EstimateContextUsage(systemPrompt, messages, allTools))
+				compactedTokens := EstimateContextUsage(systemPrompt, messages, allTools)
+				cfg.Hooks.callPostCompact(originalCount, len(messages), estimatedInput, compactedTokens)
+				ctx.Log("[Agent] Pre-call compacted to %d messages (~%d tokens)", len(messages), compactedTokens)
 			}
 		}
 
@@ -1187,16 +1191,18 @@ You have tools listed in <available-deferred-tools>. These are not active yet â€
 		// Post-call context compaction â€” use actual API-reported token count
 		if resp.Usage.InputTokens > int64(float64(tracker.ContextWindow())*0.80) && len(messages) > 4 {
 			ctx.Log("[Agent] Post-call compaction triggered: %d tokens > 80%% of %d window", resp.Usage.InputTokens, tracker.ContextWindow())
+			originalTokens := int(resp.Usage.InputTokens)
+			cfg.Hooks.callPreCompact(len(messages), originalTokens)
 
 			summary, compactErr := compactMessages(cfg.Provider, cfg.Model, messages)
 			if compactErr != nil {
 				ctx.Log("[Agent] Compaction failed: %v", compactErr)
 			} else {
 				originalCount := len(messages)
-				originalTokens := int(resp.Usage.InputTokens)
 				messages = compactAndRebuild(messages, summary)
 
 				compactedTokens := EstimateContextUsage(systemPrompt, messages, allTools)
+				cfg.Hooks.callPostCompact(originalCount, len(messages), originalTokens, compactedTokens)
 				if cfg.OnContextCompact != nil {
 					cfg.OnContextCompact(summary, originalTokens, compactedTokens)
 				}
