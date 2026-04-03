@@ -432,6 +432,7 @@ func (s *Server) executeChatSession(userID, scope string, session *chat.Session,
 	coreTools = append(coreTools, s.buildMemoryTools(userID, "")...)
 	coreTools = append(coreTools, s.buildBuiltinTools(userID)...)
 	coreTools = append(coreTools, buildSessionInfoTool(session, resolvedModel, &liveUsage))
+	coreTools = append(coreTools, s.buildScheduleTools(userID)...)
 
 	// Bundle app tools with ALL app-related skills
 	// Loading any app skill (apps, app-create, app-list, etc.) activates the tools
