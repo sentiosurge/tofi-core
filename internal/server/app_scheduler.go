@@ -197,9 +197,11 @@ func (as *AppScheduler) dispatchRun(run *storage.AppRunRecord, promptOverride st
 	result, err := as.server.executeChatSession(run.UserID, scope, session, prompt, nil, nil)
 
 	status := "done"
+	var failReason string
 	if err != nil {
 		log.Printf("[app-run:%s] Chat session execution failed: %v", run.ID[:8], err)
 		status = "failed"
+		failReason = err.Error()
 	} else {
 		log.Printf("[app-run:%s] Completed (tokens: %d in / %d out, cost: $%.4f)",
 			run.ID[:8], result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalCost)
@@ -226,6 +228,8 @@ func (as *AppScheduler) dispatchRun(run *storage.AppRunRecord, promptOverride st
 	resultContent := ""
 	if result != nil && result.Content != "" {
 		resultContent = result.Content
+	} else if failReason != "" {
+		resultContent = "Error: " + failReason
 	}
 	as.server.db.UpdateAppRunResult(run.ID, status, sessionID, resultContent)
 
