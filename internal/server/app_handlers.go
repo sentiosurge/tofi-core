@@ -1260,3 +1260,131 @@ func requestToAgentDef(
 		SoulMD:   systemPrompt,
 	}
 }
+
+// ── App Webhook Trigger ──
+
+// handleTriggerApp POST /api/v1/apps/{id}/trigger
+// Public-facing webhook: triggers an immediate run with optional payload.
+// Accepts optional JSON body: {"prompt": "override", "payload": {...}}
+func (s *Server) handleTriggerApp(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	id := r.PathValue("id")
+
+	app, err := s.db.GetApp(id)
+	if err != nil || app.UserID != userID {
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
+		return
+	}
+
+	if app.Prompt == "" {
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest, "app has no prompt configured", "")
+		return
+	}
+
+	// Parse optional trigger payload
+	var promptOverride string
+	if r.Body != nil && r.ContentLength > 0 {
+		var req struct {
+			Prompt  string                 `json:"prompt,omitempty"`
+			Payload map[string]interface{} `json:"payload,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			if req.Prompt != "" {
+				promptOverride = req.Prompt
+			} else if len(req.Payload) > 0 {
+				// Serialize payload as context for the AI
+				payloadJSON, _ := json.MarshalIndent(req.Payload, "", "  ")
+				promptOverride = app.Prompt + "\n\n## Webhook Payload\n```json\n" + string(payloadJSON) + "\n```"
+			}
+		}
+	}
+
+	run, err := s.appScheduler.DispatchManualRun(app, userID, promptOverride)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to trigger app: %v", err), "")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"run_id":  run.ID,
+		"app_id":  app.ID,
+		"status":  run.Status,
+		"trigger": "webhook",
+		"message": "App run triggered successfully. Poll GET /api/v1/apps/" + app.ID + "/runs/" + run.ID + " for status.",
+	})
+}
+
+// ── Abort Running Run ──
+
+// handleAbortRun POST /api/v1/apps/{id}/runs/{runId}/abort
+// Aborts a currently running app run.
+func (s *Server) handleAbortRun(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	appID := r.PathValue("id")
+	runID := r.PathValue("runId")
+
+	// Verify app ownership
+	app, err := s.db.GetApp(appID)
+	if err != nil || app.UserID != userID {
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
+		return
+	}
+
+	// Verify run exists and belongs to this app
+	run, err := s.db.GetAppRun(appID, runID)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, ErrNotFound, "run not found", "")
+		return
+	}
+
+	if run.Status != "running" {
+		writeJSONError(w, http.StatusBadRequest, ErrBadRequest,
+			fmt.Sprintf("run is not running (status: %s)", run.Status),
+			"Only running runs can be aborted")
+		return
+	}
+
+	aborted, err := s.db.AbortAppRun(runID, userID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to abort run: %v", err), "")
+		return
+	}
+
+	if !aborted {
+		writeJSONError(w, http.StatusConflict, ErrConflict, "run already completed or not owned", "")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"run_id":  runID,
+		"status":  "failed",
+		"message": "Run aborted by user",
+	})
+}
+
+// ── App Statistics ──
+
+// handleGetAppStats GET /api/v1/apps/{id}/stats
+// Returns aggregate run statistics for an app.
+func (s *Server) handleGetAppStats(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(UserContextKey).(string)
+	id := r.PathValue("id")
+
+	app, err := s.db.GetApp(id)
+	if err != nil || app.UserID != userID {
+		writeJSONError(w, http.StatusNotFound, ErrAppNotFound, "app not found", "")
+		return
+	}
+
+	stats, err := s.db.GetAppStats(app.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to get stats: %v", err), "")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}

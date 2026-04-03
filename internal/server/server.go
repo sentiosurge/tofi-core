@@ -417,6 +417,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/v1/apps/{id}/runs/{runId}", s.AuthMiddleware(s.handleGetAppRun))
 	mux.HandleFunc("GET /api/v1/apps/{id}/runs/{runId}/session", s.AuthMiddleware(s.handleGetAppRunSession))
 	mux.HandleFunc("GET /api/v1/apps/{id}/runs/{runId}/log", s.AuthMiddleware(s.handleGetAppRunLog))
+	mux.HandleFunc("POST /api/v1/apps/{id}/runs/{runId}/abort", s.AuthMiddleware(s.handleAbortRun))
+	mux.HandleFunc("POST /api/v1/apps/{id}/trigger", s.AuthMiddleware(s.handleTriggerApp))
+	mux.HandleFunc("GET /api/v1/apps/{id}/stats", s.AuthMiddleware(s.handleGetAppStats))
 
 	// Schedules
 	mux.HandleFunc("GET /api/v1/schedules/upcoming", s.AuthMiddleware(s.handleGetUpcomingRuns))

@@ -529,6 +529,80 @@ func (db *DB) SkipAppRun(runID, userID string) error {
 	return err
 }
 
+// AbortAppRun sets a running run to "failed" with a cancellation reason.
+func (db *DB) AbortAppRun(runID, userID string) (bool, error) {
+	res, err := db.conn.Exec(
+		`UPDATE app_runs SET status = 'failed', result = 'Aborted by user', completed_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND user_id = ? AND status = 'running'`,
+		runID, userID,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// AppStats holds aggregate statistics for an app.
+type AppStats struct {
+	TotalRuns   int     `json:"total_runs"`
+	DoneRuns    int     `json:"done_runs"`
+	FailedRuns  int     `json:"failed_runs"`
+	SuccessRate float64 `json:"success_rate"` // 0.0-1.0
+	AvgDuration float64 `json:"avg_duration_seconds"`
+	LastRunAt   string  `json:"last_run_at,omitempty"`
+	LastStatus  string  `json:"last_status,omitempty"`
+}
+
+// GetAppStats returns aggregate run statistics for an app.
+func (db *DB) GetAppStats(appID string) (*AppStats, error) {
+	var stats AppStats
+
+	// Total runs (excluding pending/skipped)
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM app_runs WHERE app_id = ? AND status IN ('done','failed','running')`, appID,
+	).Scan(&stats.TotalRuns)
+	if err != nil {
+		return nil, fmt.Errorf("count total: %w", err)
+	}
+
+	// Done + failed counts
+	db.conn.QueryRow(`SELECT COUNT(*) FROM app_runs WHERE app_id = ? AND status = 'done'`, appID).Scan(&stats.DoneRuns)
+	db.conn.QueryRow(`SELECT COUNT(*) FROM app_runs WHERE app_id = ? AND status = 'failed'`, appID).Scan(&stats.FailedRuns)
+
+	if stats.TotalRuns > 0 {
+		stats.SuccessRate = float64(stats.DoneRuns) / float64(stats.TotalRuns)
+	}
+
+	// Average duration (only for completed runs that have both started_at and completed_at)
+	var avgDur sql.NullFloat64
+	db.conn.QueryRow(`
+		SELECT AVG(CAST((julianday(completed_at) - julianday(started_at)) * 86400 AS REAL))
+		FROM app_runs WHERE app_id = ? AND status = 'done'
+		AND started_at IS NOT NULL AND started_at != ''
+		AND completed_at IS NOT NULL AND completed_at != ''
+	`, appID).Scan(&avgDur)
+	if avgDur.Valid {
+		stats.AvgDuration = avgDur.Float64
+	}
+
+	// Last run
+	var lastAt, lastStatus sql.NullString
+	db.conn.QueryRow(`
+		SELECT scheduled_at, status FROM app_runs
+		WHERE app_id = ? AND status IN ('done','failed')
+		ORDER BY scheduled_at DESC LIMIT 1
+	`, appID).Scan(&lastAt, &lastStatus)
+	if lastAt.Valid {
+		stats.LastRunAt = lastAt.String
+	}
+	if lastStatus.Valid {
+		stats.LastStatus = lastStatus.String
+	}
+
+	return &stats, nil
+}
+
 // ── Internal scan helpers ──
 
 func scanAppRecord(row *sql.Row) (*AppRecord, error) {
