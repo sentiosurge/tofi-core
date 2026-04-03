@@ -133,12 +133,17 @@ func (as *AppScheduler) pollAndDispatch() {
 // DispatchManualRun creates an app_run record with trigger=manual and dispatches it immediately.
 // If promptOverride is non-empty, it replaces the app's configured prompt for this run only.
 func (as *AppScheduler) DispatchManualRun(app *storage.AppRecord, userID string, promptOverride string) (*storage.AppRunRecord, error) {
+	return as.DispatchRun(app, userID, promptOverride, "manual")
+}
+
+// DispatchRun creates and executes a run with the given trigger type.
+func (as *AppScheduler) DispatchRun(app *storage.AppRecord, userID, promptOverride, trigger string) (*storage.AppRunRecord, error) {
 	run := &storage.AppRunRecord{
 		ID:          uuid.New().String(),
 		AppID:       app.ID,
 		ScheduledAt: time.Now().UTC().Format("2006-01-02 15:04:05"),
 		Status:      "running",
-		Trigger:     "manual",
+		Trigger:     trigger,
 		UserID:      userID,
 	}
 	if err := as.server.db.CreateAppRun(run); err != nil {

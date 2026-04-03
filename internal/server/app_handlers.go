@@ -1299,7 +1299,7 @@ func (s *Server) handleTriggerApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	run, err := s.appScheduler.DispatchManualRun(app, userID, promptOverride)
+	run, err := s.appScheduler.DispatchRun(app, userID, promptOverride, "webhook")
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, ErrInternal, fmt.Sprintf("failed to trigger app: %v", err), "")
 		return
